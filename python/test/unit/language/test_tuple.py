@@ -3,6 +3,7 @@ import triton
 import triton.language as tl
 from typing import NamedTuple
 import torch
+from triton._internal_testing import is_cutile
 
 
 @triton.jit
@@ -265,10 +266,12 @@ def _nested_tuple_kernel(x):
         tl.static_assert(x[1][0] == 2)
 
 
+@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, nested tuple")
 def test_passing_nested_tuple_with_constexpr(device):
     _nested_tuple_kernel[(1, )](((1, ), (tl.constexpr(2), )))
 
 
+@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, nested tuple")
 def test_passing_nested_tuple_with_constexpr_and_jit_hook(device, fresh_knobs):
     # get the serialized specialization data
     specialization_data = None

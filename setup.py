@@ -624,7 +624,7 @@ def download_and_copy_dependencies():
     )
 
 
-backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
+backends = [*BackendInstaller.copy(["nvidia", "amd", "cutile"]), *BackendInstaller.copy_externals()]
 
 
 def get_package_dirs():

@@ -16,7 +16,10 @@ from triton._C.libtriton import ir
 # ===-----------------------------------------------------------------------===#
 
 # Stub target for testing the frontend.
-stub_target = GPUTarget("cuda", 100, 32)
+if os.environ.get("ENABLE_TILE", "0") == "1":
+    stub_target = GPUTarget("cutile", 100, 32)
+else:
+    stub_target = GPUTarget("cuda", 100, 32)
 
 triton_dir = os.path.dirname(__file__)
 filecheck_path = os.path.join(triton_dir, "FileCheck")

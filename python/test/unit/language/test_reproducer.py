@@ -1,8 +1,11 @@
 import triton
 import re
 import os
+from triton._internal_testing import is_cutile
+import pytest
 
 
+@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, ttgir")
 def test_triton_reproducer_path(monkeypatch, tmp_path):
     # If we get a cache hit there will be no reproducer generated
     monkeypatch.setenv("TRITON_ALWAYS_COMPILE", "1")

@@ -76,7 +76,10 @@ class ASTSource:
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
     def make_ir(self, target: GPUTarget, options, codegen_fns, module_map, context):
-        from .code_generator import ast_to_ttir
+        if os.environ.get("ENABLE_TILE", "0") == "1":
+            from ..backends.cutile.code_generator import ast_to_ttir
+        else:
+            from .code_generator import ast_to_ttir
         return ast_to_ttir(self.fn, self, context=context, options=options, codegen_fns=codegen_fns,
                            module_map=module_map)
 
@@ -162,6 +165,8 @@ def filter_traceback(e: BaseException):
 
     # If a user has a file that matches one of these, they're out of luck.
     BAD_FILES = [
+        # [Diff] add cutile code_generator.py to the bad files for compile error test
+        "/triton/backends/cutile/code_generator.py",
         "/triton/compiler/code_generator.py",
         "/ast.py",
     ]
@@ -227,6 +232,10 @@ def compile(src, target=None, options=None, _env_vars=None):
     compilation_listener = knobs.compilation.listener
     if compilation_listener:
         timer = CompileTimer()
+
+    if os.environ.get("ENABLE_TILE", "0") == "1" and target is not None and target.backend == "cuda":
+        # torch.compile will set the target to cuda, but we need to compile the kernel for cutile
+        target = GPUTarget("cutile", target.arch, target.warp_size)
 
     if target is None:
         target = driver.active.get_current_target()
@@ -450,26 +459,66 @@ class CompiledKernel:
             self._run = functools.partial(_raise_error, cloned_err)
             raise err
 
+        # This is to setup a proper driver type when called from the torch.compile stack.
+        #
+        # NOTE: Ideally we would check both torch.compiler.is_compiling() and ENABLE_TILE to
+        # determine if we are in the Dynamo world and should use the CuTileDriver. However, when
+        # called from Inductor async compile, the torch.compiler.is_compiling() flag will always
+        # return false and cannot accurately reflect the compilation status. We thus to check the
+        # ENABLE_TILE only.
+        #
+        # TODO: Remove this hardcode once we find a proper way to preset driver type when
+        # used in conjunction with torch.compile.
+        if os.environ.get("ENABLE_TILE") == "1":
+            from ..backends.cutile.driver import GlobalCuTileDriver
+            driver.set_active(GlobalCuTileDriver)
+
         device = driver.active.get_current_device()
         # create launcher
         self._run = driver.active.launcher_cls(self.src, self.metadata)
         # not enough shared memory to run the kernel
-        max_shared = max_shared_mem(device)
-        if self.metadata.shared > max_shared:
-            raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
-        if hasattr(self.metadata, "tmem_size") and self.metadata.tmem_size is not None:
-            # Use blackwell max tmem size for now, this should be moved in device properties
-            max_tmem_size = 512  # tmem size in number of columns
-            if self.metadata.tmem_size > max_tmem_size:
-                raise_(OutOfResources(self.metadata.tmem_size, max_tmem_size, "tensor memory"))
-        if knobs.runtime.kernel_load_start_hook is not None:
-            knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
-        # TODO: n_regs, n_spills should be metadata generated when calling `ptxas`
-        self.module, self.function, self.n_regs, self.n_spills, self.n_max_threads = driver.active.utils.load_binary(
-            self.name, self.kernel, self.metadata.shared, device)
-        warp_size = driver.active.get_current_target().warp_size
-        if self.metadata.num_warps * warp_size > self.n_max_threads:
-            raise_(OutOfResources(self.metadata.num_warps * warp_size, self.n_max_threads, "threads"))
+        if os.environ.get("ENABLE_TILE") == "1":
+            # todo:
+            # * n_regs, n_spills, smem size should be metadata generated in lowerings.
+            # * load_binary function signature has been changed.
+            if knobs.runtime.kernel_load_start_hook is not None:
+                knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group,
+                                                     self.hash)
+            from collections import namedtuple
+            (
+                self.module,
+                self.function,
+                self.n_regs,
+                self.n_spills,
+                self.static_smem_bytes,
+                self.n_max_threads,
+            ) = driver.active.utils.load_binary(self.name, self.kernel, device)
+            if "shared" not in self.metadata._fields:
+                KernelMetadata = namedtuple("KernelMetadata", self.metadata._fields + ("shared", ))
+                self.metadata = KernelMetadata(**self.metadata._asdict(), shared=self.static_smem_bytes)
+            # not enough shared memory to run the kernel
+            max_shared = max_shared_mem(device)
+            if self.metadata.shared > max_shared:
+                raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
+        else:
+            # not enough shared memory to run the kernel
+            if hasattr(self.metadata, "tmem_size") and self.metadata.tmem_size is not None:
+                # Use blackwell max tmem size for now, this should be moved in device properties
+                max_tmem_size = 512  # tmem size in number of columns
+                if self.metadata.tmem_size > max_tmem_size:
+                    raise_(OutOfResources(self.metadata.tmem_size, max_tmem_size, "tensor memory"))
+            max_shared = max_shared_mem(device)
+            if self.metadata.shared > max_shared:
+                raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
+            if knobs.runtime.kernel_load_start_hook is not None:
+                knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group,
+                                                     self.hash)
+            # TODO: n_regs, n_spills should be metadata generated when calling `ptxas`
+            self.module, self.function, self.n_regs, self.n_spills, self.n_max_threads = driver.active.utils.load_binary(
+                self.name, self.kernel, self.metadata.shared, device)
+            warp_size = driver.active.get_current_target().warp_size
+            if self.metadata.num_warps * warp_size > self.n_max_threads:
+                raise_(OutOfResources(self.metadata.num_warps * warp_size, self.n_max_threads, "threads"))
         if knobs.runtime.kernel_load_end_hook is not None:
             knobs.runtime.kernel_load_end_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
 

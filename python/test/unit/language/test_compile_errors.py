@@ -7,7 +7,7 @@ import triton
 import triton.language as tl
 from triton.compiler.errors import CompilationError, CompileTimeAssertionFailure
 import traceback
-from triton._internal_testing import is_cuda, is_hip, is_hip_cdna4
+from triton._internal_testing import is_cutile, is_cuda, is_hip, is_hip_cdna4
 
 
 def format_exception(type, value, tb):
@@ -350,6 +350,7 @@ def test_where_warning(fresh_triton_cache):
 
 
 @pytest.mark.parametrize("dtype", [tl.float8e5, tl.float8e5b16, tl.float8e4nv, tl.float8e4b8, tl.float8e4b15])
+@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, fp8 support")
 def test_fp8_support(fresh_triton_cache, dtype):
     warning_dtypes = []
     supported_dtypes = [tl.float8e5]
@@ -393,6 +394,7 @@ def test_fp8_support(fresh_triton_cache, dtype):
 
 
 @pytest.mark.parametrize("dtype", [tl.float8e5, tl.int8, tl.float16])
+@pytest.mark.skipif(is_cutile(), reason="Skip for cutile,")
 def test_min_dot_size(dtype):
     error_msg = "Input shapes should have "
     if is_cuda():

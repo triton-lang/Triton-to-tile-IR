@@ -5,7 +5,7 @@ import triton
 import triton.language as tl
 from test_mxfp import MXFP4Tensor, MXScaleTensor
 import re
-from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4, is_hip_cdna
+from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4, is_hip_cdna, is_cutile
 
 
 def f8_to_f16(x, dtype):
@@ -161,6 +161,8 @@ def test_simple_matmul(dtype_src_str, dtype_dst_str, BLOCK_M, BLOCK_N, BLOCK_K, 
         rtol = 0.001
     torch.testing.assert_close(ref_out, output, atol=atol, rtol=rtol)
     # Make sure the mma is pipelined by checking if in the TTGIR we see two mmav5
+    if is_cutile():
+        return
     # operations. (Pipeliner will add additional mma operation by peeling the prologue.)
     # This applies only if TCv5 MMA is used (M % 64 == 0 and N % 8 == 0) and
     # when MMA arguments loads are pipelined (N > 16)
@@ -285,6 +287,8 @@ def test_simple_persistent_matmul(BLOCK_M, BLOCK_N, BLOCK_K, NUM_WARPS, DISALLOW
     torch.testing.assert_close(ref_out, output, atol=0.01, rtol=0.01)
 
     # Make sure the mma is pipelined by checking if in the TTGIR we have peeled mmav5 ops.
+    if is_cutile():
+        return
     # This applies only if TCv5 MMA is used (M % 64 == 0 and N % 8 == 0) and
     # when MMA arguments loads are pipelined (N > 16)
     if (device == "cuda" and torch.cuda.get_device_capability()[0] == 10 and BLOCK_M % 64 == 0 and BLOCK_N % 8 == 0
@@ -361,6 +365,8 @@ def test_mxfp(BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, nonKDim, NUM_WARPS, device)
             pytest.skip("Scaled mxfp8 matmul is only natively supported on CDNA4")
         if (nonKDim == 16 and BLOCK_K < 128) or (nonKDim == 32 and BLOCK_K < 64):
             pytest.skip(f"CDNA4 does not support {BLOCK_K=} for scaled mfma {nonKDim=} variants")
+    if is_cutile():
+        pytest.skip("skip for cutile, tt.dot_scaled")
 
     if BLOCK_N == 256 and BLOCK_K == 256:
         NUM_STAGES = min(NUM_STAGES, 2)
@@ -744,6 +750,8 @@ def test_preshuffle_scale_mxfp_cdna4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, DTYPE_A
 @pytest.mark.parametrize("USE_2D_SCALE_LOAD", [False, True])
 @pytest.mark.skipif(is_hip() or torch.cuda.get_device_capability()[0] != 10, reason="Requires compute capability == 10")
 def test_blocked_scale_mxfp(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, USE_2D_SCALE_LOAD, device):
+    if is_cutile():
+        pytest.skip("skip for cutile, tt.dot_scaled")
     if BLOCK_N == 256 and BLOCK_K == 256:
         NUM_STAGES = min(NUM_STAGES, 2)
     elif BLOCK_K == 256:
@@ -817,6 +825,7 @@ def test_blocked_scale_mxfp(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, USE_
 @pytest.mark.parametrize("a_trans", [False, True])
 @pytest.mark.parametrize("dtype_src_str", ["float32", "float16", "float8e5"])
 @pytest.mark.skipif(is_hip() or torch.cuda.get_device_capability()[0] != 10, reason="Requires compute capability == 10")
+@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, ttgir")
 def test_lhs_in_tmem(BLOCK_M, BLOCK_N, BLOCK_K, a_trans, dtype_src_str, device, monkeypatch):
     M = 1024
     N = 512
@@ -881,6 +890,7 @@ def lhs_in_tmem_kernel_mxfp(  #
 
 
 @pytest.mark.skipif(is_hip() or torch.cuda.get_device_capability()[0] != 10, reason="Requires compute capability == 10")
+@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, ttgir")
 def test_lhs_in_tmem_mxfp(device, monkeypatch):
     _knob_promote_lhs_to_tmem(monkeypatch)
     M, N, K = 128, 64, 32
@@ -1002,6 +1012,8 @@ def test_block_scale_fp4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, VEC_SIZE, with_a_sc
             pytest.skip("CDNA4 only supports E8M0 scale")
         if (nonKDim == 16 and BLOCK_K < 128) or (nonKDim == 32 and BLOCK_K < 64):
             pytest.skip(f"CDNA4 does not support {BLOCK_K=} for scaled mfma {nonKDim=} variants")
+    if is_cutile():
+        pytest.skip("skip for cutile, tt.dot_scaled")
 
     NUM_STAGES = 1
     torch.manual_seed(42)
@@ -1154,8 +1166,10 @@ def test_mxfp8_mxfp4_matmul(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, B_TR
             pytest.skip("Scaled mxfp4 & mxfp8 matmul is only natively supported on CDNA4")
         if (nonKDim == 16 and BLOCK_K < 128) or (nonKDim == 32 and BLOCK_K < 64):
             pytest.skip(f"CDNA4 does not support {BLOCK_K=} for scaled mfma {nonKDim=} variants")
-        if (A_DATA_TYPE == 'float4' and not WITH_A_SCALE) or (B_DATA_TYPE == 'float4' and not WITH_B_SCALE):
-            pytest.skip("Float4 without scale is tested in test_block_scale_fp4")
+    if is_cutile():
+        pytest.skip("skip for cutile, tt.dot_scaled")
+    if (A_DATA_TYPE == \'float4\' and not WITH_A_SCALE) or (B_DATA_TYPE == \'float4\' and not WITH_B_SCALE):
+        pytest.skip("Float4 without scale is tested in test_block_scale_fp4")
     if not PACK_B_ALONG_K and B_DATA_TYPE != "float4":
         pytest.skip("Pack along K can only be False for float4")
     if BLOCK_N == 256 and BLOCK_K == 256:

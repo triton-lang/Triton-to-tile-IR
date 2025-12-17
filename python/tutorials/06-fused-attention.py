@@ -32,6 +32,10 @@ def is_cuda():
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
 
+def is_cutile():
+    return triton.runtime.driver.active.get_current_target().backend == "cutile"
+
+
 def supports_host_descriptor():
     return is_cuda() and torch.cuda.get_device_capability()[0] >= 9
 
@@ -128,7 +132,10 @@ def _host_descriptor_pre_hook(nargs):
 if is_hip():
     NUM_STAGES_OPTIONS = [1]
 elif supports_host_descriptor():
-    NUM_STAGES_OPTIONS = [2, 3, 4]
+    if is_cutile():
+        NUM_STAGES_OPTIONS = [2, 3, 4, 5]
+    else:
+        NUM_STAGES_OPTIONS = [2, 3, 4]
 else:
     NUM_STAGES_OPTIONS = [2, 3, 4]
 
@@ -139,6 +146,17 @@ configs = [
     for s in NUM_STAGES_OPTIONS \
     for w in [4, 8]\
 ]
+
+if is_cutile():
+    configs = [
+        triton.Config({'BLOCK_M': BM, 'BLOCK_N': BN, 'occupancy': occupancy}, num_stages=s, num_warps=w, pre_hook=_host_descriptor_pre_hook) \
+        for BM in [64, 128, 256] \
+        for BN in [32, 64, 128] \
+        for s in NUM_STAGES_OPTIONS \
+        for w in [4, 8] \
+        for occupancy in [1, 2] \
+    ]
+
 if "PYTEST_VERSION" in os.environ:
     # Use a single config in testing for reproducibility
     configs = [

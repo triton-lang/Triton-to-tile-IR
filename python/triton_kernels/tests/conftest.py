@@ -5,11 +5,19 @@ import os
 
 def pytest_addoption(parser):
     parser.addoption("--device", action="store", default="cuda")
+    # [diff]
+    parser.addoption("--arch", type=str, default="sm100")
 
 
 @pytest.fixture
 def device(request):
     return request.config.getoption("--device")
+
+
+# [diff]
+@pytest.fixture
+def arch(request):
+    return request.config.getoption("--arch")
 
 
 @pytest.fixture

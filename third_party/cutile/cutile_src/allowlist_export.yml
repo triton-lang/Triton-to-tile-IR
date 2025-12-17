@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+
+# Allowlist filter to create the CUDA Tile OSS repository.
+# To be used with the `release.py` script hosted in
+# https://gitlab-master.nvidia.com/dlarch-fastkernels/infrastructure/source-release-tools
+#
+# Usage example:
+#
+#   python /path-to-source-release-tools-repo/source_release_tools/release.py \
+#       --src_path /path/to/dkg/tile_ir \
+#       --dst_path /path/to/destination/folder \
+#       --release_type public \
+#       --allowlist_path /path/to/dkg/tile_ir/cuda_tile_allowlist_oss_repo_export.yml \
+#       --verbose true
+
+# Exclude files whose paths contain these patterns (case-sensitive).
+exclude_patterns:
+  - "Internal"
+  - "internal"
+  - "Experimental"
+  - "experimental"
+
+.gitignore: true
+cmake: '*'
+CMakeLists.txt: true
+include: '*'
+lib: '*'
+python: '*'
+README.md: true
+test: '*'
+tools: '*'
+bloom: '*'

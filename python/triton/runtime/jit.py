@@ -18,7 +18,13 @@ from .. import knobs
 from .driver import driver
 from . import _async_compile
 from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dict, is_namedtuple
+
+# Added imports
+import os
 from .cache import get_cache_key
+from ..runtime.driver import driver
+from triton.backends.cutile.driver import GlobalCuTileDriver
+from triton.backends.nvidia.driver import GlobalNvidiaDriver
 from triton._C.libtriton import get_cache_invalidating_env_vars, native_specialize_impl, ir
 
 TRITON_MODULE = "triton.language"
@@ -354,6 +360,19 @@ def mangle_type(arg, specialize=False):
 
 class KernelInterface(Generic[T]):
     run: T
+    enable_tile = os.environ.get("ENABLE_TILE", "0") == "1"
+
+    def cutile_run(self, *args, grid, warmup, **kwargs):
+        try:
+            driver.set_active(GlobalCuTileDriver)
+            ret = self.run(grid=grid, warmup=False, *args, **kwargs)
+        except RuntimeError:
+            os.environ["ENABLE_TILE"] = "0"
+            driver.set_active(GlobalNvidiaDriver)
+            ret = self.run(grid=grid, warmup=False, *args, **kwargs)
+            os.environ["ENABLE_TILE"] = "1"
+            driver.set_active(GlobalCuTileDriver)
+        return ret
 
     def warmup(self, *args, grid, **kwargs):
         return self.run(grid=grid, warmup=True, *map(MockTensor.wrap_dtype, args), **kwargs)
@@ -367,6 +386,8 @@ class KernelInterface(Generic[T]):
         Hence JITFunction.__getitem__ returns a callable proxy that
         memorizes the grid.
         """
+        if os.environ.get("ENABLE_TILE", "0") == "1" or self.enable_tile:
+            return lambda *args, **kwargs: self.cutile_run(grid=grid, warmup=False, *args, **kwargs)
         return lambda *args, **kwargs: self.run(grid=grid, warmup=False, *args, **kwargs)
         # return cast(T, functools.partial(cast(Callable, self.run), grid=grid))
 
@@ -463,7 +484,6 @@ class JITCallable:
             raise ValueError("@jit functions should be defined in a Python file") from e
         self._fn_name = get_full_name(fn)
         self._hash_lock = threading.RLock()
-
         # function source code (without decorators)
         src = textwrap.dedent("".join(self.raw_src))
         src = src[re.search(r"^def\s+\w+\s*\(", src, re.MULTILINE).start():]
@@ -711,7 +731,11 @@ class JITFunction(JITCallable, KernelInterface[T]):
         for hook in self.pre_run_hooks:
             hook(*args, **kwargs)
 
-        kernel_cache, kernel_key_cache, target, backend, binder = self.device_caches[device]
+        target = driver.active.get_current_target()
+        kernel_cache, kernel_key_cache, cached_target, backend, binder = self.device_caches[device]
+        if cached_target != target:
+            self.device_caches = defaultdict(self.create_binder)
+            kernel_cache, kernel_key_cache, target, backend, binder = self.device_caches[device]
         # specialization is list[tuple[str, Any]], where first element of tuple is
         # the type and the second parameter is the 'specialization' value.
         bound_args, specialization, options = binder(*args, **kwargs)
@@ -835,7 +859,11 @@ class JITFunction(JITCallable, KernelInterface[T]):
         )
 
     def _do_compile(self, key, signature, device, constexprs, options, attrs, warmup):
-        kernel_cache, _, target, backend, _ = self.device_caches[device]
+        target = driver.active.get_current_target()
+        kernel_cache, kernel_key_cache, cached_target, backend, binder = self.device_caches[device]
+        if cached_target != target:
+            self.device_caches = defaultdict(self.create_binder)
+            kernel_cache, kernel_key_cache, target, backend, binder = self.device_caches[device]
 
         if self._call_hook(knobs.runtime.jit_cache_hook, key, signature, device, constexprs, options, [attrs], warmup):
             return None

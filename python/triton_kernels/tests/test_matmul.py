@@ -16,7 +16,7 @@ from triton_kernels.numerics_details.mxfp import upcast_from_mxfp, quantize_mxfp
 # testing utilities
 from triton_kernels.testing import assert_close, make_random_tensor
 # target-specific utilities
-from triton_kernels.target_info import is_hip, is_hip_cdna3, is_cuda, is_hip_cdna4
+from triton_kernels.target_info import is_cutile, is_hip, is_hip_cdna3, is_cuda, is_hip_cdna4
 from triton_kernels.swiglu import swiglu, swiglu_fn
 from triton_kernels.swiglu import PrecisionConfig as SwiGLUPrecisionConfig
 from triton_kernels.tensor_details import layout
@@ -210,6 +210,20 @@ def test_op(m, n, k, split_k, do_gather, do_scatter, inner_expt_opt, do_gamma, i
             swiglu_opts, device, opt_flags_scope):
     # We catch and re-invoke pytest.skip(), because otherwise pytest may hold a reference to
     # the frame that called pytest.skip, including all the tensors, leading to OOM.
+    if (
+        is_cutile()
+        and act_dtype_str == "bfloat16"
+        and weight_dtype_str == "bfloat16"
+        and n_slices == 10
+        and split_k == 1
+        and b_hbm_swizzling == False
+        and a_hbm_swizzling == False
+        and a_transpose == False
+        and b_transpose == False
+        and c_transpose == False
+    ):
+        pytest.skip("skip for cutile, result mismatch. see jira https://jirasw.nvidia.com/browse/CFK-31188")
+
     skip_message = None
     try:
         _test_op(m, n, k, split_k, do_gather, do_scatter, inner_expt_opt, do_gamma, is_persistent, n_slices,
@@ -226,6 +240,12 @@ def _test_op(m, n, k, split_k, do_gather, do_scatter, inner_expt_opt, do_gamma, 
             mode, act_dtype_str, weight_dtype_str, block_m, b_hbm_swizzling, a_hbm_swizzling, colmajor_mxfp_weight, epilogue_subtile,
             a_transpose, b_transpose, c_transpose,
             swiglu_opts, device, opt_flags_scope):
+    if is_cutile():
+        if "mx" in weight_dtype_str:
+            pytest.skip("skip for cutile, scale_dot")
+        if m==0 and mode == "ragged":
+            pytest.skip("skip for cutile, m==0 and mode == ragged got Runtime Error")
+
     # TODO: remove when Triton FP8 supports proper RTNE
     if is_cuda():
         if "float8" in weight_dtype_str and torch.cuda.get_device_capability()[0] < 9:

@@ -29,6 +29,7 @@ class Autotuner(KernelInterface):
                 `prune_configs_by( configs: List[triton.Config], named_args: Dict[str, Any], **kwargs: Dict[str, Any]) -> List[triton.Config]:`
                 and return pruned configs. It should return at least one config.
         """
+        self.backend = driver.active.get_current_target().backend
         if not configs:
             self.configs = [Config({}, num_warps=4, num_stages=3, num_ctas=1)]
         else:
@@ -147,7 +148,7 @@ class Autotuner(KernelInterface):
                 config.pre_hook(full_nargs)
             self.pre_hook(full_nargs)
             try:
-                self.fn.run(
+                kernel = self.fn.run(
                     *args,
                     **current,
                 )
@@ -244,8 +245,10 @@ class Autotuner(KernelInterface):
             config = self.configs[0]
         self.best_config = config
         if knobs.autotuning.print and not used_cached_result:
-            print(f"Triton autotuning for function {self.base_fn.__name__},\nwith key as {key},\n"
-                  f"finished after {self.bench_time:.2f}s,\nbest config selected: {self.best_config};")
+            print(
+                f"Triton autotuning for function {self.base_fn.__name__} finished after "
+                f"{self.bench_time:.2f}s\nbest config selected: {self.best_config}\n\033[31mbest kernel: {self.config2kernel[self.best_config]} latency: {self.configs_timings[self.best_config][0]:.5f}\033[0m ms"
+            )
         if config.pre_hook is not None:
             full_nargs = {**self.nargs, **kwargs, **config.all_kwargs()}
             config.pre_hook(full_nargs)
@@ -318,9 +321,15 @@ class Config:
     :ivar pre_hook: a function that will be called before the kernel is called. Parameters of this
                     function are args.
     :ivar ir_override: filename of a user-defined IR (*.{ttgir|llir|ptx|amdgcn}).
+    :ivar opt_level: cutile backend optimization level.
     """
 
-    def __init__(self, kwargs, num_warps=4, num_stages=3, num_ctas=1, maxnreg=None, pre_hook=None, ir_override=None):
+    # [Diff]
+    # TODO: do we retain opt_level? rename it or remove it?
+    # - Better autotune with Better kernel naming
+    # - Add opt_level in Config's every builtin methods
+    def __init__(self, kwargs, num_warps=4, num_stages=3, num_ctas=1, maxnreg=None, pre_hook=None, ir_override=None,
+                 opt_level=3):
         self.kwargs = kwargs
         self.num_warps = num_warps
         self.num_ctas = num_ctas
@@ -328,6 +337,7 @@ class Config:
         self.maxnreg = maxnreg
         self.pre_hook = pre_hook
         self.ir_override = ir_override
+        self.opt_level = opt_level
 
     def __setstate__(self, state):
         self.kwargs = state.get("kwargs", {})
@@ -337,19 +347,29 @@ class Config:
         self.maxnreg = state.get("maxnreg", None)
         self.pre_hook = state.get("pre_hook", None)
         self.ir_override = state.get("ir_override", None)
+        self.opt_level = state.get("opt_level", 0)
 
     def all_kwargs(self):
+        # NOTE:
+        # `opt_level` is only meaningful for the "cutile" backend.
+        # For other backends, do not pass it through as a kernel meta-parameter.
+        from .driver import driver
+        backend = driver.active.get_current_target().backend
+
+        extra_kwargs = [
+            ("num_warps", self.num_warps),
+            ("num_ctas", self.num_ctas),
+            ("num_stages", self.num_stages),
+            ("maxnreg", self.maxnreg),
+            ("ir_override", self.ir_override),
+        ]
+        if backend == "cutile":
+            extra_kwargs.append(("opt_level", self.opt_level))
+
         return {
-            **self.kwargs, **{
-                k: v
-                for (k, v) in (
-                    ("num_warps", self.num_warps),
-                    ("num_ctas", self.num_ctas),
-                    ("num_stages", self.num_stages),
-                    ("maxnreg", self.maxnreg),
-                    ("ir_override", self.ir_override),
-                ) if v is not None
-            }
+            **self.kwargs,
+            **{k: v
+               for (k, v) in extra_kwargs if v is not None},
         }
 
     def __str__(self):
@@ -360,6 +380,7 @@ class Config:
         res.append(f"num_ctas: {self.num_ctas}")
         res.append(f"num_stages: {self.num_stages}")
         res.append(f"maxnreg: {self.maxnreg}")
+        res.append(f"opt_level: {self.opt_level}")
         return ", ".join(res)
 
     def __hash__(self):

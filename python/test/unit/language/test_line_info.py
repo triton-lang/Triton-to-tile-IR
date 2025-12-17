@@ -9,6 +9,7 @@ import triton
 import triton.language as tl
 from triton._internal_testing import is_interpreter
 from triton._filecheck import run_filecheck
+from triton._internal_testing import is_cutile
 
 
 @triton.jit
@@ -426,6 +427,7 @@ def test_use_name_loc_as_prefix(fresh_triton_cache):
     run_filecheck("placeholder", h.asm["ttir"], check_template)
 
 
+@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, tt.map_elementwise")
 def test_map_elementwise_has_lineinfo():
 
     @triton.jit

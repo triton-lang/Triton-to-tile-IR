@@ -35,7 +35,12 @@ def get_current_target():
 
 def is_cuda():
     target = get_current_target()
-    return False if target is None else target.backend == "cuda"
+    return False if target is None else target.backend in ["cuda", "cutile"]
+
+
+# [Diff] add cutile backend.
+def is_cutile():
+    return get_current_target().backend == "cutile"
 
 
 def is_ampere_or_newer():

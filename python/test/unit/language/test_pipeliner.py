@@ -5,7 +5,7 @@ import torch
 import triton
 import triton.language as tl
 
-from triton._internal_testing import is_cuda, is_hopper_or_newer, is_hip_cdna, is_hip_cdna2, is_hip
+from triton._internal_testing import is_cuda, is_hopper_or_newer, is_hip_cdna, is_hip_cdna2, is_hip, is_cutile
 
 
 def check_capabilities():
@@ -212,6 +212,7 @@ def dot_scale_ref(x, scale, y, type_x, type_y):
 
 
 @pytest.mark.parametrize("scale", [True, False])
+@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, scaled_dot")
 def test_pipeline_matmul(scale, device):
     check_capabilities()
     if scale and not (is_cuda() or is_hip_cdna()):
@@ -318,6 +319,7 @@ def test_pipeline_matmul(scale, device):
                 assert ttgir.count("ttg.dot") != 0, "dot not found"
 
 
+@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, ttgir")
 def test_pipeline_vecadd(device):
     check_capabilities()
     SIZE = 4096
@@ -517,6 +519,7 @@ def matmul_kernel_persistent_scatter(a_ptr, b_ptr, c_ptr,  #
 
 @pytest.mark.skipif(torch.cuda.get_device_capability()[0] != 10,
                     reason="TMA Scatter only works on cloud Blackwell Chips")
+@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, tma scatter")
 def test_scatter_pipeline(device):
 
     def alloc_fn(size, alignment, stream):

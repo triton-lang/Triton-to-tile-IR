@@ -523,7 +523,7 @@ class proton_knobs(base_knobs):
     cupti_lib_dir: env_str = env_str(
         "TRITON_CUPTI_LIB_PATH",
         str(pathlib.Path(__file__).parent.absolute() / "backends" / "nvidia" / "lib" / "cupti"))
-    enable_nvtx: env_bool = env_bool("TRITON_ENABLE_NVTX", True)
+    enable_cutilex: env_bool = env_bool("TRITON_ENABLE_NVTX", True)
 
 
 build = build_knobs()
