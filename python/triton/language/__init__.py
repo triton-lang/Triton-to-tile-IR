@@ -36,9 +36,9 @@ from .core import (
     store_tensor_descriptor,
     make_tensor_descriptor,
     tensor_descriptor,
-    cutile_tensor_descriptor,
+    tileir_tensor_descriptor,
     tensor_descriptor_type,
-    cutile_tensor_descriptor_type,
+    tileir_tensor_descriptor_type,
     add,
     advance,
     arange,
@@ -148,7 +148,7 @@ __all__ = [
     "store_tensor_descriptor",
     "make_tensor_descriptor",
     "tensor_descriptor",
-    "cutile_tensor_descriptor",
+    "tileir_tensor_descriptor",
     "abs",
     "add",
     "advance",
@@ -318,8 +318,8 @@ def str_to_ty(name, c):
         # FIXME: Last dim stride should be constexpr(1)
         stride_type = tuple_type(([int64] * ndim))
         block = block_type(dtype, block_shape)
-        if target_info.is_cutile():
-            return cutile_tensor_descriptor_type(block, shape_type, stride_type)
+        if target_info.is_tileir():
+            return tileir_tensor_descriptor_type(block, shape_type, stride_type)
         if is_gluon:
             from triton.experimental.gluon.language._layouts import NVMMASharedLayout, PaddedSharedLayout, SwizzledSharedLayout
             from triton.experimental.gluon.language.nvidia.hopper.tma import tensor_descriptor_type as nvidia_tensor_descriptor_type

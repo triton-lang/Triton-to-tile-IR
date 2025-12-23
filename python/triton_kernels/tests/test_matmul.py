@@ -16,7 +16,7 @@ from triton_kernels.numerics_details.mxfp import upcast_from_mxfp, quantize_mxfp
 # testing utilities
 from triton_kernels.testing import assert_close, make_random_tensor
 # target-specific utilities
-from triton_kernels.target_info import is_cutile, is_hip, is_hip_cdna3, is_cuda, is_hip_cdna4
+from triton_kernels.target_info import is_tileir, is_hip, is_hip_cdna3, is_cuda, is_hip_cdna4
 from triton_kernels.swiglu import swiglu, swiglu_fn
 from triton_kernels.swiglu import PrecisionConfig as SwiGLUPrecisionConfig
 from triton_kernels.tensor_details import layout
@@ -211,7 +211,7 @@ def test_op(m, n, k, split_k, do_gather, do_scatter, inner_expt_opt, do_gamma, i
     # We catch and re-invoke pytest.skip(), because otherwise pytest may hold a reference to
     # the frame that called pytest.skip, including all the tensors, leading to OOM.
     if (
-        is_cutile()
+        is_tileir()
         and act_dtype_str == "bfloat16"
         and weight_dtype_str == "bfloat16"
         and n_slices == 10
@@ -222,7 +222,7 @@ def test_op(m, n, k, split_k, do_gather, do_scatter, inner_expt_opt, do_gamma, i
         and b_transpose == False
         and c_transpose == False
     ):
-        pytest.skip("skip for cutile, result mismatch. see jira https://jirasw.nvidia.com/browse/CFK-31188")
+        pytest.skip("skip for tileir, result mismatch. see jira https://jirasw.nvidia.com/browse/CFK-31188")
 
     skip_message = None
     try:
@@ -240,14 +240,14 @@ def _test_op(m, n, k, split_k, do_gather, do_scatter, inner_expt_opt, do_gamma, 
             mode, act_dtype_str, weight_dtype_str, block_m, b_hbm_swizzling, a_hbm_swizzling, colmajor_mxfp_weight, epilogue_subtile,
             a_transpose, b_transpose, c_transpose,
             swiglu_opts, device, opt_flags_scope):
-    if is_cutile():
+    if is_tileir():
         if "mx" in weight_dtype_str:
-            pytest.skip("skip for cutile, scale_dot")
+            pytest.skip("skip for tileir, scale_dot")
         if m==0 and mode == "ragged":
-            pytest.skip("skip for cutile, m==0 and mode == ragged got Runtime Error")
+            pytest.skip("skip for tileir, m==0 and mode == ragged got Runtime Error")
 
     # TODO: remove when Triton FP8 supports proper RTNE
-    if is_cuda():
+    if is_cuda() or is_tileir():
         if "float8" in weight_dtype_str and torch.cuda.get_device_capability()[0] < 9:
             pytest.skip("Float8 not tested on A100")
         if act_dtype_str == "float16" and "mx" in weight_dtype_str and torch.cuda.get_device_capability()[0] >= 10:
@@ -452,7 +452,7 @@ def _test_op(m, n, k, split_k, do_gather, do_scatter, inner_expt_opt, do_gamma, 
 
 
 def test_set_idle_sms():
-    if not is_cuda():
+    if not (is_cuda() or is_tileir()):
         pytest.skip("Only supported on CUDA")
     from triton_kernels.matmul_details.opt_flags import make_opt_flags
     num_idle_sms = 24

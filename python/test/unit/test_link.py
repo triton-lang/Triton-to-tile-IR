@@ -5,6 +5,7 @@ import torch
 import triton
 import triton.language as tl
 from triton.language.extra import libdevice
+from triton._internal_testing import is_tileir
 
 from triton._C.libtriton import llvm
 
@@ -24,6 +25,7 @@ def add_one_indirect(x_ptr, SQRT: tl.constexpr) -> None:
 
 @pytest.mark.parametrize("use_libdevice", (False, True))
 @pytest.mark.parametrize("kernel", (add_one, add_one_indirect))
+@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support link_extern_libs")
 def test_link_extern_libs(use_libdevice, kernel):
     link_called: bool = False
 

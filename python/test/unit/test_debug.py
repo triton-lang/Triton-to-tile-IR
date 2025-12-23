@@ -2,6 +2,7 @@ import pytest
 import torch
 import triton.language as tl
 import triton
+from triton._internal_testing import is_tileir
 
 
 @pytest.mark.parametrize('cond', [True, False])
@@ -9,6 +10,7 @@ import triton
 @pytest.mark.parametrize('opt_flag', [True, False, None])
 @pytest.mark.parametrize('env_var', [True, False])
 @pytest.mark.parametrize('jit_flag', [True, False])
+@pytest.mark.skipif(is_tileir(), reason="tileir skip this test")
 @pytest.mark.forked
 def test_device_assert(monkeypatch, cond, mask, opt_flag, env_var, jit_flag, device):
     monkeypatch.setenv("TRITON_DEBUG", str(int(env_var)))
@@ -35,6 +37,7 @@ def test_device_assert(monkeypatch, cond, mask, opt_flag, env_var, jit_flag, dev
     getattr(torch, device).synchronize()
 
 
+@pytest.mark.skipif(is_tileir(), reason="tileir skip this test")
 def test_device_assert_barrier(monkeypatch, device):
     monkeypatch.setenv("TRITON_DEBUG", "1")
     triton.knobs.refresh_knobs()
@@ -94,6 +97,7 @@ def _test_overflow(x, y, x_dtype, y_dtype, debug, should_overflow, tri_func, ref
     (-2**15, -1, 'int16', 'int16', True, True),
     (2**15 - 1, 1, 'int16', 'int16', True, True),
 ])
+@pytest.mark.skipif(is_tileir(), reason="tileir skip this test")
 @pytest.mark.forked
 def test_sanitize_int_add_overflow(x, y, x_dtype, y_dtype, debug, should_overflow, device):
 
@@ -115,6 +119,7 @@ def test_sanitize_int_add_overflow(x, y, x_dtype, y_dtype, debug, should_overflo
     (-2**31, 1, 'int32', 'int32', True, False),
     (-2**30, 2, 'int32', 'int32', True, False),
 ])
+@pytest.mark.skipif(is_tileir(), reason="tileir skip this test")
 @pytest.mark.forked
 def test_sanitize_int_mul_overflow(x, y, x_dtype, y_dtype, debug, should_overflow, device):
 
@@ -135,6 +140,7 @@ def test_sanitize_int_mul_overflow(x, y, x_dtype, y_dtype, debug, should_overflo
     (2**31 - 1, 1, 'int32', 'int32', True, False),
     (-2**31, -1, 'int32', 'int32', True, False),
 ])
+@pytest.mark.skipif(is_tileir(), reason="tileir skip this test")
 @pytest.mark.forked
 def test_sanitize_int_sub_overflow(x, y, x_dtype, y_dtype, debug, should_overflow, device):
 

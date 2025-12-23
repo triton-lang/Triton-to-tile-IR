@@ -1,5 +1,5 @@
 import pytest
-from triton._internal_testing import is_cuda
+from triton._internal_testing import is_cuda, is_tileir
 from triton_kernels.tensor import wrap_torch_tensor, convert_layout, FP4
 from triton_kernels.tensor_details.layout import HopperMXScaleLayout, HopperMXValueLayout
 from triton_kernels.numerics_details.mxfp import downcast_to_mxfp, upcast_from_mxfp
@@ -71,7 +71,7 @@ def _upcast_mxfp4_to_bf16(Y, X, XScale, x_stride_m, x_stride_n, x_scale_stride_m
     tl.store(Y + offs_y, y)
 
 
-@pytest.mark.skipif(not is_cuda(), reason="Only supported on cuda")
+@pytest.mark.skipif(not (is_cuda() or is_tileir()), reason="Only supported on cuda")
 @pytest.mark.skipif(not cuda_capability_geq(9), reason="Only supported for capability >= 9")
 def test_upcast_mxfp4_to_bf16():
     mx_axis = 0

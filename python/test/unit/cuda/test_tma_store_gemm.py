@@ -22,6 +22,7 @@
 import pytest
 import torch
 from torch.testing import assert_close
+from triton._internal_testing import is_tileir
 
 import triton
 import triton.language as tl
@@ -63,6 +64,7 @@ def matmul_tma_load_store(  #
     [128, 128, 64, 1, 4, False, True, False],
     [128, 128, 64, 1, 4, False, True, True],
 ])
+@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support make_block_ptr")
 def test_tma_load_store(M, N, K, NUM_CTAS, NUM_WARPS, TRANS_A, TRANS_B, OUTPUT_F16):
     if (TRANS_A):
         a = torch.randn((K, M), device='cuda', dtype=torch.float16).T

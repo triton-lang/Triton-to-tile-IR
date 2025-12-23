@@ -5,7 +5,7 @@ import pytest
 import torch
 import triton
 import triton.language as tl
-from triton._internal_testing import is_cuda, is_hip
+from triton._internal_testing import is_cuda, is_hip, is_tileir
 
 
 @contextmanager
@@ -18,6 +18,8 @@ def enable_diagnostics_context(value):
 
 
 def test_mma_remark(capfd, fresh_triton_cache):
+    if is_tileir():
+        pytest.skip("tileir backend skip this test")
     if is_hip():
         pytest.skip("CUDA specific test")
     if is_cuda():
@@ -96,6 +98,8 @@ def test_mma_remark(capfd, fresh_triton_cache):
 
 
 def test_remark_vectorization(capfd, fresh_triton_cache):
+    if is_tileir():
+        pytest.skip("tileir backend skip this test")
     if is_hip():
         pytest.skip("currently failing on HIP")
 

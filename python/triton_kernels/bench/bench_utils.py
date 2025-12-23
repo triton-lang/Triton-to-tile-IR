@@ -19,7 +19,7 @@ def _quantize_weight(w, dtype, **opt):
     elif dtype == "fp8":
         fp8e4_dtype = torch.float8_e4m3fn if get_cdna_version() != 3 else torch.float8_e4m3fnuz
         wq = w.to(fp8e4_dtype)
-        if is_cuda() and not cuda_capability_geq(10, 0):
+        if (is_cuda() or is_tileir()) and not cuda_capability_geq(10, 0):
             wq = wq.transpose(-1, -2).contiguous().transpose(-1, -2)
         return wq, InFlexData(dtype=wq.dtype, scale=w.abs().max().unsqueeze(0)), None
     else:

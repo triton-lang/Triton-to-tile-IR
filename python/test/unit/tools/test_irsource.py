@@ -2,11 +2,14 @@ import pathlib
 import triton
 from triton.compiler import IRSource, make_backend
 from triton._C.libtriton import ir
+from triton._internal_testing import is_tileir
+import pytest
 
 target = triton.runtime.driver.active.get_current_target()
 backend = make_backend(target)
 
 
+@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support ttgir")
 def test_mlir_attribute_parsing(tmp_path: pathlib.Path) -> None:
     '''
     Tests that MLIR attributes are parsed correctly from input ttir/ttgir.

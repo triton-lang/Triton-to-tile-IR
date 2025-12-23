@@ -160,6 +160,8 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 def is_cuda():
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
+def is_tileir():
+    return triton.runtime.driver.active.get_current_target().backend == "tileir"
 
 def get_cuda_autotune_config():
     return [
@@ -214,7 +216,7 @@ def get_hip_autotune_config():
 
 
 def get_autotune_config():
-    if is_cuda():
+    if is_cuda() or is_tileir():
         return get_cuda_autotune_config()
     else:
         return get_hip_autotune_config()
@@ -372,7 +374,7 @@ else:
     print("❌ Triton and Torch differ")
 
 TORCH_HAS_FP8 = hasattr(torch, "float8_e5m2")
-if TORCH_HAS_FP8 and is_cuda():
+if TORCH_HAS_FP8 and (is_cuda() or is_tileir()):
     torch.manual_seed(0)
     a = torch.randn((512, 512), device=DEVICE, dtype=torch.float16)
     b = torch.randn((512, 512), device=DEVICE, dtype=torch.float16)
@@ -399,11 +401,11 @@ if TORCH_HAS_FP8 and is_cuda():
 # We can now compare the performance of our kernel against that of cuBLAS or rocBLAS. Here we focus on square matrices,
 # but feel free to arrange this script as you wish to benchmark any other matrix shape.
 
-ref_lib = 'cuBLAS' if is_cuda() else 'rocBLAS'
+ref_lib = 'cuBLAS' if (is_cuda() or is_tileir()) else 'rocBLAS'
 
 configs = []
 for fp8_inputs in [False, True]:
-    if fp8_inputs and (not TORCH_HAS_FP8 or not is_cuda()):
+    if fp8_inputs and (not TORCH_HAS_FP8 or not (is_cuda() or is_tileir())):
         continue
     configs.append(
         triton.testing.Benchmark(

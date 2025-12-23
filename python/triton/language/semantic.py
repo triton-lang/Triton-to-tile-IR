@@ -10,7 +10,7 @@ from triton.runtime import driver
 import os
 
 
-def is_cutile():
+def is_tileir():
     return os.environ.get("ENABLE_TILE", "0") == "1"
 
 
@@ -1139,7 +1139,7 @@ class TritonSemantic(Generic[TensorTy]):
 
     def _has_native_tma(self, ):
         target = driver.active.get_current_target()
-        return ((target.backend == "cuda" or target.backend == "cutile") and target.arch >= 90)
+        return ((target.backend == "cuda" or target.backend == "tileir") and target.arch >= 90)
 
     def _descriptor_atomic_min_max_supported(self, dtype):
         assert dtype in {tl.uint32, tl.int32, tl.uint64, tl.int64, tl.float16, tl.bfloat16}, "Unsupported dtype"
@@ -1981,6 +1981,6 @@ class TritonSemantic(Generic[TensorTy]):
                                                             [s.handle for s in strides], block_shape, is_signed_int,
                                                             padding)
         target = driver.active.get_current_target()
-        if target.backend == "cutile":
-            return tl.cutile_tensor_descriptor(handle, shape, strides, type, base)
+        if target.backend == "tileir":
+            return tl.tileir_tensor_descriptor(handle, shape, strides, type, base)
         return tl.tensor_descriptor(handle, shape, strides, type)

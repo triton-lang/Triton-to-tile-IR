@@ -6,7 +6,7 @@ from collections import Counter
 
 import triton
 from triton._internal_testing import is_interpreter
-from triton._internal_testing import is_cutile
+from triton._internal_testing import is_tileir
 
 import pytest
 
@@ -15,7 +15,7 @@ print_path = os.path.join(dir_path, "print_helper.py")
 torch_types = ["int8", "uint8", "int16", "int32", "long", "float16", "float32", "float64"]
 
 
-@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, device print logic not the same")
+@pytest.mark.skipif(is_tileir(), reason="tileir have different device print logic at 13.1 release")
 @pytest.mark.interpreter
 @pytest.mark.parametrize("func_type, data_type", [(fn, data_type)
                                                   for fn in ["device_print", "device_print_scalar"]

@@ -13,7 +13,7 @@ from triton_kernels.numerics_details.mxfp import (
     upcast_from_mxfp,
     upcast_from_mxfp_torch,
 )
-from triton_kernels.target_info import is_cuda
+from triton_kernels.target_info import is_cuda, is_tileir
 from triton_kernels.testing import assert_close, assert_equal
 
 
@@ -83,7 +83,7 @@ def test_mxfp4_rounding_cases(dst_dtype, device):
 @pytest.mark.parametrize("src_dtype", ["float4_e2m1", "float8_e5m2", "float8_e4m3fn"])
 @pytest.mark.parametrize("dst_dtype", ["float16", "bfloat16", "float32"])
 def test_mxfp_extreme_values(src_dtype, dst_dtype, device):
-    if "float8" in src_dtype and (is_cuda() and torch.cuda.get_device_capability()[0] < 9):
+    if "float8" in src_dtype and ((is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] < 9):
         pytest.skip("Float8 not tested on A100")
     src_dtype = dtype_str_to_torch(src_dtype)
     dst_dtype = dtype_str_to_torch(dst_dtype)
@@ -99,7 +99,7 @@ def test_mxfp_extreme_values(src_dtype, dst_dtype, device):
 @pytest.mark.parametrize("src_dtype", ["float4_e2m1", "float8_e5m2", "float8_e4m3fn"])
 @pytest.mark.parametrize("dst_dtype", ["float16", "bfloat16", "float32"])
 def test_mxfp_quant_dequant(src_dtype, dst_dtype, device):
-    if "float8" in src_dtype and (is_cuda() and torch.cuda.get_device_capability()[0] < 9):
+    if "float8" in src_dtype and ((is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] < 9):
         pytest.skip("Float8 not tested on A100")
     limit_range = src_dtype == "float8_e5m2" and dst_dtype == "float16"
 
@@ -158,7 +158,7 @@ def test_mxfp_casting(
     rounding_mode: DequantScaleRoundingMode,
     device,
 ):
-    if "float8" in quant_dtype and (is_cuda() and torch.cuda.get_device_capability()[0] < 9):
+    if "float8" in quant_dtype and ((is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] < 9):
         pytest.skip("Float8 not tested on A100")
     torch.manual_seed(0)
     quant_torch_type = dtype_str_to_torch(quant_dtype)

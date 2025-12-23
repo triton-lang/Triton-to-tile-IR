@@ -3,13 +3,13 @@ import torch
 
 import triton
 import triton.language as tl
-from triton._internal_testing import is_cutile
+from triton._internal_testing import is_tileir
 
 from triton.language.extra import libdevice
 from triton.language.extra.libdevice import fast_dividef as my_fast_dividef
 
 
-@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, tt.extern_elementwise")
+@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support tt.extern_elementwise at 13.1 release")
 @pytest.mark.parametrize("dtype_str", ["float32", "float64"])
 @pytest.mark.parametrize(
     "libdevice_fn, torch_special_fn",
@@ -43,7 +43,7 @@ def test_bessel(dtype_str, libdevice_fn, torch_special_fn, device):
     torch.testing.assert_close(y_ref, y_exp, equal_nan=True)
 
 
-@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, tt.extern_elementwise")
+@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support tt.extern_elementwise at 13.1 release")
 def test_libdevice_rename(device):
     # mark the import as used by this test
     _ = my_fast_dividef

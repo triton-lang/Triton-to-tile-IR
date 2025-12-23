@@ -8,105 +8,410 @@ on:
         type: string
 
 jobs:
-  integration-tests-nvidia:
+  build-docker:
+    runs-on: linux-amd64-cpu8
+    timeout-minutes: 90
+    outputs:
+      image-tag: ${{ steps.build-info.outputs.image-tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: "true"
+          lfs: true
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Get build info
+        id: build-info
+        run: |
+          # Convert repo name to lowercase for ghcr.io
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_TAG="ghcr.io/${REPO_LOWER}/triton-cuda:${{ github.run_id }}"
+          echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "Building image: ${IMAGE_TAG}"
+      - name: Check disk space
+        run: |
+          echo "=== Available disk space ==="
+          df -h
+      - name: Determine architecture and set dependency directory
+        id: arch-setup
+        run: |
+          ARCH=$(uname -m)
+          case "${ARCH}" in
+            x86_64|amd64) DEP_ARCH="x86" ;;
+            aarch64|arm64) DEP_ARCH="arm64" ;;
+            *)
+              echo "Unsupported architecture: ${ARCH}"
+              exit 1
+              ;;
+          esac
+          echo "dep-arch=${DEP_ARCH}" >> $GITHUB_OUTPUT
+          echo "Using dependency directory: cuda_dep_${DEP_ARCH}"
+      - name: Prepare build context
+        run: |
+          echo "=== Preparing build context ==="
+          TRITON_RELEASE_CTX_DIR="${{ github.workspace }}/docker_build_ctx"
+          mkdir -p "${TRITON_RELEASE_CTX_DIR}/src"
+
+          # Copy source (exclude large/unnecessary files)
+          echo "Copying source code..."
+          tar --exclude=.git \
+              --exclude=build \
+              --exclude=llvm-project \
+              --exclude=.llvm-project \
+              --exclude='*.tar' \
+              --exclude='docker_build_ctx' \
+              -cf - . | (cd "${TRITON_RELEASE_CTX_DIR}/src" && tar xf -)
+
+          # Copy Dockerfile to build context
+          cp third_party/tileir/scripts/build_helper/Dockerfile.release "${TRITON_RELEASE_CTX_DIR}/"
+
+          echo "=== Build context ready ==="
+          du -sh "${TRITON_RELEASE_CTX_DIR}"
+          df -h
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ github.workspace }}/docker_build_ctx
+          file: ${{ github.workspace }}/docker_build_ctx/Dockerfile.release
+          # Use default BASE_IMAGE from Dockerfile (nvcr.io/nvidia/cuda:13.1.0-devel-ubuntu22.04)
+          # This image contains tileiras which is required for TileIR backend
+          build-args: |
+            BASE_IMAGE=nvcr.io/nvidia/cuda:13.1.0-devel-ubuntu22.04
+          tags: ${{ steps.build-info.outputs.image-tag }}
+          push: true
+          # Cache Docker layers and BuildKit cache mounts (including ccache)
+          cache-from: type=gha,scope=triton-cuda-build
+          cache-to: type=gha,mode=max,scope=triton-cuda-build
+      - name: Cleanup build context
+        if: always()
+        run: |
+          echo "=== Cleaning up build context ==="
+          rm -rf ${{ github.workspace }}/docker_build_ctx
+          echo "=== Final disk usage ==="
+          df -h
+
+  integration-tests-default-backend:
+    needs: build-docker
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     # Let A100 and H100 continue even if GB200 fails, as it's a bit flaky
     continue-on-error: ${{ matrix.runner[0] == 'nvidia-gb200'}}
+    container:
+      image: ${{ needs.build-docker.outputs.image-tag }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --gpus all
     strategy:
       matrix:
         runner: ${{ fromJson(inputs.matrix) }}
     env:
       RUNNER_TYPE: ${{ matrix.runner[0] }}
-      TRITON_BUILD_WITH_CCACHE: "true"
-      TRITON_BUILD_WITH_CLANG_LLD: "TRUE"
-      TRITON_USE_ASSERT_ENABLED_LLVM: "TRUE"
       TRITON_DISABLE_LINE_INFO: 1
       PROTON_SKIP_PC_SAMPLING_TEST: 1
-      PYTHON: "python3"
-      CCACHE_COMPRESS: "true"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           submodules: "true"
-      - name: Compute cache keys
-        id: cache-key
+      - name: Display default backend environment info
         run: |
-          llvm_file="cmake/llvm-hash.txt"
-          nvidia_file="cmake/nvidia-toolchain-version.json"
-          json_file="cmake/json-version.txt"
+          echo "=== Default Backend Integration Tests ==="
+          nvidia-smi
+          python3 --version
+          pip list | grep -i triton
+          
+          echo "=== Debug: Check triton.backends ==="
+          python3 -c "
+          import triton
+          print(f'triton location: {triton.__file__}')
+          from triton.backends import BaseBackend
+          print(f'BaseBackend: {BaseBackend}')
+          " || echo "Import failed"
+      - name: Run lit tests
+        id: lit-tests
+        continue-on-error: true
+        working-directory: /workspace/triton-src
+        run: make test-lit
+      - name: Run python tests on CUDA
+        id: python-tests
+        working-directory: /workspace/triton-src
+        run: make NUM_PROCS=24 test-unit
+        continue-on-error: true
+      - name: Run distributed tests
+        id: distributed-tests
+        working-directory: /workspace/triton-src
+        run: make test-distributed
+        continue-on-error: true
+      - name: Run interpreter tests
+        id: interpreter-tests
+        if: ${{ matrix.runner[0] == 'linux-amd64-gpu-rtxpro6000-latest-1' }}
+        working-directory: /workspace/triton-src
+        run: make test-interpret
+        continue-on-error: true
+      - name: Run regression tests
+        id: regression-tests
+        working-directory: /workspace/triton-src
+        run: make test-regression
+        continue-on-error: true
+      - name: Run microbenchmark tests
+        id: microbenchmark-tests
+        # Microbenchmark never fail but running them gives us an easy way to track performance changes.
+        working-directory: /workspace/triton-src
+        run: make test-microbenchmark
+        continue-on-error: true
+      - name: Run C++ unittests
+        id: cpp-tests
+        working-directory: /workspace/triton-src
+        run: make test-cpp
+        continue-on-error: true
+      - name: Run Proton tests
+        id: proton-tests
+        working-directory: /workspace/triton-src
+        run: make test-proton
+        continue-on-error: true
+      - name: Check test results
+        if: always()
+        run: |
+          echo "=== Test Results Summary ==="
+          FAILED_TESTS=""
 
-          # Check if files exist before proceeding
-          if [[ ! -f "$llvm_file" || ! -f "$nvidia_file" || ! -f "$json_file" ]]; then
-            echo "Error: Required dependency files are missing."
+          if [ "${{ steps.lit-tests.outcome }}" == "failure" ]; then
+            echo "[FAILED] Lit tests"
+            FAILED_TESTS="${FAILED_TESTS}lit-tests "
+          else
+            echo "[PASSED] Lit tests"
+          fi
+
+          if [ "${{ steps.python-tests.outcome }}" == "failure" ]; then
+            echo "[FAILED] Python tests"
+            FAILED_TESTS="${FAILED_TESTS}python-tests "
+          else
+            echo "[PASSED] Python tests"
+          fi
+
+          if [ "${{ steps.distributed-tests.outcome }}" == "failure" ]; then
+            echo "[FAILED] Distributed tests"
+            FAILED_TESTS="${FAILED_TESTS}distributed-tests "
+          else
+            echo "[PASSED] Distributed tests"
+          fi
+
+          if [ "${{ steps.interpreter-tests.outcome }}" == "failure" ]; then
+            echo "[FAILED] Interpreter tests"
+            FAILED_TESTS="${FAILED_TESTS}interpreter-tests "
+          elif [ "${{ steps.interpreter-tests.outcome }}" == "success" ]; then
+            echo "[PASSED] Interpreter tests"
+          else
+            echo "[SKIPPED] Interpreter tests"
+          fi
+
+          if [ "${{ steps.regression-tests.outcome }}" == "failure" ]; then
+            echo "[FAILED] Regression tests"
+            FAILED_TESTS="${FAILED_TESTS}regression-tests "
+          else
+            echo "[PASSED] Regression tests"
+          fi
+
+          if [ "${{ steps.microbenchmark-tests.outcome }}" == "failure" ]; then
+            echo "[FAILED] Microbenchmark tests"
+            FAILED_TESTS="${FAILED_TESTS}microbenchmark-tests "
+          else
+            echo "[PASSED] Microbenchmark tests"
+          fi
+
+          if [ "${{ steps.cpp-tests.outcome }}" == "failure" ]; then
+            echo "[FAILED] C++ tests"
+            FAILED_TESTS="${FAILED_TESTS}cpp-tests "
+          else
+            echo "[PASSED] C++ tests"
+          fi
+
+          if [ "${{ steps.proton-tests.outcome }}" == "failure" ]; then
+            echo "[FAILED] Proton tests"
+            FAILED_TESTS="${FAILED_TESTS}proton-tests "
+          else
+            echo "[PASSED] Proton tests"
+          fi
+
+          if [ -n "$FAILED_TESTS" ]; then
+            echo ""
+            echo "FAILED: The following tests failed: $FAILED_TESTS"
+            exit 1
+          else
+            echo ""
+            echo "SUCCESS: All tests passed!"
+          fi
+
+  integration-tests-tileir-backend:
+    needs: build-docker
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    continue-on-error: true  # TileIR backend is experimental
+    container:
+      image: ${{ needs.build-docker.outputs.image-tag }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --gpus all
+    strategy:
+      matrix:
+        runner: [["linux-amd64-gpu-rtxpro6000-latest-1"]]  # Use same runner as regular tests
+    env:
+      RUNNER_TYPE: ${{ matrix.runner[0] }}
+      ENABLE_TILE: "1"  # Enable TileIR backend
+      TRITON_PRINT_AUTOTUNING: "1" # for debugging
+      TRITON_DISABLE_LINE_INFO: 1
+      PROTON_SKIP_PC_SAMPLING_TEST: 1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: "true"
+      - name: Display TileIR environment info
+        run: |
+          echo "=== TileIR Backend Integration Tests ==="
+          echo "ENABLE_TILE is set to: ${ENABLE_TILE}"
+          nvidia-smi
+          python3 --version
+          
+          echo "=== Debug: triton installation ==="
+          pip show triton || echo "triton not installed via pip"
+          pip list | grep -i triton
+          
+          echo "=== Debug: Check triton.backends ==="
+          python3 -c "
+          import sys
+          print('sys.path:')
+          for p in sys.path[:5]:
+              print(f'  {p}')
+          
+          import triton
+          print(f'triton location: {triton.__file__}')
+          
+          import triton.backends
+          print(f'triton.backends: {triton.backends}')
+          print(f'triton.backends.__file__: {getattr(triton.backends, \"__file__\", \"NO __file__\")}')
+          
+          from triton.backends import BaseBackend
+          print(f'BaseBackend: {BaseBackend}')
+          " || echo "Import failed - see error above"
+          
+          echo ""
+          echo "=== Debug: Check tileiras ==="
+          echo "CUDA_HOME: $CUDA_HOME"
+          echo "PATH: $PATH"
+          which tileiras || echo "tileiras not in PATH"
+          ls -la /usr/local/cuda/bin/tileiras 2>/dev/null || echo "/usr/local/cuda/bin/tileiras not found"
+          
+          python3 -c "
+          import os
+          from shutil import which
+          
+          print(f'CUDA_HOME: {os.getenv(\"CUDA_HOME\")}')
+          print(f'PATH: {os.getenv(\"PATH\")}')
+          print(f'which tileiras: {which(\"tileiras\")}')
+          
+          # Check tileiras version
+          cuda_home = os.getenv('CUDA_HOME')
+          if cuda_home:
+              path = os.path.join(cuda_home, 'bin', 'tileiras')
+              print(f'CUDA_HOME tileiras path: {path}')
+              print(f'exists: {os.path.exists(path)}')
+              if os.path.exists(path):
+                  import subprocess
+                  try:
+                      version = subprocess.check_output([path, '--version'], encoding='utf-8', stderr=subprocess.STDOUT)
+                      print(f'version output: {version}')
+                      print(f'\"release 13.1\" in version: {\"release 13.1\" in version}')
+                  except Exception as e:
+                      print(f'Error running tileiras: {e}')
+          
+          # Try to get tileiras path from conf
+          try:
+              from third_party.tileir.backend.conf import TileIREnvConf
+              tileiras = TileIREnvConf.get_tileiras_path()
+              print(f'TileIREnvConf.get_tileiras_path(): {tileiras}')
+          except Exception as e:
+              print(f'Error getting tileiras path: {e}')
+          "
+      - name: Run Python tutorials
+        id: tileir-tutorials
+        continue-on-error: true
+        working-directory: /workspace/triton-src
+        run: |
+          echo "=== Running Python tutorials ==="
+          python3 python/tutorials/01-vector-add.py
+          python3 python/tutorials/02-fused-softmax.py
+          python3 python/tutorials/04-low-memory-dropout.py
+          python3 python/tutorials/05-layer-norm.py
+          python3 python/tutorials/06-fused-attention.py
+          python3 python/tutorials/08-grouped-gemm.py
+          python3 python/tutorials/09-persistent-matmul.py
+
+      - name: Run Python unit tests
+        id: tileir-unit-tests
+        continue-on-error: true
+        working-directory: /workspace/triton-src
+        run: |
+          echo "=== Running Python unit tests ==="
+          python3 -m pytest python/test/unit/language/test_core.py -v
+
+
+      - name: Check Triton cache file suffixes
+        id: triton-cache-check
+        run: |
+          echo "=== Checking ~/.triton/cache for cache file suffixes ==="
+          CACHE_DIR="${HOME}/.triton/cache"
+          if [ ! -d "${CACHE_DIR}" ]; then
+            echo "Cache directory does not exist: ${CACHE_DIR}"
+            exit 1
+          fi
+          # Find files with .ttgir and .tileIR suffixes
+          TTI_COUNT=$(find "${CACHE_DIR}" -type f -name "*.ttgir" | wc -l)
+          TILEIR_FILES=$(find "${CACHE_DIR}" -type f -name "*.tileIR")
+          TILEIR_COUNT=$(echo "$TILEIR_FILES" | grep -c '\.tileIR$' || true)
+
+          echo "Number of .ttgir files in cache: ${TTI_COUNT}"
+          echo "Number of .tileIR files in cache: ${TILEIR_COUNT}"
+
+          if [ "${TTI_COUNT}" != "0" ]; then
+            echo "[FAILED] There MUST NOT be any .ttgir files in cache, but found: ${TTI_COUNT}"
+            find "${CACHE_DIR}" -type f -name "*.ttgir"
             exit 1
           fi
 
-          # Process the files if they exist
-          echo "llvm=$(cat $llvm_file | cut -c 1-8)" >> $GITHUB_OUTPUT
-          echo "nvidia=$(sha256sum $nvidia_file | cut -d ' ' -f 1)" >> $GITHUB_OUTPUT
-          echo "json=$(cat $json_file)" >> $GITHUB_OUTPUT
-        shell: bash
-      - name: Cache build dependencies
-        uses: actions/cache@v4
-        with:
-          # Note that we cannot use environment variables here given there is
-          # no shell to interpret them in the paths.
-          path: |
-            ~/.triton/llvm
-            ~/.triton/nvidia
-            ~/.triton/json
-          key: ${{ runner.os }}-${{ runner.arch }}-llvm-${{ steps.cache-key.outputs.llvm }}-nvidia-${{ steps.cache-key.outputs.nvidia }}-json-${{ steps.cache-key.outputs.json }}
-      - name: Inspect cache directories
-        run: |
-          mkdir -p ~/.triton
-          du -h -d 1 ~/.triton
+          if [ "${TILEIR_COUNT}" = "0" ]; then
+            echo "[FAILED] There are NO .tileIR files in cache."
+            exit 1
+          fi
 
-          mkdir -p ~/.ccache
-          du -h -d 1 ~/.ccache
-      - name: Update PATH
+          echo "[PASSED] No .ttgir files found, and .tileIR files exist in the cache."
+          echo "Sample .tileIR files:"
+          echo "$TILEIR_FILES" | head -n 5
+      - name: Check TileIR test results
+        if: always()
         run: |
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-      - name: Setup Python environment for GB200
-        if: ${{ matrix.runner[0] == 'nvidia-gb200' }}
-        run: |
-          echo "/venv/bin" >> $GITHUB_PATH
-          echo "VIRTUAL_ENV=/venv" >> $GITHUB_ENV
-          echo "PYTHONHOME=" >> $GITHUB_ENV
-      - name: Install Triton
-        env:
-          CUDA_HOME: "/usr/local/cuda"
-        run: |
-          nproc
-          nvidia-smi
-          echo "PATH is '$PATH'"
-          ccache --zero-stats
-          make dev-install
-      - name: CCache Stats
-        run: ccache --print-stats
-      - name: Run lit tests
-        run: make test-lit
-      - name: Run python tests on CUDA
-        run: make NUM_PROCS=24 test-unit
-      - name: Run distributed tests
-        run: make test-distributed
-      - name: Run interpreter tests
-        if: ${{ matrix.runner[0] == 'nvidia-h100' }}
-        run: make test-interpret
-      - name: Run regression tests
-        run: make test-regression
-      - name: Run microbenchmark tests
-        # Microbenchmark never fail but running them gives us an easy way to track performance changes.
-        run: make test-microbenchmark
-      - name: Run C++ unittests
-        run: make test-cpp
-      - name: Run Proton tests
-        run: make test-proton
-      - name: Inspect cache directories
-        run: |
-          mkdir -p ~/.triton
-          du -h -d 1 ~/.triton
-
-          mkdir -p ~/.ccache
-          du -h -d 1 ~/.ccache
+          echo "=== TileIR Backend Test Results Summary ==="
+          if [ "${{ steps.tileir-tutorials.outcome }}" != "success" ]; then
+            echo "[FAILED] TileIR: Tutorials failed"
+            FAILED_TILEIR_TESTS="tutorials"
+          fi
+          if [ "${{ steps.tileir-unit-tests.outcome }}" != "success" ]; then
+            echo "[FAILED] TileIR: Unit tests failed"
+            FAILED_TILEIR_TESTS="${FAILED_TILEIR_TESTS} unit-tests"
+          fi
+          if [ -n "$FAILED_TILEIR_TESTS" ]; then
+            echo ""
+            echo "FAILED: The following TileIR tests failed: $FAILED_TILEIR_TESTS"
+            exit 1
+          else
+            echo "SUCCESS: All TileIR integration tests passed."
+          fi

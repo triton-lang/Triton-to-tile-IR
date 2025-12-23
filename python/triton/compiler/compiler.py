@@ -76,10 +76,7 @@ class ASTSource:
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
     def make_ir(self, target: GPUTarget, options, codegen_fns, module_map, context):
-        if os.environ.get("ENABLE_TILE", "0") == "1":
-            from ..backends.cutile.code_generator import ast_to_ttir
-        else:
-            from .code_generator import ast_to_ttir
+        from .code_generator import ast_to_ttir
         return ast_to_ttir(self.fn, self, context=context, options=options, codegen_fns=codegen_fns,
                            module_map=module_map)
 
@@ -165,8 +162,8 @@ def filter_traceback(e: BaseException):
 
     # If a user has a file that matches one of these, they're out of luck.
     BAD_FILES = [
-        # [Diff] add cutile code_generator.py to the bad files for compile error test
-        "/triton/backends/cutile/code_generator.py",
+        # [Diff] add tileir code_generator.py to the bad files for compile error test
+        "/triton/backends/tileir/code_generator.py",
         "/triton/compiler/code_generator.py",
         "/ast.py",
     ]
@@ -232,10 +229,9 @@ def compile(src, target=None, options=None, _env_vars=None):
     compilation_listener = knobs.compilation.listener
     if compilation_listener:
         timer = CompileTimer()
-
     if os.environ.get("ENABLE_TILE", "0") == "1" and target is not None and target.backend == "cuda":
-        # torch.compile will set the target to cuda, but we need to compile the kernel for cutile
-        target = GPUTarget("cutile", target.arch, target.warp_size)
+        # torch.compile will set the target to cuda, but we need to compile the kernel for tileir
+        target = GPUTarget("tileir", target.arch, target.warp_size)
 
     if target is None:
         target = driver.active.get_current_target()
@@ -462,7 +458,7 @@ class CompiledKernel:
         # This is to setup a proper driver type when called from the torch.compile stack.
         #
         # NOTE: Ideally we would check both torch.compiler.is_compiling() and ENABLE_TILE to
-        # determine if we are in the Dynamo world and should use the CuTileDriver. However, when
+        # determine if we are in the Dynamo world and should use the TileIRDriver. However, when
         # called from Inductor async compile, the torch.compiler.is_compiling() flag will always
         # return false and cannot accurately reflect the compilation status. We thus to check the
         # ENABLE_TILE only.
@@ -470,8 +466,8 @@ class CompiledKernel:
         # TODO: Remove this hardcode once we find a proper way to preset driver type when
         # used in conjunction with torch.compile.
         if os.environ.get("ENABLE_TILE") == "1":
-            from ..backends.cutile.driver import GlobalCuTileDriver
-            driver.set_active(GlobalCuTileDriver)
+            from ..backends.tileir.driver import GlobalTileIRDriver
+            driver.set_active(GlobalTileIRDriver)
 
         device = driver.active.get_current_device()
         # create launcher

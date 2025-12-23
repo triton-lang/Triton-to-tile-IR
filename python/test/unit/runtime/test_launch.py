@@ -7,7 +7,7 @@ import os
 import torch
 import triton
 import triton.language as tl
-from triton._internal_testing import is_cuda, is_hip
+from triton._internal_testing import is_cuda, is_hip, is_tileir
 
 
 def test_metadata() -> None:
@@ -153,6 +153,8 @@ def test_multiple_hooks() -> None:
 ])
 def test_launch_with_options(options) -> None:
     if "extern_libs" in options:
+        if is_tileir():
+            pytest.skip("tileir backend doesn't support extern_libs")
         # copied from tutorials/07-extern-functions.py
         current_dir = pathlib.Path(os.path.dirname(os.path.abspath(__file__)))
         if is_cuda():

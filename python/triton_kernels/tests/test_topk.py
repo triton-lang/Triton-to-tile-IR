@@ -2,7 +2,7 @@ import pytest
 import torch
 from triton_kernels.topk import topk, topk_torch
 from triton_kernels.testing import assert_equal, assert_close
-from triton_kernels.target_info import is_cutile
+from triton_kernels.target_info import is_tileir
 
 
 @pytest.mark.parametrize("n_rows", [1, 7, 256, 300])
@@ -11,9 +11,9 @@ from triton_kernels.target_info import is_cutile
 @pytest.mark.parametrize("apply_softmax", [True, False])
 @pytest.mark.parametrize("dtype", ["float16", "bfloat16", "float32"])
 def test_topk(n_rows, n_cols, k, apply_softmax, dtype):
-    if (k == 8 and n_cols == 128) and is_cutile():
+    if (k == 8 and n_cols == 128) and is_tileir():
         pytest.skip(
-            "skip for cutile, compilation time causes timeout. see jira https://jirasw.nvidia.com/browse/CFK-31185")
+            "skip for tileir, compilation time causes timeout. see jira https://jirasw.nvidia.com/browse/CFK-31185")
 
     device = "cuda"
     torch.manual_seed(0)

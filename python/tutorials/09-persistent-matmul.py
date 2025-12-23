@@ -57,7 +57,7 @@ def device_blas_name():
 
 
 def supports_tma():
-    return is_cuda() and torch.cuda.get_device_capability()[0] >= 9
+    return (is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] >= 9
 
 
 def is_hopper():
@@ -65,7 +65,7 @@ def is_hopper():
 
 
 def supports_ws():
-    return is_cuda() and torch.cuda.get_device_capability()[0] >= 9
+    return (is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] >= 9
 
 
 def _matmul_launch_metadata(grid, kernel, args):
@@ -88,15 +88,14 @@ HAS_WARP_SPECIALIZE = supports_ws() and HAS_TENSOR_DESC
 
 
 def matmul_get_configs(pre_hook=None):
-    if is_cutile():
+    if is_tileir():
         return [
             triton.Config({'BLOCK_SIZE_M': BM, 'BLOCK_SIZE_N': BN, "BLOCK_SIZE_K": BK, "GROUP_SIZE_M": 8}, num_stages=s,
-                          num_warps=w, num_ctas=num_ctas, pre_hook=pre_hook)
-            for BM in [128]
+                          num_ctas=num_ctas, pre_hook=pre_hook)
+            for BM in [128, 256]
             for BN in [128, 256]
             for BK in [64, 128]
-            for s in ([2, 3, 4])
-            for w in [4, 8]
+            for s in ([2, 3, 4, 5])
             for num_ctas in [1, 2]
         ]
     else:
@@ -379,19 +378,30 @@ def matmul_persistent(a, b):
 
 
 def matmul_tma_persistent_get_configs(pre_hook=None):
-    return [
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': BM, 'BLOCK_SIZE_N': BN, "BLOCK_SIZE_K": BK, "GROUP_SIZE_M": 8, "EPILOGUE_SUBTILE":
-                SUBTILE
-            }, num_stages=s, num_warps=w, pre_hook=pre_hook)  #
-        for BM in [128]  #
-        for BN in [128, 256]  #
-        for BK in [64, 128]  #
-        for s in ([2, 3, 4])  #
-        for w in [4, 8]  #
-        for SUBTILE in [True, False]  #
-    ]
+    if is_tileir():
+        return [
+            triton.Config({'BLOCK_SIZE_M': BM, 'BLOCK_SIZE_N': BN, "BLOCK_SIZE_K": BK, "GROUP_SIZE_M": 8, "EPILOGUE_SUBTILE": False}, num_stages=s,
+                          num_ctas=num_ctas, pre_hook=pre_hook)
+            for BM in [128, 256]
+            for BN in [128, 256]
+            for BK in [64, 128]
+            for s in ([2, 3, 4, 5])
+            for num_ctas in [1, 2]
+        ]
+    else:
+        return [
+            triton.Config(
+                {
+                    'BLOCK_SIZE_M': BM, 'BLOCK_SIZE_N': BN, "BLOCK_SIZE_K": BK, "GROUP_SIZE_M": 8, "EPILOGUE_SUBTILE":
+                    SUBTILE
+                }, num_stages=s, num_warps=w, pre_hook=pre_hook)  #
+            for BM in [128]  #
+            for BN in [128, 256]  #
+            for BK in [64, 128]  #
+            for s in ([2, 3, 4])  #
+            for w in [4, 8]  #
+            for SUBTILE in [True, False]  #
+        ]
 
 
 @triton.autotune(
@@ -748,8 +758,8 @@ if __name__ == "__main__":
     parser.add_argument("--prec", type=str, choices=["fp8", "fp16"], default="fp16")
     args = parser.parse_args()
 
-    if args.prec == 'fp8' and (not hasattr(torch, "float8_e4m3fn") or not is_cuda()):
-        print("This example requires CUDA/HIP with fp8 support.")
+    if args.prec == 'fp8' and (not hasattr(torch, "float8_e4m3fn") or not (is_cuda() or is_tileir())):
+        print("This example requires CUDA with fp8 support.")
     else:
         dtype = torch.float8_e4m3fn if args.prec == 'fp8' else torch.float16
 

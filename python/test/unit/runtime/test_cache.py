@@ -11,7 +11,7 @@ import torch
 
 import triton
 import triton.language as tl
-from triton._internal_testing import is_hip
+from triton._internal_testing import is_hip, is_tileir
 
 
 @triton.jit
@@ -384,6 +384,7 @@ def test_no_cache_module_as_global():
 BUILTIN_AS_GLOBAL = tl.int32
 
 
+@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support builtin as global at 13.1 release")
 def test_cache_builtin_as_global():
     global BUILTIN_AS_GLOBAL
 
@@ -502,6 +503,7 @@ def add_fn(a, b, o, N: tl.constexpr):
     tl.store(o + idx, tl.load(a + idx) + tl.load(b + idx))
 
 
+@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support noinline at 13.1 release")
 def test_jit_noinline(device) -> None:
 
     @triton.jit

@@ -4,6 +4,7 @@ from torch.testing import assert_close
 
 import triton
 import triton.language as tl
+from triton._internal_testing import is_tileir
 
 dtype_mapping = {
     'float16': torch.float16,
@@ -35,6 +36,7 @@ def add_kernel(
 
 @pytest.mark.parametrize('SIZE,BLOCK_SIZE,dtype_str',
                          [(98432, 1024, dtype_str) for dtype_str in ['float16', 'float32']])
+@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support make_block_ptr")
 def test_add(SIZE, BLOCK_SIZE, dtype_str):
     dtype = dtype_mapping[dtype_str]
     output = torch.empty(SIZE, device='cuda', dtype=dtype)
@@ -69,6 +71,7 @@ def load_reduce_kernel(
 
 
 @pytest.mark.parametrize('BLOCK_M,BLOCK_N,dtype_str', [(128, 64, dtype_str) for dtype_str in ['float16']])
+@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support make_block_ptr")
 def test_load_reduce(BLOCK_M, BLOCK_N, dtype_str):
     dtype = dtype_mapping[dtype_str]
     x = torch.randn((BLOCK_M, BLOCK_N), device='cuda', dtype=dtype)

@@ -17,7 +17,7 @@ from triton._C.libtriton import ir
 
 # Stub target for testing the frontend.
 if os.environ.get("ENABLE_TILE", "0") == "1":
-    stub_target = GPUTarget("cutile", 100, 32)
+    stub_target = GPUTarget("tileir", 100, 32)
 else:
     stub_target = GPUTarget("cuda", 100, 32)
 

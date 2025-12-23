@@ -13,7 +13,7 @@ DEFAULT_PROFILE_NAME = "proton"
 
 def _select_backend() -> str:
     backend = triton.runtime.driver.active.get_current_target().backend
-    if backend == "cuda" or backend == "cutile":
+    if backend == "cuda" or backend == "tileir":
         return "cupti"
     elif backend == "hip":
         return "roctracer"
@@ -105,7 +105,7 @@ def start(
     # Convert mode to its string representation for libproton's runtime
     mode_str = _get_mode_str(backend, mode)
     assert not (backend == "instrumentation" and triton.runtime.driver.active.get_current_target().backend
-                == "cutile"), "instrumentation for cutile backend is not in current plan"
+                == "tileir"), "instrumentation for tileir backend is not in current plan"
 
     _check_env(backend)
 

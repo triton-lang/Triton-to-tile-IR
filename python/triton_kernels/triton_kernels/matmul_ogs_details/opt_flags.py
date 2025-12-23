@@ -376,9 +376,9 @@ def make_opt_flags(
     backend = triton.runtime.driver.active.get_current_target().backend
     if backend == "hip":
         return make_default_opt_flags_amd(*args)
-    if backend == "cuda" or backend == "cutile":
+    if backend == "cuda" or backend == "tileir":
         return make_default_opt_flags_nvidia(*args)
     # [diff]
     import pytest
-    pytest.xfail(f"make_opt_flags not supported for cutile backend, see jira https://jirasw.nvidia.com/browse/CFK-30766")
+    pytest.xfail(f"make_opt_flags not supported for tileir backend, see jira https://jirasw.nvidia.com/browse/CFK-30766")
     assert False

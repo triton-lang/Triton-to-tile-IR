@@ -5,10 +5,10 @@ from ..backends import backends, DriverBase
 
 
 def _create_driver() -> DriverBase:
-    # If tile is explicitly enabled, force CuTileDriver
+    # If tile is explicitly enabled, force TileIRDriver
     if os.environ.get("ENABLE_TILE", "0") == "1":
-        from ..backends.cutile.driver import CuTileDriver
-        return CuTileDriver()
+        from ..backends.tileir.driver import TileIRDriver
+        return TileIRDriver()
 
     # Otherwise, auto-select from active drivers
     active_driver_classes = [x.driver for x in backends.values() if x.driver.is_active()]
@@ -29,16 +29,16 @@ def _create_driver() -> DriverBase:
 
     # 2) Then prefer triton-cuda-tile if available
     try:
-        from ..backends.cutile.driver import CuTileDriver
+        from ..backends.tileir.driver import TileIRDriver
         for dc in active_driver_classes:
-            if dc is CuTileDriver:
-                return CuTileDriver()
+            if dc is TileIRDriver:
+                return TileIRDriver()
     except Exception:
         pass
 
     # 3) Fallback: pick the first and warn via exception message to guide users
     raise RuntimeError(f"{len(active_driver_classes)} active drivers ({active_driver_classes}). "
-                       "Set ENABLE_TILE=1 to force cutile or call "
+                       "Set ENABLE_TILE=1 to force tileir or call "
                        "triton.runtime.driver.set_active(...) before use.")
 
 

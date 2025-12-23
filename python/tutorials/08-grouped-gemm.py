@@ -38,13 +38,15 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 def is_cuda():
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
+def is_tileir():
+    return triton.runtime.driver.active.get_current_target().backend == "tileir"
 
 def supports_tma():
-    return is_cuda() and torch.cuda.get_device_capability()[0] >= 9
+    return (is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] >= 9
 
 
 def num_sms():
-    if is_cuda():
+    if is_cuda() or is_tileir():
         return torch.cuda.get_device_properties("cuda").multi_processor_count
     return 148
 

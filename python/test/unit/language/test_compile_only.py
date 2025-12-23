@@ -3,11 +3,11 @@ import triton.language as tl
 from triton.backends.compiler import GPUTarget
 import re
 from triton.compiler import ASTSource
-from triton._internal_testing import is_cutile
+from triton._internal_testing import is_tileir
 import pytest
 
 
-@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, ptx")
+@pytest.mark.skipif(is_tileir(), reason="tileir skip ptx test")
 def test_compile_only_sm100() -> None:
 
     @triton.jit
@@ -23,7 +23,7 @@ def test_compile_only_sm100() -> None:
     assert ".address_size 64" in ptx
 
 
-@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, ttgir")
+@pytest.mark.skipif(is_tileir(), reason="tileir skip ttgir test")
 def test_compile_only_dot() -> None:
 
     @triton.jit
@@ -79,7 +79,7 @@ def test_compile_only_dot() -> None:
     assert k.asm["cubin"] != b""
 
 
-@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, ttgir")
+@pytest.mark.skipif(is_tileir(), reason="tileir skip ttgir test")
 def test_compile_only_k_loop() -> None:
 
     @triton.jit
@@ -125,7 +125,7 @@ def test_compile_only_k_loop() -> None:
     assert k.asm["cubin"] != b""
 
 
-@pytest.mark.skipif(is_cutile(), reason="Skip for cutile, dot_scaled")
+@pytest.mark.skipif(is_tileir(), reason="tileir skip dot_scaled at 13.1 release")
 def test_compile_only_dot_mxfp() -> None:
 
     @triton.jit

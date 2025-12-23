@@ -6,6 +6,7 @@ from triton.language.target_info import (
     cuda_capability_geq,
     is_cuda,
     is_hip,
+    is_tileir,
     is_hip_cdna3,
     is_hip_cdna4,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "has_tma_gather",
     "has_native_mxfp",
     "is_cuda",
+    "is_tileir",
     "is_hip",
     "is_hip_cdna3",
     "is_hip_cdna4",

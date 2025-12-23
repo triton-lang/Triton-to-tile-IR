@@ -1,6 +1,6 @@
 import pytest
 import torch
-from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4
+from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4, is_tileir
 
 
 @pytest.mark.parametrize("m, n, k", [(16, 16, 16), (32, 16, 16), (16, 32, 16), (16, 16, 32)])
@@ -8,7 +8,7 @@ from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4
 def test_blaslt(m, n, k, dtype_str, device):
     dtype = getattr(torch, dtype_str)
 
-    if is_cuda():
+    if is_cuda() or is_tileir():
         from triton._C.libtriton import nvidia as vendor
         if dtype_str == "float8_e4m3fnuz":
             pytest.skip("float8_e4m3fnuz is not supported on CUDA")

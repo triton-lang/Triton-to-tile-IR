@@ -3,6 +3,33 @@
 |-------------------- | -------------------- |
 | [![Documentation](https://github.com/triton-lang/triton/actions/workflows/documentation.yml/badge.svg)](https://triton-lang.org/) | [![Wheels](https://github.com/triton-lang/triton/actions/workflows/wheels.yml/badge.svg)](https://github.com/triton-lang/triton/actions/workflows/wheels.yml) |
 
+# Triton TileIR
+
+## Build Instructions
+
+To build and install the Triton-TileIR backend, simply run:
+
+```bash
+pip install .
+```
+
+## Running
+
+Before using the backend, ensure you have CTK 13.1 installed and set the following environment variable:
+
+```bash
+export ENABLE_TILE=1
+```
+
+## Known Limitations
+
+- Some tests that are not supported by TileIR are not yet automatically skipped; as a result, you may see failures in certain unit tests.
+
+## Performance Tuning Tips
+
+For guidance on performance tuning, please refer to the detailed tips provided [here](third_party/tileir/PerformanceTuningTips.md).
+
+
 # Triton Conference 2025
 
 ![Triton Registration Banner](https://github.com/user-attachments/assets/b4b6972a-857c-417f-bf2c-f16f38a358c0)

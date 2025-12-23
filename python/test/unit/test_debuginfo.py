@@ -5,7 +5,7 @@ import torch
 
 import triton
 import triton.language as tl
-
+from triton._internal_testing import is_tileir
 
 @triton.jit
 def add_kernel(
@@ -41,6 +41,8 @@ def checkDbgInfo(llir, hasDbgInfo):
     ("1", "0", False),
 ])
 def test_triton_debuginfo_on(lineInfoKey, diLocalVarKey, hasDbgInfo, device, monkeypatch):
+    if is_tileir():
+        pytest.skip("tileir backend skip this test")
     lineInfoKeyName = "TRITON_DISABLE_LINE_INFO"
     diLocalVarKeyName = "LLVM_EXTRACT_DI_LOCAL_VARIABLES"
     if lineInfoKey is not None:

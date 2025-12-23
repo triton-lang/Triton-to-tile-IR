@@ -348,7 +348,7 @@ def test_mlp_mp(batch, dim1, dim2, n_expts_tot, n_expts_act, x_dtype, w_dtype, T
         pytest.skip("[TODO] HIP support for distributed MoE.")
     if torch.cuda.device_count() < parallelism:
         pytest.skip(f"Test requires at least {parallelism} GPUs.")
-    if is_cuda() and not cuda_capability_geq(9, 0):
+    if (is_cuda() or is_tileir()) and not cuda_capability_geq(9, 0):
         pytest.skip("Test requires CUDA compute capability >= 9.0.")
     if TP > 1:
         pytest.skip("[TODO] TP > 1 is not supported yet in distributed mode.")

@@ -4,6 +4,7 @@ import torch
 import triton
 from triton.tools.ragged_tma import create_ragged_descriptor, atomic_add_ragged, load_ragged, store_ragged
 from triton.tools.tensor_descriptor import TensorDescriptor
+from triton._internal_testing import is_tileir
 
 
 @pytest.mark.parametrize("M, BLOCK_M, expect_error", [(128, 32, False), (127, 32, False), (128, 31, True)])
@@ -71,6 +72,7 @@ def example_load_atomic_add_kernel(X, Y, x_off, y_off, x_size, y_size):
     "int8", "int16", "int32", "int64",  # signed integers
     "uint8", "uint16", "uint32", "uint64"  # unsigned integers
 ])
+@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support tma_reduce at 13.1")
 def test_ragged_tma(dtype):
 
     if not torch.cuda.is_available() or not torch.cuda.get_device_capability()[0] >= 9:

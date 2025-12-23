@@ -1486,7 +1486,7 @@ class tensor_descriptor_type(tensor_descriptor_base_type):
                                                                                     == other.strides_type)
 
 
-class cutile_tensor_descriptor_type(tensor_descriptor_type):
+class tileir_tensor_descriptor_type(tensor_descriptor_type):
 
     def __init__(self, block_type: block_type, shape_type: tuple_type, strides_type: tuple_type):
         super().__init__(block_type, shape_type, strides_type)
@@ -1502,7 +1502,7 @@ class cutile_tensor_descriptor_type(tensor_descriptor_type):
         shape = shape.values
         strides = strides.values
         # Support host tma function call
-        value = cutile_tensor_descriptor(handle, shape, strides, self.block_type, ptr)
+        value = tileir_tensor_descriptor(handle, shape, strides, self.block_type, ptr)
         return value, cursor
 
     def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
@@ -1539,18 +1539,18 @@ class tensor_descriptor(tensor_descriptor_base):
         self.strides._flatten_ir(handles)
 
 
-class cutile_tensor_descriptor(tensor_descriptor):
-    """A descriptor representing a tensor in global memory for cuTile.
+class tileir_tensor_descriptor(tensor_descriptor):
+    """A descriptor representing a tensor in global memory for tileIR.
     """
 
     def __init__(self, handle, shape: List[tensor], strides: List[tensor], block_type: block_type, ptr):
         """Not called by user code."""
         # We call super with the standard args
         super().__init__(handle, shape, strides, block_type)
-        # additional ptr field to satisfy cutile backend TensorDescriptor handling.
+        # additional ptr field to satisfy tileir backend TensorDescriptor handling.
         self.ptr = ptr
-        # Overwrite the type with cutile specific type
-        self.type = cutile_tensor_descriptor_type(
+        # Overwrite the type with tileir specific type
+        self.type = tileir_tensor_descriptor_type(
             block_type,
             shape_type=self.shape.type,
             strides_type=self.strides.type,

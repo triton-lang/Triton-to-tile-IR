@@ -129,6 +129,7 @@ class CUDAOptions:
     sanitize_overflow: bool = True
     arch: str = None
     instrumentation_mode: str = ""
+    occupancy: int = None # compatibility with tileir backend
 
     def __post_init__(self):
         default_libdir = Path(__file__).parent / 'lib'

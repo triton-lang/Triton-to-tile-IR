@@ -23,8 +23,6 @@ from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dic
 import os
 from .cache import get_cache_key
 from ..runtime.driver import driver
-from triton.backends.cutile.driver import GlobalCuTileDriver
-from triton.backends.nvidia.driver import GlobalNvidiaDriver
 from triton._C.libtriton import get_cache_invalidating_env_vars, native_specialize_impl, ir
 
 TRITON_MODULE = "triton.language"
@@ -360,19 +358,6 @@ def mangle_type(arg, specialize=False):
 
 class KernelInterface(Generic[T]):
     run: T
-    enable_tile = os.environ.get("ENABLE_TILE", "0") == "1"
-
-    def cutile_run(self, *args, grid, warmup, **kwargs):
-        try:
-            driver.set_active(GlobalCuTileDriver)
-            ret = self.run(grid=grid, warmup=False, *args, **kwargs)
-        except RuntimeError:
-            os.environ["ENABLE_TILE"] = "0"
-            driver.set_active(GlobalNvidiaDriver)
-            ret = self.run(grid=grid, warmup=False, *args, **kwargs)
-            os.environ["ENABLE_TILE"] = "1"
-            driver.set_active(GlobalCuTileDriver)
-        return ret
 
     def warmup(self, *args, grid, **kwargs):
         return self.run(grid=grid, warmup=True, *map(MockTensor.wrap_dtype, args), **kwargs)
@@ -386,8 +371,6 @@ class KernelInterface(Generic[T]):
         Hence JITFunction.__getitem__ returns a callable proxy that
         memorizes the grid.
         """
-        if os.environ.get("ENABLE_TILE", "0") == "1" or self.enable_tile:
-            return lambda *args, **kwargs: self.cutile_run(grid=grid, warmup=False, *args, **kwargs)
         return lambda *args, **kwargs: self.run(grid=grid, warmup=False, *args, **kwargs)
         # return cast(T, functools.partial(cast(Callable, self.run), grid=grid))
 
@@ -645,7 +628,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         name = self.fn.__qualname__
         module = self.fn.__module__
         arg_reprs = ", ".join([f"{param.name}: {ty}" for param, ty in zip(self.params, key[1])])
-        repr = f"{name}[num_warps={options.num_warps}, num_ctas={options.num_ctas}, num_stages={options.num_stages}, enable_fp_fusion={options.enable_fp_fusion}, launch_cooperative_grid={options.launch_cooperative_grid}]({arg_reprs})"
+        repr = f"{name}[num_warps={options.num_warps}, num_ctas={options.num_ctas}, num_stages={options.num_stages}, occupancy={options.occupancy}, enable_fp_fusion={options.enable_fp_fusion}, launch_cooperative_grid={options.launch_cooperative_grid}]({arg_reprs})"
         full_name = get_full_name(self.fn)
 
         specialization_data = serialize_specialization_data(full_name, signature, constants, configs[0], options, key)
@@ -657,6 +640,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
             'num_warps': options.num_warps,
             'num_ctas': options.num_ctas,
             'num_stages': options.num_stages,
+            'occupancy': options.occupancy,
             'enable_fp_fusion': options.enable_fp_fusion,
             'launch_cooperative_grid': options.launch_cooperative_grid,
             'extern_libs': options.extern_libs,
