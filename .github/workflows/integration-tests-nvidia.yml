@@ -76,7 +76,7 @@ jobs:
           du -sh "${TRITON_RELEASE_CTX_DIR}"
           df -h
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: ${{ github.workspace }}/docker_build_ctx
           file: ${{ github.workspace }}/docker_build_ctx/Dockerfile.release
