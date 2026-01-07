@@ -15,7 +15,7 @@ export ENABLE_TILE=1
 
 ## Known functional issues:
 CUDA TileIR now only supports an unordered memory model, where the global memory access ops by default are not ensured with an access ordering. When the user requires for an explicit memory access ordering, memory token semantics are provided for users to control.
-However, this MR only contains the APIs compatible with current Triton APIs for existing triton kernels. The support of the memory token will need to extend the current triton APIs. We plan to file another MR (extending Triton APIs to support cuda_tile memory model) later.
+However, current implementation only contains the APIs compatible with current Triton APIs for existing triton kernels. The support of the memory token will need to extend the current triton APIs. We plan to file another MR (extending Triton APIs to support cuda_tile memory model) later.
 
 At this stage, the following workloads may result in wrong results if not changing the script:
 - when there is memory aliasing between different global memory access Ops.
@@ -41,7 +41,7 @@ Potential ways to resolve this in the future (to be discussed later)
 ### Triton’s core files changes:
 
 1. When `ENABLE_TILE=1`, the default CUDA target is switched to the CUDA TileIR target. Changes are made to `driver.py` and `compiler.py`.
-2. When a compilation bug occurs with the CUDA TileIR backend, it falls back to the NVIDIA OSS backend. Main changes include `jit.py` and `nvidia/backend/driver.py`.
+2. When a compilation bug occurs with the CUDA TileIR backend, it falls back to the NVIDIA PTX backend. Main changes include `jit.py` and `nvidia/backend/driver.py`.
 3. Support for lowering Triton host TMA APIs to CUDA TileIR's TMA APIs. Triton provides both host and device TMA implementations, but CUDA TileIR only has the device implementation (internally, the CUDA TileIR compiler determines whether to use host or device; however, in the language, only the kernel-level API exists). Main files modified: `core.py`, `semantic.py`, `tensor_descriptor.py`.
 4. CUDA TileIR disable approx by default. To enable approx, pls use `export TILEIR_ENABLE_APPROX=1`
 5. CUDA TileIR disable FTZ by default. To enable FTZ , pls use `export TILEIR_ENABLE_FTZ=1`
