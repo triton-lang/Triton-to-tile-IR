@@ -33,6 +33,16 @@ else()
   endif()
   set(CUDA_TILE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/tileir_src)
 
+  # Patch cuda-tile sources for LLVM API changes before building.
+  execute_process(
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/patch_bytecode_utils.sh ${CUDA_TILE_SOURCE_DIR}
+    WORKING_DIRECTORY ${CUDA_TILE_SOURCE_DIR}
+    RESULT_VARIABLE CUDA_TILE_PATCH_RESULT
+  )
+  if(NOT CUDA_TILE_PATCH_RESULT EQUAL 0)
+    message(FATAL_ERROR "cuda_tile patch failed with code: ${CUDA_TILE_PATCH_RESULT}")
+  endif()
+
   execute_process(
     COMMAND ${CMAKE_COMMAND} -E env LLVM_SYSPATH=${LLVM_SYSPATH} LLVM_EXTERNAL_LIT=${LLVM_SYSPATH}/bin/llvm-lit bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_cuda_tile.sh ${CUDA_TILE_SOURCE_DIR}
     WORKING_DIRECTORY ${CUDA_TILE_SOURCE_DIR}
