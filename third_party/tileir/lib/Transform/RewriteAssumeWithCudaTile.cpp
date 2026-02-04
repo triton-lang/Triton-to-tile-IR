@@ -16,8 +16,13 @@
 
 using namespace mlir;
 
-#define GEN_PASS_CLASSES
+// MLIR pass TableGen now uses per-pass macros (GEN_PASS_DEF_*).
+namespace mlir {
+namespace triton {
+#define GEN_PASS_DEF_REWRITEASSUMEWITHCUDATILE
 #include "Transform/Passes.h.inc"
+} // namespace triton
+} // namespace mlir
 
 namespace {
 
@@ -112,9 +117,10 @@ LogicalResult RewriteArithAssumeImpl(LLVM::AssumeOp assumeOp,
     auto cudaTilePtr = ttptr2cudaPtrOp.getResult(0);
     auto assumeCudaTileOp =
         cuda_tile::AssumeOp::create(rewriter, loc, cudaTilePtr, divByAttr);
-    Value newTtPtr = UnrealizedConversionCastOp::create(
-                         rewriter, loc, ttPtr.getType(), assumeCudaTileOp.getResult())
-                         .getResult(0);
+    Value newTtPtr =
+        UnrealizedConversionCastOp::create(rewriter, loc, ttPtr.getType(),
+                                           assumeCudaTileOp.getResult())
+            .getResult(0);
 
     newTtPtr.getDefiningOp()->setAttr("tt.divisibility", divisorAttr);
     // Don't replace uses in the cast tt.ptr to cuda_tile.ptr operation and
@@ -146,10 +152,10 @@ LogicalResult RewriteArithAssumeImpl(LLVM::AssumeOp assumeOp,
     auto cudaTileInt = int2tileIntOp.getResult(0);
     auto assumeCudaTileOp =
         cuda_tile::AssumeOp::create(rewriter, loc, cudaTileInt, divByAttr);
-    Value assumedInt =
-        UnrealizedConversionCastOp::create(rewriter, loc, intOrPtrToInt.getType(),
-                                           assumeCudaTileOp.getResult())
-            .getResult(0);
+    Value assumedInt = UnrealizedConversionCastOp::create(
+                           rewriter, loc, intOrPtrToInt.getType(),
+                           assumeCudaTileOp.getResult())
+                           .getResult(0);
 
     assumedInt.getDefiningOp()->setAttr("tt.divisibility", divisorAttr);
     // Don't replace uses in the cast tt.ptr to cuda_tile.ptr operation and
@@ -186,7 +192,8 @@ public:
 
 // Pass to rewrite llvm.intr.assume to cuda_tile.assume
 class RewriteAssumeWithCudaTilePass
-    : public RewriteAssumeWithCudaTileBase<RewriteAssumeWithCudaTilePass> {
+    : public ::mlir::triton::impl::RewriteAssumeWithCudaTileBase<
+          RewriteAssumeWithCudaTilePass> {
 public:
   void runOnOperation() override {
     MLIRContext *context = &getContext();
