@@ -21,17 +21,27 @@ if(DEFINED ENV{CUDA_TILE_INSTALL_DIR})
   set(CUDA_TILE_MLIR_INCLUDE_DIRS $ENV{CUDA_TILE_MLIR_INCLUDE_DIRS})
   set(HAVE_CUDA_TILE_INSTALL ON)
 else()
-  if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tileir_src/.git)
+  # Keep the cloned cuda-tile repo under the build tree (avoid polluting source tree).
+  set(CUDA_TILE_SOURCE_DIR ${CMAKE_CURRENT_BINARY_DIR}/tileir_src)
+
+  if(NOT EXISTS ${CUDA_TILE_SOURCE_DIR}/.git)
+    execute_process(
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}
+      RESULT_VARIABLE CUDA_TILE_MKDIR_RESULT
+    )
+    if(NOT CUDA_TILE_MKDIR_RESULT EQUAL 0)
+      message(FATAL_ERROR "Failed to create build directory: ${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
+
     execute_process(
       COMMAND git clone --depth 1 https://github.com/NVIDIA/cuda-tile tileir_src
-      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
       RESULT_VARIABLE CUDA_TILE_GIT_CLONE_RESULT
     )
     if(NOT CUDA_TILE_GIT_CLONE_RESULT EQUAL 0)
-      message(FATAL_ERROR "Failed to clone https://github.com/NVIDIA/cuda-tile into ${CMAKE_CURRENT_SOURCE_DIR}/tileir_src")
+      message(FATAL_ERROR "Failed to clone https://github.com/NVIDIA/cuda-tile into ${CUDA_TILE_SOURCE_DIR}")
     endif()
   endif()
-  set(CUDA_TILE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/tileir_src)
 
   # Patch cuda-tile sources for LLVM API changes before building.
   execute_process(
