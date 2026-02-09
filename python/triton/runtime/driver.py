@@ -1,45 +1,55 @@
 from __future__ import annotations
 import os
 
+import os
+
 from ..backends import backends, DriverBase
 
 
 def _create_driver() -> DriverBase:
-    # If tile is explicitly enabled, force TileIRDriver
+    # 1) Explicit selection by backend name.
+    selected = os.environ.get("TRITON_DEFAULT_BACKEND", None)
+    if selected:
+        if selected not in backends:
+            raise RuntimeError(f"Unknown backend device '{selected}'. Available backends: {list(backends.keys())}")
+        driver_cls = backends[selected].driver
+        if not driver_cls.is_active():
+            raise RuntimeError(f"Backend device '{selected}' is not active.")
+        return driver_cls()
+
+    # 2) Explicit opt-in to CUDA Tile IR (tileir).
     if os.environ.get("ENABLE_TILE", "0") == "1":
         from ..backends.tileir.driver import TileIRDriver
         return TileIRDriver()
 
-    # Otherwise, auto-select from active drivers
+    # 3) Otherwise auto-select from active drivers.
     active_driver_classes = [x.driver for x in backends.values() if x.driver.is_active()]
     if len(active_driver_classes) == 1:
         return active_driver_classes[0]()
     if len(active_driver_classes) == 0:
         raise RuntimeError("No active Triton backend drivers found.")
 
-    # Multiple active drivers: apply a deterministic preference
-    # 1) Prefer CUDA (nvidia) if available
+    # Multiple active drivers: apply a deterministic preference.
+    # Prefer CUDA (nvidia) if available, then CUDA Tile IR (tileir) if available.
     try:
         from ..backends.nvidia.driver import CudaDriver
-        for dc in active_driver_classes:
-            if dc is CudaDriver:
-                return CudaDriver()
+        if any((dc is CudaDriver for dc in active_driver_classes)):
+            return CudaDriver()
     except Exception:
         pass
 
-    # 2) Then prefer triton-cuda-tile if available
     try:
         from ..backends.tileir.driver import TileIRDriver
-        for dc in active_driver_classes:
-            if dc is TileIRDriver:
-                return TileIRDriver()
+        if any((dc is TileIRDriver for dc in active_driver_classes)):
+            return TileIRDriver()
     except Exception:
         pass
 
-    # 3) Fallback: pick the first and warn via exception message to guide users
-    raise RuntimeError(f"{len(active_driver_classes)} active drivers ({active_driver_classes}). "
-                       "Set ENABLE_TILE=1 to force tileir or call "
-                       "triton.runtime.driver.set_active(...) before use.")
+    raise RuntimeError(
+        f"{len(active_driver_classes)} active drivers ({active_driver_classes}). "
+        "Set TRITON_DEFAULT_BACKEND to select a backend, set ENABLE_TILE=1 to force CUDA Tile IR (tileir), "
+        "or call triton.runtime.driver.set_active(...) before use."
+    )
 
 
 class DriverConfig:

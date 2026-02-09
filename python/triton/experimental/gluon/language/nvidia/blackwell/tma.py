@@ -1,3 +1,4 @@
+import triton.experimental.gluon.language._core as ttgl
 from triton.experimental.gluon.language._core import builtin
 from triton.experimental.gluon.language.nvidia.hopper.tma import (
     async_copy_global_to_shared,
@@ -6,6 +7,7 @@ from triton.experimental.gluon.language.nvidia.hopper.tma import (
     tensor_descriptor,
     tensor_descriptor_type,
     make_tensor_descriptor,
+    _emit_alignment_check,
 )
 
 __all__ = [
@@ -18,25 +20,6 @@ __all__ = [
     "tensor_descriptor_type",
     "make_tensor_descriptor",
 ]
-
-
-def _check_gather_scatter(tensor_desc, x_offsets, smem, op_name, smem_name):
-    # Tensor descriptor must be 2D and layout must match the shared memory layout.
-    assert len(
-        tensor_desc.block_shape
-    ) == 2, f"async {op_name} requires a 2D tensor descriptor, but got one with rank {len(tensor_desc.block_shape)}"
-    assert tensor_desc.layout == smem.layout, f"tensor descriptor layout {tensor_desc.layout} does not match {smem_name} shared memory layout {smem.layout}"
-    # Row offsets must be 1D and have at least 8 rows.
-    assert len(
-        x_offsets.shape
-    ) == 1, f"async {op_name} requires a 1D tensor of row offsets, but got one with rank {len(x_offsets.shape)}"
-    assert x_offsets.shape[0] >= 8, f"async {op_name} requires at least 8 rows, but got {x_offsets.shape[0]}"
-    # Block shape must be [1, Y] where Y >= min_cols.
-    min_cols = 32 // tensor_desc.dtype.primitive_bitwidth * 8
-    assert tensor_desc.block_shape[
-        0] == 1, f"async {op_name} requires the tensor descriptor's block shape to have 1 row, but got {tensor_desc.block_shape}"
-    assert tensor_desc.block_shape[
-        1] >= min_cols, f"async {op_name} requires the tensor descriptor's block shape to have at least {min_cols} columns, but got {tensor_desc.block_shape[1]}"
 
 
 @builtin
@@ -52,11 +35,24 @@ def async_gather(tensor_desc, x_offsets, y_offset, barrier, result, pred=True, _
         result (tensor_memory_descriptor): Result shared memory, must have NVMMASharedLayout.
         pred (bool): Scalar predicate. Operation is skipped if predicate is False. Defaults to True.
     """
-    _check_gather_scatter(tensor_desc, x_offsets, result, "gather", "result")
+    if _semantic.builder.options.enable_iisan:
+        _emit_alignment_check(tensor_desc, (y_offset, ), "async_gather", "y_offset", _semantic=_semantic)
+
     pred = _semantic.to_tensor(pred)
     y_offset = _semantic.to_tensor(y_offset)
     _semantic.builder.create_async_tma_gather(tensor_desc.handle, x_offsets.handle, y_offset.handle, barrier.handle,
                                               result.handle, pred.handle)
+
+
+def _emit_scatter_nonnegative_check(x_offsets, y_offset, _semantic=None):
+    y_offset = ttgl.to_tensor(y_offset, _semantic=_semantic)
+    zero = ttgl.to_tensor(0, _semantic=_semantic)
+
+    is_nonnegative = y_offset.__ge__(zero, _semantic=_semantic)
+    ttgl.device_assert(is_nonnegative, "async_scatter y_offset cannot be negative", _semantic=_semantic)
+
+    is_nonnegative = x_offsets.__ge__(zero, _semantic=_semantic)
+    ttgl.device_assert(is_nonnegative, "async_scatter x_offsets cannot have any negative elements", _semantic=_semantic)
 
 
 @builtin
@@ -70,6 +66,9 @@ def async_scatter(tensor_desc, x_offsets, y_offset, src, _semantic=None):
         y_offset (int): Scalar Y offset.
         src (tensor_memory_descriptor): The source data, must be in NVMMASharedLayout.
     """
-    _check_gather_scatter(tensor_desc, x_offsets, src, "scatter", "source")
+    if _semantic.builder.options.enable_iisan:
+        _emit_alignment_check(tensor_desc, (y_offset, ), "async_scatter", "y_offset", _semantic=_semantic)
+        _emit_scatter_nonnegative_check(x_offsets, y_offset, _semantic=_semantic)
+
     y_offset = _semantic.to_tensor(y_offset)
     _semantic.builder.create_async_tma_scatter(tensor_desc.handle, x_offsets.handle, y_offset.handle, src.handle)

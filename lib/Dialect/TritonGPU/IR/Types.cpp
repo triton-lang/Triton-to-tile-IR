@@ -103,6 +103,8 @@ LogicalResult MemDescType::verify(function_ref<InFlightDiagnostic()> emitError,
     return emitError()
            << "shape must have power-of-2 and non-zero dimensions; got "
            << shape;
+  if (shape.front() == 0)
+    return emitError() << "shape has 0 dimension";
   if (allocShape.size() < shape.size())
     return emitError()
            << "alloc shape must have at least as many dimensions as shape";
@@ -190,9 +192,7 @@ LogicalResult MemDescType::verify(function_ref<InFlightDiagnostic()> emitError,
                            << ", got: " << ll.getOutDimSize(outDims[d]);
       }
     }
-  }
-
-  if (auto enc = dyn_cast<NVMMASharedEncodingAttr>(encoding)) {
+  } else if (auto enc = dyn_cast<NVMMASharedEncodingAttr>(encoding)) {
     SmallVector<int64_t> shapePerCTA(getShapePerCTA(enc, allocShape));
     auto blockShape = ArrayRef(shapePerCTA).take_back(enc.getRank());
     if (failed(getTMABlockShape(blockShape, enc.getElementBitWidth(),
@@ -200,6 +200,16 @@ LogicalResult MemDescType::verify(function_ref<InFlightDiagnostic()> emitError,
                                 enc.getTransposed(), /*packedSize=*/false,
                                 emitError)))
       return failure();
+  } else if (auto enc = dyn_cast<SharedLinearEncodingAttr>(encoding)) {
+    auto blockShape = ArrayRef(allocShape).take_back(enc.getRank());
+    const LinearLayout &ll = enc.getLinearLayout();
+    for (auto [dim, size, llSize] :
+         llvm::enumerate(blockShape, ll.getOutDimSizes())) {
+      if (size == llSize)
+        continue;
+      return emitError() << "Mismatch in expected shape for dimension " << dim
+                         << ". Expected: " << size << ", got: " << llSize;
+    }
   }
 
   return success();

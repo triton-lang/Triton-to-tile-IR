@@ -127,7 +127,7 @@ jobs:
           nvidia-smi
           python3 --version
           pip list | grep -i triton
-          
+
           echo "=== Debug: Check triton.backends ==="
           python3 -c "
           import triton
@@ -281,44 +281,44 @@ jobs:
           echo "ENABLE_TILE is set to: ${ENABLE_TILE}"
           nvidia-smi
           python3 --version
-          
+
           echo "=== Debug: triton installation ==="
           pip show triton || echo "triton not installed via pip"
           pip list | grep -i triton
-          
+
           echo "=== Debug: Check triton.backends ==="
           python3 -c "
           import sys
           print('sys.path:')
           for p in sys.path[:5]:
               print(f'  {p}')
-          
+
           import triton
           print(f'triton location: {triton.__file__}')
-          
+
           import triton.backends
           print(f'triton.backends: {triton.backends}')
           print(f'triton.backends.__file__: {getattr(triton.backends, \"__file__\", \"NO __file__\")}')
-          
+
           from triton.backends import BaseBackend
           print(f'BaseBackend: {BaseBackend}')
           " || echo "Import failed - see error above"
-          
+
           echo ""
           echo "=== Debug: Check tileiras ==="
           echo "CUDA_HOME: $CUDA_HOME"
           echo "PATH: $PATH"
           which tileiras || echo "tileiras not in PATH"
           ls -la /usr/local/cuda/bin/tileiras 2>/dev/null || echo "/usr/local/cuda/bin/tileiras not found"
-          
+
           python3 -c "
           import os
           from shutil import which
-          
+
           print(f'CUDA_HOME: {os.getenv(\"CUDA_HOME\")}')
           print(f'PATH: {os.getenv(\"PATH\")}')
           print(f'which tileiras: {which(\"tileiras\")}')
-          
+
           # Check tileiras version
           cuda_home = os.getenv('CUDA_HOME')
           if cuda_home:
@@ -333,7 +333,7 @@ jobs:
                       print(f'\"release 13.1\" in version: {\"release 13.1\" in version}')
                   except Exception as e:
                       print(f'Error running tileiras: {e}')
-          
+
           # Try to get tileiras path from conf
           try:
               from third_party.tileir.backend.conf import TileIREnvConf
