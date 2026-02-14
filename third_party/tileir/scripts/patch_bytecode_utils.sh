@@ -69,16 +69,3 @@ if [[ -f "${CUDATILE_CPP_PATH}" ]]; then
   patch_in_place "${CUDATILE_CPP_PATH}" \
     -e 's|ValueRange(), /\*attributes=\*/std::nullopt)|ValueRange(), /\*attributes=\*/llvm::ArrayRef<mlir::NamedAttribute>{})|g'
 fi
-
-# 4) Patch BytecodeReader.cpp for MLIR/LLVM api changes:
-# - DenseElementsAttr::isValidRawBuffer now takes (Type, ArrayRef, bool& isSplat); add isSplat.
-# - llvm::make_scope_exit is deprecated; use llvm::scope_exit.
-if [[ -f "${BYTECODE_READER_PATH}" ]]; then
-  echo "[patch] Patching: ${BYTECODE_READER_PATH}"
-  patch_in_place "${BYTECODE_READER_PATH}" \
-    -e 's|// Validate the buffer size and format\.|&\n    bool isSplat = false;|' \
-    -e 's/isValidRawBuffer(tileType, rawData))/isValidRawBuffer(tileType, rawData, isSplat))/g' \
-    -e 's/llvm::make_scope_exit/llvm::scope_exit/g'
-fi
-
-echo "[patch] DONE"
