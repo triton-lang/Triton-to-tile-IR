@@ -73,12 +73,19 @@ fi
 # 4) Patch BytecodeReader.cpp for MLIR/LLVM api changes:
 # - DenseElementsAttr::isValidRawBuffer now takes (Type, ArrayRef, bool& isSplat); add isSplat.
 # - llvm::make_scope_exit is deprecated; use llvm::scope_exit.
+# Only add isSplat / change isValidRawBuffer when upstream still uses the old 2-arg API,
+# so we do not double-insert when upstream cuda-tile already has the new API.
 if [[ -f "${BYTECODE_READER_PATH}" ]]; then
   echo "[patch] Patching: ${BYTECODE_READER_PATH}"
-  patch_in_place "${BYTECODE_READER_PATH}" \
-    -e 's|// Validate the buffer size and format\.|&\n    bool isSplat = false;|' \
-    -e 's/isValidRawBuffer(tileType, rawData))/isValidRawBuffer(tileType, rawData, isSplat))/g' \
-    -e 's/llvm::make_scope_exit/llvm::scope_exit/g'
+  if grep -q 'isValidRawBuffer(tileType, rawData))' "${BYTECODE_READER_PATH}"; then
+    patch_in_place "${BYTECODE_READER_PATH}" \
+      -e 's|// Validate the buffer size and format\.|&\n    bool isSplat = false;|' \
+      -e 's/isValidRawBuffer(tileType, rawData))/isValidRawBuffer(tileType, rawData, isSplat))/g'
+  fi
+  # scope_exit fix is independent; apply if present
+  if grep -q 'llvm::make_scope_exit' "${BYTECODE_READER_PATH}"; then
+    patch_in_place "${BYTECODE_READER_PATH}" -e 's/llvm::make_scope_exit/llvm::scope_exit/g'
+  fi
 fi
 
 echo "[patch] DONE"

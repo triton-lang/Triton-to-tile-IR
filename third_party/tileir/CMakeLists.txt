@@ -36,6 +36,8 @@ else()
     execute_process(
       COMMAND git clone --depth 1 https://github.com/NVIDIA/cuda-tile tileir_src
       WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+      # Track specific tile_ir source to avoid breaking change conflict with patch
+      COMMAND git checkout 8a775693b18303d6c696be6ffd06dadad1b32a8e
       RESULT_VARIABLE CUDA_TILE_GIT_CLONE_RESULT
     )
     if(NOT CUDA_TILE_GIT_CLONE_RESULT EQUAL 0)
