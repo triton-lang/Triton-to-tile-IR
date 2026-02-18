@@ -655,7 +655,8 @@ def get_package_dirs():
 
 
 def get_packages():
-    yield from find_packages(where="python")
+    # Exclude test/ from wheel to avoid W005/W009 (top-level "test" shadows stdlib)
+    yield from find_packages(where="python", exclude=["test", "test.*"])
 
     for backend in backends:
         yield f"triton.backends.{backend.name}"

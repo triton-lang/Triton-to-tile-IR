@@ -2,7 +2,6 @@ name: Integration Tests
 on:
   push:
     branches:
-      - "pull-request/[0-9]+"
       - "main"  # Main branch for this fork
   schedule:
     # Run nightly at 12 PM UTC
