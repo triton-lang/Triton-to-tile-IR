@@ -6,11 +6,20 @@ For raw Triton kernel tuning tips, see [PerformanceTuningTips.md](third_party/ti
 
 ## Environment Setup
 
-Before any Python import, set:
+Set both environment variables via `os.environ` **at the top of your script, before any `import helion` or `import triton`**:
 
-```bash
-export ENABLE_TILE=1
-export HELION_BACKEND=tileir
+```python
+import os
+os.environ["ENABLE_TILE"] = "1"
+os.environ["HELION_BACKEND"] = "tileir"
+
+# Optional: precision trade-offs for attention/softmax kernels
+os.environ["TILEIR_ENABLE_APPROX"] = "1"
+os.environ["TILEIR_ENABLE_FTZ"] = "1"
+
+# Now import helion/triton — they will pick up the TileIR backend
+import helion
+import helion.language as hl
 ```
 
 Verify:
@@ -243,21 +252,6 @@ export TILEIR_ENABLE_FTZ=1      # Enable flush-to-zero for denormals
 These can improve performance for **attention** and variant kernels with acceptable precision trade-offs.
 
 > **Note**: The tileiras compiler in CUDA 13.1 does not automatically optimize `exp.approx → ex2 + mulf`. For performance parity with PTX, explicitly rewrite `expOp` to use `ex2 + mulf`.
-
-### Recommended Environment Setup
-
-```bash
-# TileIR backend activation
-export ENABLE_TILE=1
-export HELION_BACKEND=tileir
-
-# Faster autotuning — kill bad configs early
-export HELION_AUTOTUNE_COMPILE_TIMEOUT=20
-
-# Optional: precision trade-offs for attention/softmax kernels
-export TILEIR_ENABLE_APPROX=1
-export TILEIR_ENABLE_FTZ=1
-```
 
 ## Debugging
 
