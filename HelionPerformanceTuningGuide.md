@@ -285,7 +285,7 @@ Usage with `@helion.kernel`:
 
 ```python
 @helion.kernel(
-    static_shapes=True,
+    ...
     autotune_benchmark_fn=do_bench_cudagraph_with_cache_clear,
 )
 def my_low_latency_kernel(...):
