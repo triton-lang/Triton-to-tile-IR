@@ -56,7 +56,7 @@ Remove these when porting from the Triton backend:
 ### 3. `num_ctas` — Enable 2CTA Mode for Wide GEMMs
 
 - **1** (default): Always safe.
-- **2**: Enables 2CTA mode MMA on Blackwell. Beneficial when GEMM tiles are wide (BM × BN ≥ 256 × 128). Can cause accuracy issues with small block sizes — verify correctness.
+- **2**: Enables 2CTA mode MMA on Blackwell. Beneficial when GEMM tiles are wide (BM × BN ≥ 256 × 128).
 
 ### 4. `num_stages` — Pipeline Depth as Cost Hint
 
@@ -151,9 +151,9 @@ Tuning priorities: `block_sizes[1]` (M_tile: 64-256), `block_sizes[2]` (KV_tile:
 ```python
 helion.Config(
     block_sizes=[128, 1024],   # rows, cols — cover full row if possible
-    num_stages=2,
+    num_stages=2,              # prefer a smaller value
     num_ctas=1,
-    occupancy=4,               # memory-bound
+    occupancy=4,               # memory-bound， set to 4 or larger value
     indexing="pointer",
 )
 ```
@@ -163,9 +163,9 @@ helion.Config(
 ```python
 helion.Config(
     block_sizes=[4, 1024],     # tokens, hidden
-    num_stages=2,
+    num_stages=2,              # prefer a smaller value
     num_ctas=1,
-    occupancy=4,
+    occupancy=4,               # memory-bound， set to 4 or larger value
     indexing="pointer",
 )
 ```
@@ -176,22 +176,6 @@ helion.Config(
 
 ```python
 @helion.kernel(config=helion.Config(...))
-def my_kernel(...): ...
-```
-
-### Seed + Autotune (recommended)
-
-Provide a known-good config as seed, let the autotuner explore neighbors:
-
-```python
-@helion.kernel(
-    configs=[helion.Config(
-        block_sizes=[128, 128, 32],
-        indexing="tensor_descriptor",
-        num_stages=4, num_ctas=1, occupancy=2,
-    )],
-    autotune_effort="medium",   # ~100 configs
-)
 def my_kernel(...): ...
 ```
 
@@ -211,25 +195,24 @@ def my_kernel(...): ...
 
 ### Effort Levels
 
-| Level | Configs | Use Case |
+| Level | Typical duration | Use Case |
 |-------|---------|----------|
-| `"none"` | 0 | Use provided config only |
-| `"low"` | ~20 | Quick exploration |
-| `"medium"` | ~100 | Good balance |
-| `"high"` | ~500+ | Thorough search |
+| `"none"` | Near zero | Use provided config only |
+| `"quick"` | Minutes | Quick exploration |
+| `"full"` | Tens of minutes | Thorough search |
 
-The autotuner searches: `block_sizes`, `num_stages` {1..10}, `num_ctas` {1,2}, `occupancy` {1,2,4,8}, `indexing`, `pid_type`, `l2_groupings`.
+The autotuner searches: `block_sizes`, `num_stages` {1..10}, `num_ctas` {1,2}, `occupancy` {1,2,4,8}, `indexing`, `pid_type`, `l2_groupings`...
 
 ## Porting Checklist: Triton Backend → TileIR
 
 1. Set environment: `ENABLE_TILE=1`, `HELION_BACKEND=tileir`
 2. Replace `indexing="block_ptr"` → `"tensor_descriptor"` (for dot kernels) or `"pointer"`
 3. Set `num_warps=4` (or remove — defaults to 4)
-4. Add TileIR knobs: `num_ctas=1`, `occupancy=2` as starting point
+4. Add TileIR knobs: `num_ctas=1`, `occupancy=1` as starting point
 5. Remove unsupported: `range_unroll_factors`, `range_multi_buffers`, `range_flattens`, `range_warp_specialize`, `load_eviction_policies`, `static_ranges`
-6. Widen `num_stages` range: TileIR supports 1-10 (vs Triton 1-4)
+6. Widen `num_stages` range: TileIR supports 1-10 (vs Triton 1-8)
 7. Test correctness: compare output against `torch` reference
-8. Benchmark: compare vs cuDNN / Triton backend baseline
+8. Benchmark: compare vs Triton backend baseline or others
 
 ```python
 # Before (Triton backend):
@@ -238,7 +221,52 @@ helion.Config(block_sizes=[128,128,32], num_warps=8, indexing="block_ptr",
 
 # After (TileIR backend):
 helion.Config(block_sizes=[128,128,32], num_warps=4, indexing="tensor_descriptor",
-              num_stages=4, num_ctas=1, occupancy=2)
+              num_stages=3, range_unroll_factors=[], load_eviction_policies=[""], num_ctas=1, occupancy=2)
+```
+
+## Useful Helion Environment Variables
+
+### `HELION_AUTOTUNE_COMPILE_TIMEOUT`
+
+Per-config compile timeout in seconds. During autotuning, bad configs (e.g. excessively large block sizes or deep pipelines) can cause the tileir backend to spend minutes on a single config. This variable sets a hard timeout to kill those slow compilations early, keeping autotune sweeps fast.
+
+- **Default**: `60` (seconds)
+- **Recommended**: `20` — aggressive enough to skip bad configs, generous enough for most valid configs
+
+```bash
+export HELION_AUTOTUNE_COMPILE_TIMEOUT=20
+```
+
+### `HELION_PRINT_OUTPUT_CODE`
+
+Print the generated Triton IR code to stdout. Useful for inspecting what Helion produces before it gets compiled.
+
+```bash
+HELION_PRINT_OUTPUT_CODE=1 python my_script.py
+```
+
+### `TILEIR_ENABLE_APPROX` / `TILEIR_ENABLE_FTZ`
+
+TileIR disables approximate math and flush-to-zero by default (unlike the Triton PTX backend). Enabling these can improve performance for attention and softmax kernels with acceptable precision trade-offs.
+
+```bash
+export TILEIR_ENABLE_APPROX=1   # Enable approximate math (e.g. fast exp)
+export TILEIR_ENABLE_FTZ=1      # Enable flush-to-zero for denormals
+```
+
+### Recommended Environment Setup
+
+```bash
+# TileIR backend activation
+export ENABLE_TILE=1
+export HELION_BACKEND=tileir
+
+# Faster autotuning — kill bad configs early
+export HELION_AUTOTUNE_COMPILE_TIMEOUT=20
+
+# Optional: precision trade-offs for attention/softmax kernels
+export TILEIR_ENABLE_APPROX=1
+export TILEIR_ENABLE_FTZ=1
 ```
 
 ## Debugging
@@ -261,9 +289,7 @@ print(use_tileir_tunables())   # should be True
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `InvalidConfig: Unsupported config keys` | `HELION_BACKEND=tileir` not set | Set env vars before import |
-| `block_ptr` silently stripped | TileIR doesn't support block_ptr | Use `"tensor_descriptor"` or `"pointer"` |
 | Autotuner NaN / accuracy mismatch | Some config combos produce wrong results | Autotuner filters automatically; verify manual configs |
-| Compile timeout | Large configs take >60s via tileiras | Reduce `block_sizes` or `num_stages` |
 | Stale cached kernels | Triton cache not cleared after config change | `rm -rf ~/.triton/cache` |
 
 ## References
