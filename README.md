@@ -1,5 +1,13 @@
 See [The original Triton README](https://github.com/triton-lang/Triton-to-tile-IR/blob/main/README.original.md) for more details.
 
+## ⚡ Helion Hackathon — Performance Tuning Guide
+
+**Using [Helion](https://github.com/pytorch/helion) with the TileIR backend?** Check out the **[Helion Performance Tuning Guide](HelionPerformanceTuningGuide.md)** for config recipes, autotuning strategies, and porting tips.
+
+**Triton-TileIR backend general optimization tips?** See the **[Performance Tuning Tips](third_party/tileir/PerformanceTuningTips.md)** for occupancy, num_ctas, TMA API preferences, num_stages tuning, and benchmark results.
+
+---
+
 # Triton CUDA Tile IR Backend
 This incubator repo adds the CUDA Tile IR backend to Triton. Users can enable the CUDA Tile IR backend by setting the environment variable `ENABLE_TILE=1`. The CUDA Tile IR backend in this repo only uses features available in CUDA 13.1.
 
