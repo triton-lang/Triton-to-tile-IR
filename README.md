@@ -4,6 +4,22 @@ See [The original Triton README](https://github.com/triton-lang/Triton-to-tile-I
 
 **Default backend is OSS PTX backend(Triton 3.6). Using [Helion](https://github.com/pytorch/helion) with the TileIR backend([whl](https://github.com/triton-lang/Triton-to-tile-IR/releases/download/v3.6.0-rc1/nvtriton-3.6.0-cp313-cp313-linux_x86_64.whl))?** Check out the **[Helion TileIR Backend Performance Tuning Guide](HelionPerformanceTuningGuide.md)** for config recipes, autotuning strategies, and porting tips.
 
+### ⚠️ How to Submit TileIR Result
+
+> **You MUST set both `ENABLE_TILE=1` and `HELION_BACKEND=tileir` via `os.environ` at the top of your `submission.py`, before any `import helion` or `import triton` statements.** These environment variables must be set before the modules are imported to take effect.
+
+```python
+import os
+os.environ["ENABLE_TILE"] = "1"
+os.environ["HELION_BACKEND"] = "tileir"
+
+# Now import helion/triton — they will pick up the TileIR backend
+import helion
+import helion.language as hl
+
+# ... rest of your submission code ...
+```
+
 **Triton-TileIR backend general optimization tips?** See the **[Performance Tuning Tips](third_party/tileir/PerformanceTuningTips.md)** for occupancy, num_ctas, TMA API preferences, num_stages tuning, and benchmark results.
 
 ---
