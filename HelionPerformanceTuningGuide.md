@@ -199,6 +199,107 @@ def my_kernel(...): ...
 
 The autotuner searches: `block_sizes`, `num_stages` {1..10}, `num_ctas` {1,2}, `occupancy` {1,2,4,8}, `indexing`, `pid_type`, `l2_groupings`...
 
+### Custom CUDA Graph Benchmark Function for Low-Latency Kernels
+
+Helion supports specifying a custom CUDA graph-based benchmark function via `autotune_benchmark_fn` in `@helion.kernel`. This is useful for low-latency kernels where more precise timing can better guide the autotuner's search. **Trade-off**: the benchmarking itself takes longer due to CUDA graph capture and cache clearing overhead.
+
+The following `do_bench_cudagraph_with_cache_clear` function uses CUDA graphs to eliminate launch overhead and explicitly clears the L2 cache between runs:
+
+```python
+from typing import Callable
+import torch
+import triton
+
+def do_bench_cudagraph_with_cache_clear(
+    fns: list[Callable[[], object]],
+    *,
+    repeat: int,
+    desc: str | None = None,
+) -> list[float]:
+    """
+    Benchmark with CUDA graphs and explicit L2 cache clearing.
+    Returns mean execution time in milliseconds per function.
+    """
+    ret = []
+    for fn in fns:
+        cache = triton.runtime.driver.active.get_empty_cache_for_benchmark()
+        clear_cache_fn = cache.zero_
+
+        with torch.cuda.stream(torch.cuda.Stream()):
+            # Warmup
+            clear_cache_fn()
+            fn()
+
+            # Estimate execution time
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record()
+            for _ in range(5):
+                clear_cache_fn()
+                fn()
+            end_event.record()
+            torch.cuda.synchronize()
+            estimate_ms = start_event.elapsed_time(end_event) / 5
+
+            n_repeat = 1000 if estimate_ms == 0 else max(1, int(repeat / estimate_ms))
+
+            # CUDA graph: cache clear + kernel
+            g = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(g):
+                for _ in range(n_repeat):
+                    clear_cache_fn()
+                    fn()
+            torch.cuda.synchronize()
+
+            # CUDA graph: cache clear only (to subtract overhead)
+            cache_clear_graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(cache_clear_graph):
+                for _ in range(n_repeat):
+                    clear_cache_fn()
+            torch.cuda.synchronize()
+
+            # Measure cache clear time
+            cache_clear_start = torch.cuda.Event(enable_timing=True)
+            cache_clear_end = torch.cuda.Event(enable_timing=True)
+            cache_clear_start.record()
+            cache_clear_graph.replay()
+            cache_clear_end.record()
+            torch.cuda.synchronize()
+            cache_clear_time = cache_clear_start.elapsed_time(cache_clear_end) / n_repeat
+
+            # Measure total time
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record()
+            g.replay()
+            end_event.record()
+            torch.cuda.synchronize()
+            total_time = start_event.elapsed_time(end_event) / n_repeat
+
+        # Pure kernel time = total - cache clear overhead
+        ret.append(total_time - cache_clear_time)
+    return ret
+```
+
+Usage with `@helion.kernel`:
+
+```python
+@helion.kernel(
+    static_shapes=True,
+    autotune_benchmark_fn=do_bench_cudagraph_with_cache_clear,
+)
+def my_low_latency_kernel(...):
+    ...
+```
+
+> **Tip**: For more stable and reproducible benchmark results, lock the GPU clock and power limit before running autotuning. This prevents frequency throttling from introducing noise into the timing measurements.
+> ```bash
+> # Lock GPU clocks (example: 1980 MHz on B200)
+> sudo nvidia-smi -lgc 1980,1980
+> # Lock power limit (example: 1000W on B200)
+> sudo nvidia-smi -pl 1000
+> ```
+
 ## Porting Checklist: Triton Backend → TileIR
 
 1. Set environment: `ENABLE_TILE=1`, `HELION_BACKEND=tileir`
