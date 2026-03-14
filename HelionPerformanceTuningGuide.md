@@ -72,19 +72,6 @@ Unlike Triton's PTX backend, TileIR treats `num_stages` as a **cost hint** rathe
 - Batch dimension → always 1 (Helion enforces for 3D operands)
 - TileIR treats tiles as **CGA-level representations** — consider larger block sizes than you would use on PTX
 
-### 6. Numerical Precision Options
-
-TileIR disables `approx` and `ftz` by default (unlike the Triton PTX backend):
-
-```bash
-export TILEIR_ENABLE_APPROX=1   # Enable approximate math
-export TILEIR_ENABLE_FTZ=1      # Enable flush-to-zero
-```
-
-These can improve performance for **attention** and variant kernels with acceptable precision trade-offs.
-
-> **Note**: The tileiras compiler in CUDA 13.1 does not automatically optimize `exp.approx → ex2 + mulf`. For performance parity with PTX, explicitly rewrite `expOp` to use `ex2 + mulf`.
-
 ## Per-Kernel Config Recipes
 
 ### Elementwise (add, mul, activation, cast)
@@ -253,6 +240,9 @@ TileIR disables approximate math and flush-to-zero by default (unlike the Triton
 export TILEIR_ENABLE_APPROX=1   # Enable approximate math (e.g. fast exp)
 export TILEIR_ENABLE_FTZ=1      # Enable flush-to-zero for denormals
 ```
+These can improve performance for **attention** and variant kernels with acceptable precision trade-offs.
+
+> **Note**: The tileiras compiler in CUDA 13.1 does not automatically optimize `exp.approx → ex2 + mulf`. For performance parity with PTX, explicitly rewrite `expOp` to use `ex2 + mulf`.
 
 ### Recommended Environment Setup
 
