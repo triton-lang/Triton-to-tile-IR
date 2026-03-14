@@ -2,7 +2,7 @@ See [The original Triton README](https://github.com/triton-lang/Triton-to-tile-I
 
 ## ⚡ Helion Hackathon — Performance Tuning Guide
 
-**Using [Helion](https://github.com/pytorch/helion) with the TileIR backend?** Check out the **[Helion Performance Tuning Guide](HelionPerformanceTuningGuide.md)** for config recipes, autotuning strategies, and porting tips.
+**Using [Helion](https://github.com/pytorch/helion) with the TileIR backend([whl](https://github.com/triton-lang/Triton-to-tile-IR/releases/download/v3.6.0-rc1/nvtriton-3.6.0-cp313-cp313-linux_x86_64.whl))?** Check out the **[Helion Performance Tuning Guide](HelionPerformanceTuningGuide.md)** for config recipes, autotuning strategies, and porting tips.
 
 **Triton-TileIR backend general optimization tips?** See the **[Performance Tuning Tips](third_party/tileir/PerformanceTuningTips.md)** for occupancy, num_ctas, TMA API preferences, num_stages tuning, and benchmark results.
 
