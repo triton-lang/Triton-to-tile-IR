@@ -20,6 +20,13 @@ import helion.language as hl
 # ... rest of your submission code ...
 ```
 
+### Troubleshooting: Porting Configs from Triton Backend
+
+> **Do NOT directly reuse Helion configs tuned for the Triton (PTX) backend.** The two backends have different tuning knobs with different semantics — directly porting configs will likely result in poor performance or tuning errors.
+
+- **Remove unsupported knobs**: TileIR does not support `range_unroll_factors`, `range_multi_buffers`, `range_flattens`, `range_warp_specialize`, `load_eviction_policies`, `static_ranges`, `indexing="block_ptr"`, etc. See the full list in the [Helion TileIR Performance Tuning Guide](HelionPerformanceTuningGuide.md#knobs-not-available-on-tileir).
+- **Recommended**: Start autotuning from scratch. The TileIR backend has its own set of knobs (`occupancy`, `num_ctas`, wider `num_stages` range) and the autotuner will explore them effectively.
+
 **Triton-TileIR backend general optimization tips?** See the **[Performance Tuning Tips](third_party/tileir/PerformanceTuningTips.md)** for occupancy, num_ctas, TMA API preferences, num_stages tuning, and benchmark results.
 
 ---
