@@ -370,9 +370,9 @@ def bench_layer_norm(M, N, dtype, provider, mode='backward', eps=1e-5, device=DE
                                                      grad_to_none=[x], rep=500)
     return gbps(ms), gbps(max_ms), gbps(min_ms)
 
-
-test_layer_norm(1151, 8192, torch.float16)
-bench_layer_norm.run(save_path='.', print_data=True)
+if __name__ == "__main__":
+    test_layer_norm(1151, 8192, torch.float16)
+    bench_layer_norm.run(save_path='.', print_data=True)
 
 # %%
 # References

@@ -17,6 +17,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+
 def format_compute_capability(capability: int) -> str:
     """
     Format compute capability for GPU architecture.
@@ -52,14 +54,15 @@ else:
             if delete:
                 shutil.rmtree(temp_dir)
 
+
 @dataclass(frozen=True)
 class TileIROptions:
     ########################## tileIR core options ##########################
-    backend_name: str = 'tileir'
+    backend_name: str = "tileir"
     arch: str = None
     num_ctas: int = 1
     # tileir use num_stages to control the op cost, see <tileir_link>
-    num_stages: int = 3 
+    num_stages: int = 3
     # tileir use opt_level to control the optimization level, see <tileir_link>
     opt_level: int = 3
     # tileir use occupancy to control the register usage, see <tileir_link>
@@ -72,14 +75,18 @@ class TileIROptions:
     supported_fp8_dtypes: Tuple[str] = ("fp8e5", "fp8e4b15")
     deprecated_fp8_dot_operand_dtypes: Tuple[str] = ()
     default_dot_input_precision: str = "tf32"
-    allowed_dot_input_precisions: Tuple[str] = ("tf32", "tf32x3", "bf16x3", "bf16x6", "ieee")
-    ir_override: Optional[str] = None  # filename of a user-defined IR (*.{ttir|tileir_ir})
+    allowed_dot_input_precisions: Tuple[str] = (
+        "tf32",
+        "tf32x3",
+        "bf16x3",
+        "bf16x6",
+        "ieee",
+    )
 
     ########################## compatibility with other backend ##########################
     # tileir doesn't need these flags, just for compatibility with other backend
     num_warps: int = 4
     cluster_dims: tuple = (1, 1, 1)
-    matrix_instr_nonkdim: int = 0
     instrumentation_mode: str = ""
     debug: bool = False
     sanitize_overflow: bool = True
@@ -93,6 +100,7 @@ class TileIROptions:
     # workaround for tileir memory model
     # currently we only autogen alias mem token, non-alias is not supported
     enable_autogen_alias_mem_token: bool = True
+
     # Dynamic environment-dependent properties
     # These properties influence the behavior of the tile compiler
     # and need to be updated automatically when accessed to reflect current environment settings
@@ -103,25 +111,19 @@ class TileIROptions:
     @property
     def enable_approx(self):
         return TileIREnvConf.enable_approx()
+
     def __post_init__(self):
-        assert (
-            self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0
-        ), "num_warps must be a power of 2"
+        assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, (
+            "num_warps must be a power of 2"
+        )
+
     def hash(self):
         hash_dict = dict(self.__dict__)
         # Get all property values from class __dict__
         for name, value in type(self).__dict__.items():
             if isinstance(value, property):
                 hash_dict[name] = getattr(self, name)
-        # Exclude num_warps from hash since it doesn't affect compilation output.
-        # This enables kernel cache sharing for configs that only differ in num_warps.
-        key = "_".join(
-            [
-                f"{name}-{val}"
-                for name, val in sorted(hash_dict.items())
-                if name != "num_warps"
-            ]
-        )
+        key = "_".join([f"{name}-{val}" for name, val in sorted(hash_dict.items())])
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
@@ -171,7 +173,7 @@ class TileIRBackend(BaseBackend):
 
         if "deprecated_fp8_dot_operand_dtypes" not in args:
             if capability >= 90:
-                args["deprecated_fp8_dot_operand_dtypes"] = ("fp8e4b15", )
+                args["deprecated_fp8_dot_operand_dtypes"] = ("fp8e4b15",)
 
         if "enable_fp_fusion" not in args:
             args["enable_fp_fusion"] = os.getenv("TRITON_DEFAULT_FP_FUSION", "1") == "1"
@@ -187,10 +189,12 @@ class TileIRBackend(BaseBackend):
 
     def get_codegen_implementation(self, options):
         import triton.language.extra.cuda as cuda
+
         capability = int(self._parse_arch(options.arch))
         codegen_fns = {
-            "convert_custom_types":
-            cuda.convert_custom_float8_sm80 if capability >= 80 else cuda.convert_custom_float8_sm70,
+            "convert_custom_types": cuda.convert_custom_float8_sm80
+            if capability >= 80
+            else cuda.convert_custom_float8_sm70,
             "min_dot_size": lambda lhs, rhs: (1, 1, 1),
         }
         return codegen_fns
@@ -200,29 +204,31 @@ class TileIRBackend(BaseBackend):
 
     @staticmethod
     def call_tileiras(mod, metadata, opt: TileIROptions, capability):
+        name = metadata["name"]
+        fn_cache_manager = get_cache_manager(metadata["hash"])
+
         tileiras = opt.tileir_tileiras_path
         tileiras_cmd = [
             tileiras,
             f"--gpu-name=sm_{capability}",
             f"--opt-level={opt.opt_level}",
         ]
-        with tempfile.NamedTemporaryFile(delete=False, mode='r', suffix='.log') as flog, \
-            tempfile.NamedTemporaryFile(delete=False, mode='wb', suffix='.bytecode') as fbytecode:
-            bytecode = tileir.write_bytecode(mod)
+        # Save bytecode to cache
+        bytecode = tileir.write_bytecode(mod)
+        bytecode_cache_name = f"{name}.bytecode"
+        bytecode_file = fn_cache_manager.put(bytecode, bytecode_cache_name)
 
-            fbytecode.write(bytecode)
-            fbytecode.flush()
-
-            fbin = fbytecode.name + '.cubin'
-
-            tileiras_cmd.append(fbytecode.name)
+        # Use temp file for cubin output to avoid race conditions.
+        with (
+            tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".log") as flog,
+            tempfile.NamedTemporaryFile(delete=False, suffix=".cubin") as fbin,
+        ):
+            tileiras_cmd.append(bytecode_file)
             tileiras_cmd.append(f"-o")
-            tileiras_cmd.append(fbin)
+            tileiras_cmd.append(fbin.name)
 
             try:
                 subprocess.run(tileiras_cmd, check=True, close_fds=False, stderr=flog)
-                if os.path.exists(fbytecode.name):
-                    os.remove(fbytecode.name)
             except subprocess.CalledProcessError as e:
                 with open(flog.name) as log_file:
                     log = log_file.read()
@@ -238,25 +244,30 @@ class TileIRBackend(BaseBackend):
                         raise OutOfResources(used_smem, max_smem, "shared memory")
                 if "allocated tmem out of resource" in log:
                     # "allocated tmem out of resource: <used> vs <max>"
-                    pattern = r"allocated tmem out of resource:\s*([0-9]+)\s*vs\s*([0-9]+)"
+                    pattern = (
+                        r"allocated tmem out of resource:\s*([0-9]+)\s*vs\s*([0-9]+)"
+                    )
                     match = re.search(pattern, log)
                     if match:
                         used_tmem = int(match.group(1))
                         max_tmem = int(match.group(2))
                         raise OutOfResources(used_tmem, max_tmem, "tensor memory")
-                error = f'`tileiras` failed with error code {e.returncode}'
-                raise RuntimeError(f'{error}\n'
-                                   f'`tileiras` stderr:\n{log}\n'
-                                   f'Repro command: {" ".join(tileiras_cmd)}\n')
-            with open(fbin, 'rb') as f:
+                error = f"`tileiras` failed with error code {e.returncode}"
+                raise RuntimeError(
+                    f"{error}\n"
+                    f"`tileiras` stderr:\n{log}\n"
+                    f"Repro command: {' '.join(str(item) for item in tileiras_cmd)}\n"
+                )
+            with open(fbin.name, "rb") as f:
                 cubin = f.read()
-            if os.path.exists(fbin):
-                os.remove(fbin)
+            if os.path.exists(fbin.name):
+                os.remove(fbin.name)
         return cubin
 
     @staticmethod
     def make_ttir(mod, metadata, opt: TileIROptions, capability):
         # TODO: check these transform passes
+        metadata["name"] = mod.name
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
@@ -285,13 +296,11 @@ class TileIRBackend(BaseBackend):
             opt.enable_ftz,
             capability,
             metadata["num_ctas"],
+            metadata["num_warps"],
             opt.occupancy,
             metadata["num_stages"],
         )
-        tileir.passes.add_auto_gen_memtoken(
-            pm,
-            opt.enable_autogen_alias_mem_token
-        )
+        tileir.passes.add_auto_gen_memtoken(pm, opt.enable_autogen_alias_mem_token)
         passes.common.add_inliner(pm)
         if opt.enable_fp_fusion:
             tileir.passes.add_fma_fusion(pm)
@@ -306,7 +315,6 @@ class TileIRBackend(BaseBackend):
         match = re.findall(pattern, mod.__str__())
         if len(match) != 1:
             raise RuntimeError("Kernel Name matching fail")
-        metadata["name"] = match[0]
         return mod
 
     @staticmethod
@@ -319,7 +327,7 @@ class TileIRBackend(BaseBackend):
         stages["ttir"] = lambda src, metadata: self.make_ttir(
             src, metadata, options, capability
         )
-        stages["tileIR"] = lambda src, metadata: self.make_tileir(
+        stages["tileir"] = lambda src, metadata: self.make_tileir(
             src, metadata, options, capability
         )
         stages["cubin"] = lambda src, metadata: self.make_cubin(

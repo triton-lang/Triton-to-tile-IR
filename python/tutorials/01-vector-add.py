@@ -80,17 +80,17 @@ def add(x: torch.Tensor, y: torch.Tensor):
 
 # %%
 # We can now use the above function to compute the element-wise sum of two `torch.tensor` objects and test its correctness:
-
-torch.manual_seed(0)
-size = 98432
-x = torch.rand(size, device=DEVICE)
-y = torch.rand(size, device=DEVICE)
-output_torch = x + y
-output_triton = add(x, y)
-print(output_torch)
-print(output_triton)
-print(f'The maximum difference between torch and triton is '
-      f'{torch.max(torch.abs(output_torch - output_triton))}')
+def test():
+    torch.manual_seed(0)
+    size = 98432
+    x = torch.rand(size, device=DEVICE)
+    y = torch.rand(size, device=DEVICE)
+    output_torch = x + y
+    output_triton = add(x, y)
+    print(output_torch)
+    print(output_triton)
+    print(f'The maximum difference between torch and triton is '
+        f'{torch.max(torch.abs(output_torch - output_triton))}')
 
 # %%
 # Seems like we're good to go!
@@ -110,8 +110,8 @@ print(f'The maximum difference between torch and triton is '
         x_vals=[2**i for i in range(12, 28, 1)],  # Different possible values for `x_name`.
         x_log=True,  # x axis is logarithmic.
         line_arg='provider',  # Argument name whose value corresponds to a different line in the plot.
-        line_vals=['triton', 'torch'],  # Possible values for `line_arg`.
-        line_names=['Triton', 'Torch'],  # Label name for the lines.
+        line_vals=['torch', 'triton'],  # Possible values for `line_arg`.
+        line_names=['Torch', 'Triton'],  # Label name for the lines.
         styles=[('blue', '-'), ('green', '-')],  # Line styles.
         ylabel='GB/s',  # Label name for the y-axis.
         plot_name='vector-add-performance',  # Name for the plot. Used also as a file name for saving the plot.
@@ -125,11 +125,13 @@ def benchmark(size, provider):
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: x + y, quantiles=quantiles)
     if provider == 'triton':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y), quantiles=quantiles)
-    gbps = lambda ms: 3 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
+    gbps = lambda ms: 3 * x.numel() * x.element_size() / ms * 1e-6
     return gbps(ms), gbps(max_ms), gbps(min_ms)
 
-
-# %%
-# We can now run the decorated function above. Pass `print_data=True` to see the performance number, `show_plots=True` to plot them, and/or
-# `save_path='/path/to/results/' to save them to disk along with raw CSV data:
-benchmark.run(print_data=True, show_plots=True)
+# [Diff] to avoid running the benchmark when importing this module
+if __name__ == "__main__":
+    test()
+    # %%
+    # We can now run the decorated function above. Pass `print_data=True` to see the performance number, `show_plots=True` to plot them, and/or
+    # `save_path='/path/to/results/' to save them to disk along with raw CSV data:
+    benchmark.run(print_data=True, show_plots=True)

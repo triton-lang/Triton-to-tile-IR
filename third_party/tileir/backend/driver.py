@@ -13,7 +13,7 @@ from triton.backends.nvidia.driver import (
     library_dirs,
     include_dirs,
     libraries,
-    ty_to_cpp
+    ty_to_cpp,
 )
 
 from triton import knobs
@@ -40,10 +40,18 @@ class TileIRUtils(object):
         tile_mod_path = dirname
         nvidia_mod_path = os.path.join(os.path.dirname(dirname), "nvidia")
         tile_mod = compile_module_from_src(
-            Path(os.path.join(tile_mod_path, "driver.c")).read_text(), "tileir_utils", library_dirs(), include_dirs, libraries
+            Path(os.path.join(tile_mod_path, "driver.c")).read_text(),
+            "tileir_utils",
+            library_dirs(),
+            include_dirs,
+            libraries,
         )
         nvidia_mod = compile_module_from_src(
-            Path(os.path.join(nvidia_mod_path, "driver.c")).read_text(), "cuda_utils", library_dirs(), include_dirs, libraries
+            Path(os.path.join(nvidia_mod_path, "driver.c")).read_text(),
+            "cuda_utils",
+            library_dirs(),
+            include_dirs,
+            libraries,
         )
         self.init_nvidia_function(nvidia_mod)
         self.init_tileir_function(tile_mod)
@@ -95,9 +103,9 @@ def make_launcher(constants, signature):
 
     def _extracted_type(ty):
         if isinstance(ty, tuple):
-            val = ','.join(map(_extracted_type, ty))
+            val = ",".join(map(_extracted_type, ty))
             return f"[{val}]"
-        if ty[0] == '*':
+        if ty[0] == "*":
             return "PyObject*"
         if ty in ("constexpr", "nvTmaDesc"):
             return "PyObject*"
@@ -105,9 +113,9 @@ def make_launcher(constants, signature):
 
     def format_of(ty):
         if isinstance(ty, tuple):
-            val = ''.join(map(format_of, ty))
+            val = "".join(map(format_of, ty))
             return f"({val})"
-        if ty[0] == '*':
+        if ty[0] == "*":
             return "O"
         if ty in ("constexpr", "nvTmaDesc"):
             return "O"
@@ -124,14 +132,18 @@ def make_launcher(constants, signature):
             "uint64_t": "K",
         }[ty_to_cpp(ty)]
 
-    args_format = ''.join([format_of(ty) for ty in signature.values()])
+    args_format = "".join([format_of(ty) for ty in signature.values()])
     format = _BASE_ARGS_FORMAT + args_format
 
     flat_signature = []
     for sig in signature.values():
         _flatten_signature(sig, flat_signature)
     signature = {i: s for i, s in enumerate(flat_signature)}
-    args_list = ', ' + ', '.join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
+    args_list = (
+        ", " + ", ".join(f"&_arg{i}" for i, ty in signature.items())
+        if len(signature) > 0
+        else ""
+    )
     # Record the end of regular arguments;
     # subsequent arguments are architecture-specific descriptors, such as tensor descriptors for CUDA.
     arg_decl_list = []
@@ -142,7 +154,7 @@ def make_launcher(constants, signature):
             arg_decl_list.append(f"{FLOAT_STORAGE_TYPE[ty]} arg{i}")
         else:
             arg_decl_list.append(f"{ty_to_cpp(ty)} arg{i}")
-    arg_decls = ', '.join(arg_decl_list)
+    arg_decls = ", ".join(arg_decl_list)
     internal_args_list = []
     for i, ty in signature.items():
         if ty[0] == "*":
@@ -156,9 +168,10 @@ def make_launcher(constants, signature):
             internal_args_list.append(f"_arg{i}")
 
     import torch
+
     device_id = torch.cuda.current_device()
     # generate glue code
-    newline = '\n  '
+    newline = "\n  "
     float_storage_decls = [
         f"{FLOAT_STORAGE_TYPE[ty]} _arg{i}_storage = {FLOAT_PACK_FUNCTION[ty]}(_arg{i});"
         for i, ty in signature.items()
@@ -211,8 +224,8 @@ static cuLaunchKernelEx_t getLaunchKernelExHandle() {{
   return cuLaunchKernelExHandle;
 }}
 
-static void _launch(int numTilesX, int numTilesY, int numTilesZ, int launch_pdl, CUstream stream, CUfunction function{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
-  void *params[] = {{ {', '.join(f"{i}" for i in params)} }};
+static void _launch(int numTilesX, int numTilesY, int numTilesZ, int launch_pdl, CUstream stream, CUfunction function{", " + arg_decls if len(arg_decls) > 0 else ""}) {{
+  void *params[] = {{ {", ".join(f"{i}" for i in params)} }};
   if (numTilesX*numTilesY*numTilesZ > 0) {{
     int numAttrs = 1;
     CUlaunchAttribute launchAttr[2];
@@ -323,7 +336,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   PyObject *launch_exit_hook = NULL;
   PyObject *kernel_metadata = NULL;
   PyObject *launch_metadata = NULL;
-  {' '.join([f"{_extracted_type(ty)} _arg{i}; " for i, ty in signature.items()])}
+  {" ".join([f"{_extracted_type(ty)} _arg{i}; " for i, ty in signature.items()])}
   if(!PyArg_ParseTuple(args, \"{format}\", &numTilesX, &numTilesY, &numTilesZ,
                                            &_stream, &_function, &launch_pdl,
                                            &kernel_metadata, &launch_metadata,
@@ -354,7 +367,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   {newline.join(float_storage_decls)}
   Py_BEGIN_ALLOW_THREADS;
   
-  _launch(numTilesX, numTilesY, numTilesZ, launch_pdl, (CUstream)_stream, (CUfunction)_function{', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
+  _launch(numTilesX, numTilesY, numTilesZ, launch_pdl, (CUstream)_stream, (CUfunction)_function{", " + ", ".join(internal_args_list) if len(internal_args_list) > 0 else ""});
   Py_END_ALLOW_THREADS;
   if (PyErr_Occurred()) {{
     return NULL;
@@ -399,7 +412,6 @@ PyMODINIT_FUNC PyInit___triton_launcher(void) {{
     return src
 
 
-
 # This function unpacks a tensordesc object into its components:
 # - data pointer
 # - shape dimensions
@@ -429,13 +441,15 @@ def wrap_handle_tensordesc(launcher):
             else:
                 final_args.append(arg)
         return launcher(*meta_args, *final_args)
+
     return inner
 
 
 class TileIRLauncher(object):
-
     def __init__(self, src, metadata):
-        ids = {"ids_of_const_exprs": src.fn.constexprs if hasattr(src, "fn") else tuple()}
+        ids = {
+            "ids_of_const_exprs": src.fn.constexprs if hasattr(src, "fn") else tuple()
+        }
 
         constants = src.constants if hasattr(src, "constants") else dict()
         arg_idx = lambda x: (src.fn.arg_names.index(x),) if isinstance(x, str) else x
@@ -466,13 +480,14 @@ class TileIRLauncher(object):
             self.signature = signature
         self.constants = constants
         src = make_launcher(self.constants, self.signature)
-        mod = compile_module_from_src(src, "__triton_launcher", library_dirs(), include_dirs, libraries)
+        mod = compile_module_from_src(
+            src, "__triton_launcher", library_dirs(), include_dirs, libraries
+        )
         if has_tensordesc:
             self.launch = wrap_handle_tensordesc(mod.launch)
         else:
             self.launch = mod.launch
         self.launch_pdl = metadata.launch_pdl
-
 
     def __call__(self, *args, **kwargs):
         # TODO: below if branch is for torch 2.8.0a0+5228986c39.nvinternal commit
@@ -494,7 +509,6 @@ class TileIRLauncher(object):
 
 
 class TileIRDriver(GPUDriver):
-
     def __init__(self):
         self.utils = TileIRUtils()  # TODO: make static
         self.launcher_cls = TileIRLauncher
@@ -509,18 +523,24 @@ class TileIRDriver(GPUDriver):
 
     def get_active_torch_device(self):
         import torch
+
         return torch.device("cuda", self.get_current_device())
 
     def get_device_interface(self):
         import torch
+
         return torch.cuda
 
     @staticmethod
     def is_active():
         try:
-            from triton.backends.tileir.conf import TileIREnvConf
-            tileiras = TileIREnvConf.get_tileiras_path()
-            return tileiras is not None and (torch.cuda.is_available() and (torch.version.hip is None))
+            import torch
+
+            return (
+                torch.cuda.is_available()
+                and os.environ.get("ENABLE_TILE", "0") == "1"
+                and (torch.version.hip is None)
+            )
         except ImportError:
             return False
 
@@ -529,6 +549,7 @@ class TileIRDriver(GPUDriver):
 
     def get_benchmarker(self):
         from triton.testing import do_bench
+
         return do_bench
 
     def get_empty_cache_for_benchmark(self):
@@ -538,9 +559,10 @@ class TileIRDriver(GPUDriver):
         # before each kernel call to make sure that the L2 cache
         # doesn't contain any input data before the run
         cache_size = 256 * 1024 * 1024
-        return torch.empty(int(cache_size // 4), dtype=torch.int, device='cuda')
+        return torch.empty(int(cache_size // 4), dtype=torch.int, device="cuda")
 
     def clear_cache(self, cache):
         cache.zero_()
+
 
 GlobalTileIRDriver = TileIRDriver()

@@ -93,3 +93,4 @@ docs/sg_execution_times.rst
 
 # macOS
 .DS_Store
+third_party/nvidia/backend/lib/cupti-blackwell

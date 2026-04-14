@@ -1,5 +1,6 @@
 #include "Utils/Utils.h"
 
+#include "cuda_tile/Dialect/CudaTile/IR/Attributes.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
@@ -57,12 +58,13 @@ cvtNumStagesToOptHintAttr(MLIRContext *ctx, int computeCapability,
   return cuda_tile::OptimizationHintsAttr::get(
       ctx,
       mlir::DictionaryAttr::get(
-          ctx, mlir::NamedAttribute(
-                   arch, mlir::DictionaryAttr::get(
-                             ctx, mlir::NamedAttribute(
-                                      "latency", mlir::IntegerAttr::get(
-                                                     IntegerType::get(ctx, 32),
-                                                     numStages))))));
+          ctx,
+          mlir::NamedAttribute(
+              arch, mlir::DictionaryAttr::get(
+                        ctx, mlir::NamedAttribute(
+                                     mlir::StringAttr::get(ctx, "latency"),
+                                 mlir::IntegerAttr::get(
+                                     IntegerType::get(ctx, 32), numStages))))));
 }
 
 } // namespace utils

@@ -158,10 +158,13 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
 def is_cuda():
-    return triton.runtime.driver.active.get_current_target().backend == "cuda"
+    return triton.runtime.driver.active.get_current_target().backend in ["cuda", "tileir"]
 
-def is_tileir():
-    return triton.runtime.driver.active.get_current_target().backend == "tileir"
+
+def is_hip_cdna2():
+    target = triton.runtime.driver.active.get_current_target()
+    return target.backend == 'hip' and target.arch == 'gfx90a'
+
 
 def get_cuda_autotune_config():
     return [
@@ -216,7 +219,7 @@ def get_hip_autotune_config():
 
 
 def get_autotune_config():
-    if is_cuda() or is_tileir():
+    if is_cuda():
         return get_cuda_autotune_config()
     else:
         return get_hip_autotune_config()
@@ -359,22 +362,26 @@ def matmul(a, b, activation=""):
 # ---------
 #
 # We can test our custom matrix multiplication operation against a native torch implementation (i.e., cuBLAS).
-
-torch.manual_seed(0)
-a = torch.rand((512, 512), device=DEVICE, dtype=torch.float16) - 0.5
-b = torch.rand((512, 512), device=DEVICE, dtype=torch.float16) - 0.5
-triton_output = matmul(a, b)
-torch_output = torch.matmul(a, b)
-print(f"triton_output_with_fp16_inputs={triton_output}")
-print(f"torch_output_with_fp16_inputs={torch_output}")
-
-if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0):
-    print("✅ Triton and Torch match")
-else:
-    print("❌ Triton and Torch differ")
+def test():
+    torch.manual_seed(0)
+    a = torch.randn((512, 512), device=DEVICE, dtype=torch.float16)
+    b = torch.randn((512, 512), device=DEVICE, dtype=torch.float16)
+    triton_output = matmul(a, b)
+    torch_output = torch.matmul(a, b)
+    print(f"triton_output_with_fp16_inputs={triton_output}")
+    print(f"torch_output_with_fp16_inputs={torch_output}")
+    # Bigger tolerance for AMD CDNA2 devices.
+    # CDNA2 devices use reduced precision fp16 and bf16 and flush input and
+    # output denormal values to zero. Detailed info is at: https://pytorch.org/docs/stable/notes/numerical_accuracy.html#reduced-precision-fp16-and-bf16-gemms-and-convolutions-on-amd-instinct-mi200-devices
+    rtol = 1e-2 if is_hip_cdna2() else 0
+    if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=rtol):
+        print("✅ Triton and Torch match")
+    else:
+        print("❌ Triton and Torch differ")
 
 TORCH_HAS_FP8 = hasattr(torch, "float8_e5m2")
-if TORCH_HAS_FP8 and (is_cuda() or is_tileir()):
+
+def test_fp8():
     torch.manual_seed(0)
     a = torch.randn((512, 512), device=DEVICE, dtype=torch.float16)
     b = torch.randn((512, 512), device=DEVICE, dtype=torch.float16)
@@ -401,11 +408,11 @@ if TORCH_HAS_FP8 and (is_cuda() or is_tileir()):
 # We can now compare the performance of our kernel against that of cuBLAS or rocBLAS. Here we focus on square matrices,
 # but feel free to arrange this script as you wish to benchmark any other matrix shape.
 
-ref_lib = 'cuBLAS' if (is_cuda() or is_tileir()) else 'rocBLAS'
+ref_lib = 'cuBLAS' if is_cuda() else 'rocBLAS'
 
 configs = []
 for fp8_inputs in [False, True]:
-    if fp8_inputs and (not TORCH_HAS_FP8 or not (is_cuda() or is_tileir())):
+    if fp8_inputs and (not TORCH_HAS_FP8 or not is_cuda()):
         continue
     configs.append(
         triton.testing.Benchmark(
@@ -440,5 +447,8 @@ def benchmark(M, N, K, provider, fp8_inputs):
     perf = lambda ms: 2 * M * N * K * 1e-12 / (ms * 1e-3)
     return perf(ms), perf(max_ms), perf(min_ms)
 
-
-benchmark.run(show_plots=True, print_data=True)
+if __name__ == "__main__":
+    test()
+    if TORCH_HAS_FP8 and is_cuda():
+        test_fp8()
+    benchmark.run(show_plots=True, print_data=True)

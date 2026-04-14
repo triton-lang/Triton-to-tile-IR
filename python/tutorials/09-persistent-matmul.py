@@ -31,33 +31,20 @@ from contextlib import contextmanager
 
 from typing import Optional
 
+if torch.cuda.is_available():
+    from triton._C.libtriton import nvidia
+    cublas_workspace = torch.empty(32 * 1024 * 1024, device="cuda", dtype=torch.uint8)
+    cublas = nvidia.cublas.CublasLt(cublas_workspace)
+else:
+    cublas = None
+
 
 def is_cuda():
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
 
-def is_hip():
-    return triton.runtime.driver.active.get_current_target().backend == "hip"
-
-
-if is_cuda():
-    from triton._C.libtriton import nvidia
-    device_workspace = torch.empty(32 * 1024 * 1024, device="cuda", dtype=torch.uint8)
-    device_blas = nvidia.cublas.CublasLt(device_workspace)
-elif is_hip():
-    from triton._C.libtriton import amd
-    device_workspace = torch.empty(32 * 1024 * 1024, device="cuda", dtype=torch.uint8)
-    device_blas = amd.hipblas.HipblasLt(device_workspace)
-else:
-    device_blas = None
-
-
-def device_blas_name():
-    return 'cuBLAS' if is_cuda() else 'hipBLAS'
-
-
 def supports_tma():
-    return (is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] >= 9
+    return is_cuda() and torch.cuda.get_device_capability()[0] >= 9
 
 
 def is_hopper():
@@ -65,7 +52,7 @@ def is_hopper():
 
 
 def supports_ws():
-    return (is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] >= 9
+    return is_cuda() and torch.cuda.get_device_capability()[0] >= 9
 
 
 def _matmul_launch_metadata(grid, kernel, args):
@@ -88,26 +75,14 @@ HAS_WARP_SPECIALIZE = supports_ws() and HAS_TENSOR_DESC
 
 
 def matmul_get_configs(pre_hook=None):
-    if is_tileir():
-        return [
-            triton.Config({'BLOCK_SIZE_M': BM, 'BLOCK_SIZE_N': BN, "BLOCK_SIZE_K": BK, "GROUP_SIZE_M": 8}, num_stages=s,
-                          num_ctas=num_ctas, pre_hook=pre_hook)
-            for BM in [128, 256]
-            for BN in [128, 256]
-            for BK in [64, 128]
-            for s in ([2, 3, 4, 5])
-            for num_ctas in [1, 2]
-        ]
-    else:
-        return [
-            triton.Config({'BLOCK_SIZE_M': BM, 'BLOCK_SIZE_N': BN, "BLOCK_SIZE_K": BK, "GROUP_SIZE_M": 8}, num_stages=s,
-                          num_warps=w, pre_hook=pre_hook)
-            for BM in [128]
-            for BN in [128, 256]
-            for BK in [64, 128]
-            for s in ([2, 3, 4])
-            for w in [4, 8]
-        ]
+    return [
+        triton.Config({'BLOCK_SIZE_M': BM, 'BLOCK_SIZE_N': BN, "BLOCK_SIZE_K" : BK, "GROUP_SIZE_M" : 8}, num_stages=s, num_warps=w, pre_hook=pre_hook) \
+        for BM in [128] \
+        for BN in [128, 256] \
+        for BK in [64,128] \
+        for s in ([3,4]) \
+        for w in [4,8] \
+    ]
 
 
 @triton.autotune(
@@ -263,9 +238,9 @@ def matmul_tma(a, b, warp_specialize: bool):
 
     # A dummy block value that will be overwritten when we have the real block size
     dummy_block = [1, 1]
-    a_desc = TensorDescriptor.from_tensor(a, dummy_block)
-    b_desc = TensorDescriptor.from_tensor(b, dummy_block)
-    c_desc = TensorDescriptor.from_tensor(c, dummy_block)
+    a_desc = TensorDescriptor(a, a.shape, a.stride(), dummy_block)
+    b_desc = TensorDescriptor(b, b.shape, b.stride(), dummy_block)
+    c_desc = TensorDescriptor(c, c.shape, c.stride(), dummy_block)
 
     def grid(META):
         BLOCK_M = META["BLOCK_SIZE_M"]
@@ -378,30 +353,19 @@ def matmul_persistent(a, b):
 
 
 def matmul_tma_persistent_get_configs(pre_hook=None):
-    if is_tileir():
-        return [
-            triton.Config({'BLOCK_SIZE_M': BM, 'BLOCK_SIZE_N': BN, "BLOCK_SIZE_K": BK, "GROUP_SIZE_M": 8, "EPILOGUE_SUBTILE": False}, num_stages=s,
-                          num_ctas=num_ctas, pre_hook=pre_hook)
-            for BM in [128, 256]
-            for BN in [128, 256]
-            for BK in [64, 128]
-            for s in ([2, 3, 4, 5])
-            for num_ctas in [1, 2]
-        ]
-    else:
-        return [
-            triton.Config(
-                {
-                    'BLOCK_SIZE_M': BM, 'BLOCK_SIZE_N': BN, "BLOCK_SIZE_K": BK, "GROUP_SIZE_M": 8, "EPILOGUE_SUBTILE":
-                    SUBTILE
-                }, num_stages=s, num_warps=w, pre_hook=pre_hook)  #
-            for BM in [128]  #
-            for BN in [128, 256]  #
-            for BK in [64, 128]  #
-            for s in ([2, 3, 4])  #
-            for w in [4, 8]  #
-            for SUBTILE in [True, False]  #
-        ]
+    return [
+        triton.Config(
+            {
+                'BLOCK_SIZE_M': BM, 'BLOCK_SIZE_N': BN, "BLOCK_SIZE_K": BK, "GROUP_SIZE_M": 8, "EPILOGUE_SUBTILE":
+                SUBTILE
+            }, num_stages=s, num_warps=w, pre_hook=pre_hook)  #
+        for BM in [128]  #
+        for BN in [128, 256]  #
+        for BK in [64, 128]  #
+        for s in ([2, 3, 4])  #
+        for w in [4, 8]  #
+        for SUBTILE in [True, False]  #
+    ]
 
 
 @triton.autotune(
@@ -482,9 +446,9 @@ def matmul_tma_persistent(a, b, warp_specialize: bool):
 
     # A dummy block value that will be overwritten when we have the real block size
     dummy_block = [1, 1]
-    a_desc = TensorDescriptor.from_tensor(a, dummy_block)
-    b_desc = TensorDescriptor.from_tensor(b, dummy_block)
-    c_desc = TensorDescriptor.from_tensor(c, dummy_block)
+    a_desc = TensorDescriptor(a, a.shape, a.stride(), dummy_block)
+    b_desc = TensorDescriptor(b, b.shape, b.stride(), dummy_block)
+    c_desc = TensorDescriptor(c, c.shape, c.stride(), dummy_block)
 
     def grid(META):
         nonlocal a_desc, b_desc, c_desc
@@ -627,7 +591,7 @@ def matmul_descriptor_persistent(a, b, warp_specialize: bool):
     return c
 
 
-def device_blas_matmul(a, b):
+def cublas_matmul(a, b):
     # Check constraints.
     assert a.shape[1] == b.shape[1], "Incompatible dimensions"  # b is transposed
     M, K = a.shape
@@ -636,10 +600,11 @@ def device_blas_matmul(a, b):
     c = torch.empty((M, N), device=a.device, dtype=dtype)
     bytes_per_elem = a.element_size()
     flops_str = f"flops{bytes_per_elem * 8}"
-    blas_name = device_blas_name()
-    with proton.scope(f"{blas_name} [M={M}, N={N}, K={K}]",
-                      {"bytes": bytes_per_elem * (M * K + N * K + M * N), flops_str: 2. * M * N * K}):
-        device_blas.matmul(a, b, c)
+    with proton.scope(
+        f"cublas [M={M}, N={N}, K={K}]",
+        {"bytes": bytes_per_elem * (M * K + N * K + M * N), flops_str: 2. * M * N * K},
+    ):
+        cublas.matmul(a, b, c)
     return c
 
 
@@ -648,8 +613,10 @@ def torch_matmul(a, b):
     N, K = b.shape
     bytes_per_elem = a.element_size()
     flops_str = f"flops{bytes_per_elem * 8}"
-    with proton.scope(f"torch [M={M}, N={N}, K={K}]",
-                      {"bytes": bytes_per_elem * (M * K + N * K + M * N), flops_str: 2. * M * N * K}):
+    with proton.scope(
+        f"torch [M={M}, N={N}, K={K}]",
+        {"bytes": bytes_per_elem * (M * K + N * K + M * N), flops_str: 2. * M * N * K},
+    ):
         c = torch.matmul(a, b.T)
     return c
 
@@ -681,9 +648,8 @@ def bench(K, dtype, reps=10000, warmup_reps=10000):
 
     b = b.T.contiguous()
 
-    if device_blas is not None:
-        blas_name = device_blas_name()
-        bench_fn(blas_name, reps, warmup_reps, device_blas_matmul, a, b)
+    if cublas is not None:
+        bench_fn("cublas", reps, warmup_reps, cublas_matmul, a, b)
     if dtype == torch.float16:
         bench_fn("torch", reps, warmup_reps, torch_matmul, a, b)
     bench_fn("naive", reps, warmup_reps, matmul, a, b.T)
@@ -691,7 +657,6 @@ def bench(K, dtype, reps=10000, warmup_reps=10000):
     warp_specialize = [False, True] if HAS_WARP_SPECIALIZE else [False]
     for ws in warp_specialize:
         ws_str = "_ws" if ws else ""
-        # disable on-host warpspec on Hopper
         if HAS_HOST_TENSOR_DESC and not (is_hopper() and ws):
             bench_fn(f"tma_persistent{ws_str}", reps, warmup_reps, lambda a, b: matmul_tma_persistent(a, b, ws), a, b)
             bench_fn(f"tma{ws_str}", reps, warmup_reps, lambda a, b: matmul_tma(a, b, ws), a, b)
@@ -702,12 +667,9 @@ def bench(K, dtype, reps=10000, warmup_reps=10000):
 
 def run_test(expect, fn, a, b, label, enabled=True):
     print(f"  {label}: ...", end="")
-    if enabled:
-        actual = fn(a, b)
-        passed = torch.allclose(expect, actual.to(expect.dtype), atol=1.0)
-        icon = "✅" if passed else "❌"
-    else:
-        icon = "⭕"
+    actual = fn(a, b)
+    passed = torch.allclose(expect, actual.to(expect.dtype), atol=1.0)
+    icon = "✅" if passed else "❌"
     print(f"\r  {label}: {icon}  ")
 
 
@@ -717,9 +679,9 @@ def validate(M, N, K, dtype):
     b = torch.randn((K, N), device="cuda", dtype=torch.float16).to(dtype)
     b = b.T.contiguous()
 
-    naive_result = matmul(a, b.T).to(torch.float16)
+    naive_result = torch.matmul(a, b.T).to(torch.float16)
     run_test(naive_result, torch_matmul, a, b, "Torch", enabled=dtype == torch.float16)
-    run_test(naive_result, device_blas_matmul, a, b, device_blas_name(), enabled=device_blas is not None)
+    # run_test(naive_result, cublas_matmul, a, b, "cuBLAS", enabled=cublas is not None)
     run_test(naive_result, matmul_persistent, a, b.T, "Persistent")
 
     kernels = [
@@ -727,7 +689,7 @@ def validate(M, N, K, dtype):
         (matmul_tma_persistent, "TMA Persistent", HAS_HOST_TENSOR_DESC),
         (matmul_descriptor_persistent, "Tensor Descriptor Persistent", HAS_TENSOR_DESC),
     ]
-    warp_specialize = [False, True] if HAS_WARP_SPECIALIZE else [False]
+    warp_specialize = [False, ] if HAS_WARP_SPECIALIZE else [False]
 
     for (kernel, label, enabled), warp_specialize in itertools.product(kernels, warp_specialize):
         label = f"{label} (warp_specialize={warp_specialize})"
@@ -758,7 +720,7 @@ if __name__ == "__main__":
     parser.add_argument("--prec", type=str, choices=["fp8", "fp16"], default="fp16")
     args = parser.parse_args()
 
-    if args.prec == 'fp8' and (not hasattr(torch, "float8_e4m3fn") or not (is_cuda() or is_tileir())):
+    if args.prec == 'fp8' and (not hasattr(torch, "float8_e4m3fn") or not is_cuda()):
         print("This example requires CUDA with fp8 support.")
     else:
         dtype = torch.float8_e4m3fn if args.prec == 'fp8' else torch.float16

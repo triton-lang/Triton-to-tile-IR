@@ -7,7 +7,7 @@ import pytest
 import triton
 import triton.language as tl
 
-from triton._internal_testing import is_cuda, is_hip, is_hip_cdna2, is_hip_cdna3, is_hip_cdna4, is_tileir, is_hip_rdna4
+from triton._internal_testing import is_cuda, is_hip, is_hip_cdna2, is_hip_cdna3, is_hip_cdna4, is_hip_rdna4, is_tileir
 
 
 def matching_int(dtype):
@@ -275,7 +275,7 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
 
     # On HIP, fp8e4nv upcasting to fp32 is only supported on CDNA4, and
     # fp8e4nv upcasting to bf16 and fp16 is only supported on CDNA3 and CDNA4.
-    if is_cuda() or is_tileir():
+    if is_cuda():
         if ((src_dtype == 'float8e4nv' and torch.cuda.get_device_capability(0) < (8, 9))
             or src_dtype in ('float8e4b8', 'float8e5b16')):
             # If the dtype should error out in the given device, we assert that and return
@@ -293,10 +293,10 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
         if src_dtype in ('float8e4b8', 'float8e5b16') and (is_hip_cdna2() or is_hip_rdna4()):
             pytest.skip(f"{src_dtype} is not supported on AMDGPU CDNA2 and RDNA4")
 
-
     if is_tileir():
         if src_dtype == "float8e4b15":
-            pytest.skip("tileir doesn't support tt.elementwise_inline_asm at 13.1 release")
+            pytest.skip(f"Skip for tileir, tt.elementwise_inline_asm")
+
     # dtype : (exponent_bits, mantissa_bits, exponent_bias, max_repr)
     stuff = {
         'float8e4b15': (4, 3, 15, 0x7e),
@@ -336,7 +336,7 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
 ])
 def test_typeconvert_downcast(src_dtype, dst_dtype, rounding, max_repr, device):
 
-    if is_cuda() or is_tileir():
+    if is_cuda():
         if src_dtype != 'float32' and torch.cuda.get_device_capability(0) < (9, 0):
             pytest.skip("non-float32 downcast tests only supported on NVGPU with compute capability 9.0+")
 
@@ -373,9 +373,8 @@ def test_typeconvert_downcast(src_dtype, dst_dtype, rounding, max_repr, device):
 ])
 @pytest.mark.parametrize("dst_dtype", ["float8e4nv", "float8e5"])
 @pytest.mark.parametrize("src_dtype", ["float32", "float16", "bfloat16"])
-@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support inline_asm at 13.1 release")
 def test_typeconvert_downcast_clamping(src_dtype, dst_dtype, mode, device, rounding="rtne"):
-    if is_cuda() or is_tileir():
+    if is_cuda():
         if src_dtype != 'float32' and torch.cuda.get_device_capability(0) < (9, 0):
             pytest.skip("non-float32 downcast tests only supported on NVGPU with compute capability 9.0+")
 

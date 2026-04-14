@@ -1,6 +1,7 @@
 set(CUDA_TILE_INSTALL_DIR $ENV{CUDA_TILE_INSTALL_DIR})
 
 add_triton_library(TritonToTileIR
+    MapElementwiseExpansion.cpp
     TritonToTileIRPass.cpp
     Utils.cpp
 
