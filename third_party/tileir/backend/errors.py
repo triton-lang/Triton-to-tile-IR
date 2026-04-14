@@ -1,5 +1,6 @@
 from triton.errors import TritonError
 
+
 class HitFallback(TritonError):
     def __init__(self, required, name):
         self.required = required
@@ -11,5 +12,3 @@ class HitFallback(TritonError):
     def __reduce__(self):
         # this is necessary to make CompilationError picklable
         return (type(self), (self.required, self.name))
-
-

@@ -66,8 +66,7 @@ module attributes {"ttg.num-ctas" = 2 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 
     // CHECK-DAG: %[[STRIDE0:.*]] = llvm.mlir.constant(128 : i64) : i64
     // CHECK-DAG: %[[STRIDE1:.*]] = llvm.mlir.constant(1 : i32) : i32
-    // CHECK-DAG: llvm.call_intrinsic "llvm.amdgcn.cluster.workgroup.id.x"
-    // CHECK-DAG: %[[STRIDE0_TRUNC:.*]] = llvm.trunc %[[STRIDE0]] : i64 to i32
+    // CHECK: %[[STRIDE0_TRUNC:.*]] = llvm.trunc %[[STRIDE0]] : i64 to i32
     // CHECK: %[[OFFSET_DIM0:.*]] = llvm.mul{{.*}}%[[STRIDE0_TRUNC]]
     // CHECK: %[[OFFSET_TMP1:.*]] = llvm.add{{.*}}%[[OFFSET_DIM0]]
     // CHECK: %[[OFFSET_DIM1:.*]] = llvm.mul{{.*}}%[[STRIDE1]]
@@ -98,7 +97,7 @@ module attributes {"ttg.num-ctas" = 2 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 
     // CHECK-DAG: %[[STRIDE0:.*]] = llvm.mlir.constant(128 : i64) : i64
     // CHECK-DAG: %[[STRIDE1:.*]] = llvm.mlir.constant(1 : i32) : i32
-    // CHECK-DAG: llvm.call_intrinsic "llvm.amdgcn.cluster.workgroup.id.x"
+    // CHECK-DAG: rocdl.cluster.workgroup.id.x
     // CHECK-DAG: %[[STRIDE0_TRUNC:.*]] = llvm.trunc %[[STRIDE0]] : i64 to i32
     // CHECK: %[[OFFSET_DIM0:.*]] = llvm.mul{{.*}}%[[STRIDE0_TRUNC]]
     // CHECK: %[[OFFSET_TMP1:.*]] = llvm.add{{.*}}%[[OFFSET_DIM0]]
@@ -129,7 +128,7 @@ module attributes {"ttg.num-ctas" = 16 : i32, "ttg.num-warps" = 4 : i32, "ttg.th
     // Check we compute the multicast mask and used it in the second group of SGPRs (vector<8xi32>)
     // CHECK-DAG: %[[GROUP_MASK:.*]] = llvm.mlir.constant(4369 : i32) : i32
     // CHECK-DAG: %[[NON_FREE_BITS:.*]] = llvm.mlir.constant(-13 : i32) : i32
-    // CHECK-DAG: %[[CTA_ID:.*]] = {{.*}}llvm.amdgcn.cluster.workgroup.id.x
+    // CHECK-DAG: %[[CTA_ID:.*]] = rocdl.cluster.workgroup.id.x
     // CHECK: %[[SHIFT_AMOUNT:.*]] = llvm.and %[[CTA_ID]], %[[NON_FREE_BITS]]
     // CHECK: %[[CTA_MASK:.*]] = llvm.shl %[[GROUP_MASK]], %[[SHIFT_AMOUNT]]
     // Combine with other values
@@ -180,6 +179,40 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   tt.func public @tdm_wait_inst() {
     // CHECK: rocdl.s.wait.tensorcnt 0
     %3 = amdg.async_tdm_intrinsic_wait  {count = 0 : i32}
+    tt.return
+  }
+}
+
+// -----
+
+#shared = #ttg.padded_shared<[64:+4] {order = [1, 0], shape = [128, 64]}>
+#smem = #ttg.shared_memory
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1250", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tdm_2d_with_padding
+  tt.func public @tdm_2d_with_padding(
+    %tensorDesc: !tt.tensordesc<tensor<128x64xf16>>,
+    %memDesc: !ttg.memdesc<128x64xf16, #shared, #smem, mutable>
+  ) {
+    %c0_i32 = arith.constant 0 : i32
+    amdg.async_tdm_copy_local_to_global %tensorDesc[%c0_i32, %c0_i32] from %memDesc: !ttg.memdesc<128x64xf16, #shared, #smem, mutable> -> !tt.tensordesc<tensor<128x64xf16>>
+    // CHECK: llvm.amdgcn.tensor.store.from.lds.d2
+    tt.return
+  }
+}
+
+// -----
+
+#shared_5d = #ttg.padded_shared<[16:+4] {order = [4, 3, 2, 1, 0], shape = [8, 8, 8, 16, 16]}>
+#smem_5d = #ttg.shared_memory
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1250", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tdm_5d_with_padding
+  tt.func public @tdm_5d_with_padding(
+    %tensorDesc: !tt.tensordesc<tensor<8x8x8x16x16xf16>>,
+    %memDesc: !ttg.memdesc<8x8x8x16x16xf16, #shared_5d, #smem_5d, mutable>
+  ) {
+    %c0_i32 = arith.constant 0 : i32
+    amdg.async_tdm_copy_local_to_global %tensorDesc[%c0_i32, %c0_i32, %c0_i32, %c0_i32, %c0_i32] from %memDesc: !ttg.memdesc<8x8x8x16x16xf16, #shared_5d, #smem_5d, mutable> -> !tt.tensordesc<tensor<8x8x8x16x16xf16>>
+    // CHECK: llvm.amdgcn.tensor.store.from.lds
     tt.return
   }
 }

@@ -17,7 +17,7 @@ from triton import CompilationError
 @pytest.mark.parametrize("num_ctas", [1, 2])
 @pytest.mark.parametrize("M_BLOCK,N_BLOCK", [(2, 16), (8, 16), (8, 32), (8, 128), (512, 32), (1, 1024)])
 def test_tensor_descriptor_load(dtype_str, num_ctas, M_BLOCK, N_BLOCK, device):
-    if num_ctas == 2 and (not (is_cuda() or is_tileir()) or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
+    if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
 
     @triton.jit
@@ -61,7 +61,7 @@ def test_tensor_descriptor_load(dtype_str, num_ctas, M_BLOCK, N_BLOCK, device):
 @pytest.mark.parametrize("num_ctas", [1, 2])
 @pytest.mark.parametrize("M_BLOCK,N_BLOCK", [(2, 16), (8, 16), (8, 32), (8, 128), (512, 32), (1, 1024)])
 def test_tensor_descriptor_store(dtype_str, num_ctas, M_BLOCK, N_BLOCK, device):
-    if num_ctas == 2 and (not (is_cuda() or is_tileir()) or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
+    if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
 
     @triton.jit
@@ -258,7 +258,7 @@ def test_tensor_descriptor_store3d(dtype_str, K_BLOCK, device):
 @pytest.mark.parametrize("ndim", [1, 2, 3, 4, 5])
 @pytest.mark.parametrize("INNER_BLOCK", [16, 32, 64, 128])
 def test_tensor_descriptor_load_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, device):
-    if num_ctas == 2 and (not (is_cuda() or is_tileir()) or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
+    if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
 
     @triton.jit
@@ -384,7 +384,7 @@ def test_tensor_descriptor_store_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, devi
 
 
 @pytest.mark.interpreter
-@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support padding default value at 13.1 release")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, padding default value")
 def test_tensor_descriptor_padding(device):
 
     @triton.jit
@@ -464,7 +464,6 @@ def tensor_descriptor_in_function_helper(out_ptr, in_ptr, M, N, M_BLOCK: tl.cons
 
 
 @pytest.mark.interpreter
-@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support noinline at 13.1 release")
 def test_tensor_descriptor_in_function(device):
 
     @triton.jit
@@ -506,7 +505,6 @@ def tensor_descriptor_return_helper(ptr, M, N, M_BLOCK: tl.constexpr, N_BLOCK: t
 
 @pytest.mark.interpreter
 @pytest.mark.skipif(is_hip(), reason="HIP devices don't correctly handle function calls with pointer arguments")
-@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support noinline at 13.1 release")
 def test_tensor_descriptor_return_value(device):
 
     @triton.jit
@@ -545,7 +543,6 @@ def tensor_descriptor_arg_helper(in_desc, out_desc, M_BLOCK: tl.constexpr, N_BLO
 
 @pytest.mark.interpreter
 @pytest.mark.skipif(is_hip(), reason="HIP devices don't correctly handle function calls with pointer arguments")
-@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support noinline at 13.1 release")
 def test_tensor_descriptor_argument(device):
 
     @triton.jit
@@ -623,7 +620,7 @@ def matmul_kernel_make_tensor_descriptor(a_ptr, b_ptr, c_ptr,  #
     (32, 32, 32, 4),
     (256, 128, 32, 4),
 ])
-@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support TMA Gather at 13.1 release")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, TMA Gather")
 def test_make_tensor_descriptor_matmul(num_stages, num_ctas, BLOCK_M, BLOCK_N, BLOCK_K, device):
     if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
@@ -726,6 +723,7 @@ def kernel_make_tensor_descriptor_loop_carried(a_ptr, M, N, MBLOCK: tl.constexpr
 
 @pytest.mark.interpreter
 @pytest.mark.skipif(is_hip(), reason="Currently unsupported by HIP devices")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, if op with tile view")
 def test_make_tensor_descriptor_loop_carried(device):
     M, N = 64, 512
     torch.manual_seed(42)
@@ -818,6 +816,7 @@ def batched_gemm_2d_tma_kernel(a_ptr, b_ptr, c_ptr,  #
             accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
 
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, if with tile view")
 @pytest.mark.interpreter
 def test_tensor_descriptor_batched_gemm_2d_tma(device):
     BLOCK_M, BLOCK_N, BLOCK_K = 128, 256, 64
@@ -857,7 +856,7 @@ def test_tensor_descriptor_batched_gemm_2d_tma(device):
         BLOCK_M, BLOCK_N, BLOCK_K,  #
         NUM_SMS,  #
         num_stages=num_stages, num_warps=8)
-    if is_cuda() or is_tileir():
+    if is_cuda():
         torch.cuda.synchronize()
 
     torch.testing.assert_close(c, expect, rtol=1e-3, atol=1e-3)
@@ -922,8 +921,8 @@ def batched_gemm_3d_tma_kernel(a_ptr, b_ptr, c_ptr,  #
             accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
 
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, TMA Reduce")
 @pytest.mark.interpreter
-@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support gather at 13.1 release")
 def test_tensor_descriptor_batched_gemm_3d_tma(device):
     BLOCK_M, BLOCK_N, BLOCK_K = 128, 256, 64
 
@@ -963,7 +962,6 @@ def test_tensor_descriptor_batched_gemm_3d_tma(device):
         NUM_SMS,  #
         num_stages=num_stages, num_warps=8)
     torch.cuda.synchronize()
-
     if is_tileir():
         return
 
@@ -1325,7 +1323,7 @@ def mxfp8_mxfp4_matmul_tma(  #
                                                        (128, 256, 256)])
 @pytest.mark.parametrize("NUM_STAGES", [1, 3])
 @pytest.mark.skipif(is_hip(), reason="HIP devices don't have full support for MX formats")
-@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support scaled_dot at 13.1 release")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, scaled_dot")
 def test_mxfp8_mxfp4_matmul_tma(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, device):
     if BLOCK_N == 256 and BLOCK_K == 256:
         NUM_STAGES = min(NUM_STAGES, 2)
@@ -1389,7 +1387,7 @@ def torch_gather_rows(input, idx, y, block_y):
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.int8])
 @pytest.mark.parametrize("y", [0, 32, 48])
 @pytest.mark.skipif(is_hopper(), reason="TMA Scatter is not supported on hopper")
-@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support gather at 13.1 release")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, TMA Gather")
 def test_tma_gather(X, Y, BLOCK_X, BLOCK_Y, dtype, y, device):
     if BLOCK_X > X or y + BLOCK_Y > Y:
         pytest.skip()
@@ -1442,7 +1440,7 @@ def tma_gather_dot_pipeline(  #
 @pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(16, 16, 16)])
 @pytest.mark.parametrize("K", [128])
 @pytest.mark.skipif(is_hopper(), reason="TMA Scatter is not supported on hopper")
-@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support gather at 13.1 release")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, ttgir")
 def test_tma_gather_dot_pipeline(BLOCK_M, BLOCK_N, BLOCK_K, K, device):
 
     def alloc_fn(size: int, align: int, steam):
@@ -1456,13 +1454,12 @@ def test_tma_gather_dot_pipeline(BLOCK_M, BLOCK_N, BLOCK_K, K, device):
     c = a @ b
 
     output = torch.zeros((BLOCK_M, BLOCK_N), dtype=torch.float32, device=device)
-    is_native_gather = (is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] >= 10
+    is_native_gather = is_cuda() and torch.cuda.get_device_capability()[0] >= 10
     if is_native_gather:
         kernel = tma_gather_dot_pipeline.warmup(a, b, output, a.stride(0), a.stride(1), b.stride(0), b.stride(1),
                                                 output.stride(0), output.stride(1), K, BLOCK_M, BLOCK_N, BLOCK_K,
                                                 grid=(1, ))
-        if not is_tileir():
-            assert kernel.asm["ttgir"].count("ttng.async_tma_gather") == 6
+        assert kernel.asm["ttgir"].count("ttng.async_tma_gather") == 6
     tma_gather_dot_pipeline[(1, 1, 1)](a, b, output, a.stride(0), a.stride(1), b.stride(0), b.stride(1),
                                        output.stride(0), output.stride(1), K, BLOCK_M, BLOCK_N, BLOCK_K)
 
@@ -1492,7 +1489,7 @@ def tma_scatter_rows_kernel(out_ptr, in_ptr, idx_ptr, y, X: tl.constexpr, Y: tl.
 @pytest.mark.parametrize("y", [0, 32, 48])
 @pytest.mark.skipif(is_hopper(), reason="TMA Scatter is not supported on hopper")
 @pytest.mark.skipif(is_sm12x(), reason="TMA Scatter is not supported on sm120")
-@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support TMA Scatter at 13.1 release")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, TMA Scatter")
 def test_tma_scatter(X, Y, BLOCK_X, BLOCK_Y, dtype, y, device):
     if BLOCK_X > X or y + BLOCK_Y > Y:
         pytest.skip()
@@ -1565,9 +1562,9 @@ REDUCE_SKIP_HIP_CDNA3 = [
 @pytest.mark.parametrize("num_ctas", [1, 2])
 @pytest.mark.parametrize("descriptor", ["host", "device"])
 @pytest.mark.parametrize("M_BLOCK,N_BLOCK", [(2, 16), (8, 16), (8, 32), (8, 128), (512, 32), (1, 1024)])
-@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support TMA Reduce at 13.1 release")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, TMA Reduce")
 def test_tensor_descriptor_reduce(kind, descriptor, dtype_str, num_ctas, M_BLOCK, N_BLOCK, device):
-    is_native = (is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] >= 9
+    is_native = is_cuda() and torch.cuda.get_device_capability()[0] >= 9
     if not is_native:
         if num_ctas != 1:
             pytest.skip("Multi-CTA not supported")
@@ -1654,7 +1651,7 @@ def test_tensor_descriptor_reduce(kind, descriptor, dtype_str, num_ctas, M_BLOCK
 @pytest.mark.parametrize("num_ctas", [1, 2])
 @pytest.mark.parametrize("M_BLOCK,N_BLOCK", [(2, 16), (8, 16), (8, 32), (8, 128)])
 def test_host_tensor_descriptor_load(dtype_str, num_ctas, M_BLOCK, N_BLOCK, device):
-    if num_ctas == 2 and (not (is_cuda() or is_tileir()) or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
+    if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
 
     @triton.jit(debug=True)
@@ -1676,6 +1673,55 @@ def test_host_tensor_descriptor_load(dtype_str, num_ctas, M_BLOCK, N_BLOCK, devi
     kernel[(1, )](out, inp_desc, M, N, M_BLOCK, N_BLOCK, num_ctas=num_ctas)
 
     expect = unwrap_tensor(inp)[1 * M_BLOCK:2 * M_BLOCK, 2 * N_BLOCK:3 * N_BLOCK]
+    torch.testing.assert_close(expect, unwrap_tensor(out))
+
+
+@pytest.mark.interpreter()
+@pytest.mark.parametrize("dtype_str", tma_dtypes)
+def test_host_tensor_descriptor_in_tuple(dtype_str, device):
+
+    @triton.jit(debug=True)
+    def kernel(out_ptr, payload, M, N, M_BLOCK: tl.constexpr, N_BLOCK: tl.constexpr):
+        desc0 = payload[0]
+        desc1 = payload[1]
+        m_idx = payload[2]
+
+        assert desc0.shape[0] == M
+        assert desc0.shape[1] == N
+        assert desc0.strides[0] == N
+        assert desc0.strides[1] == 1
+        assert desc0.block_shape == [M_BLOCK, N_BLOCK]
+
+        assert desc1.shape[0] == M * 2
+        assert desc1.shape[1] == N + 16
+        assert desc1.strides[0] == N + 16
+        assert desc1.strides[1] == 1
+        assert desc1.block_shape == [M_BLOCK, N_BLOCK]
+
+        block0 = desc0.load([m_idx * M_BLOCK, N_BLOCK])
+        block1 = desc1.load([m_idx * M_BLOCK, 2 * N_BLOCK])
+        block = block0 + block1
+        idx = tl.arange(0, M_BLOCK)[:, None] * N_BLOCK + tl.arange(0, N_BLOCK)[None, :]
+        tl.store(out_ptr + idx, block)
+
+    M_BLOCK, N_BLOCK = 8, 16
+    m_idx = 2
+    M, N = M_BLOCK * 4, N_BLOCK * 4
+    # Keep ranges small to avoid integer overflow
+    inp0_np = numpy_random((M, N), dtype_str, low=0, high=32)
+    inp1_np = numpy_random((M * 2, N + 16), dtype_str, low=0, high=32)
+
+    inp0 = to_triton(inp0_np, device=device, dst_type=dtype_str)
+    inp1 = to_triton(inp1_np, device=device, dst_type=dtype_str)
+    out = inp0.new_empty((M_BLOCK, N_BLOCK))
+
+    inp_desc0 = TensorDescriptor.from_tensor(inp0, [M_BLOCK, N_BLOCK])
+    inp_desc1 = TensorDescriptor.from_tensor(inp1, [M_BLOCK, N_BLOCK])
+    kernel[(1, )](out, (inp_desc0, inp_desc1, m_idx), M, N, M_BLOCK, N_BLOCK)
+
+    expect0 = unwrap_tensor(inp0)[m_idx * M_BLOCK:(m_idx + 1) * M_BLOCK, N_BLOCK:2 * N_BLOCK]
+    expect1 = unwrap_tensor(inp1)[m_idx * M_BLOCK:(m_idx + 1) * M_BLOCK, 2 * N_BLOCK:3 * N_BLOCK]
+    expect = expect0 + expect1
     torch.testing.assert_close(expect, unwrap_tensor(out))
 
 
@@ -1714,7 +1760,7 @@ def matmul_kernel_host_tensor_descriptor(a_desc, b_desc, c_desc):
     (256, 128, 32, 4),
 ])
 def test_host_tensor_descriptor_matmul(num_stages, num_ctas, BLOCK_M, BLOCK_N, BLOCK_K, device):
-    if num_ctas == 2 and (not (is_cuda() or is_tileir()) or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
+    if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
 
     if is_hip() and (BLOCK_M, BLOCK_N, BLOCK_K, num_stages) == (256, 128, 32, 4):

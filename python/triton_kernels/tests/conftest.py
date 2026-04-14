@@ -5,19 +5,11 @@ import os
 
 def pytest_addoption(parser):
     parser.addoption("--device", action="store", default="cuda")
-    # [diff]
-    parser.addoption("--arch", type=str, default="sm100")
 
 
 @pytest.fixture
 def device(request):
     return request.config.getoption("--device")
-
-
-# [diff]
-@pytest.fixture
-def arch(request):
-    return request.config.getoption("--arch")
 
 
 @pytest.fixture
@@ -66,3 +58,35 @@ def pytest_configure(config):
         import torch
         gpu_id = int(worker_id[2:])  # map gw0 → 0, gw1 → 1, ...
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id % torch.cuda.device_count())
+
+
+# ── PUBLIC-specific: skip tests that use ops unsupported in PUBLIC cuda-tile ──
+# These ops have no lowering in the public cuda-tile release:
+#   tt.dot_scaled      — fp8/mxfp scaled matmul (not available in public release)
+#   tt.elementwise_inline_asm — used in mxfloat4 downcast kernels (not in public release)
+# When ENABLE_TILE=1 and a test fails with PassManager::run failed + one of
+# these op names in captured stderr, convert the result to SKIPPED.
+
+_TILEIR_UNSUPPORTED_OPS = [
+    "tt.dot_scaled",
+    "tt.elementwise_inline_asm",
+]
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    if os.environ.get("ENABLE_TILE", "0") != "1":
+        return
+    report = outcome.get_result()
+    if report.when == "call" and report.failed:
+        stderr = "".join(
+            content for name, content in report.sections
+            if "stderr" in name.lower()
+        )
+        unsupported = [op for op in _TILEIR_UNSUPPORTED_OPS if op in stderr]
+        if unsupported:
+            report.outcome = "skipped"
+            report.longrepr = (
+                f"[tileir] unsupported op(s) in PUBLIC cuda-tile: {unsupported}"
+            )

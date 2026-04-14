@@ -19,6 +19,11 @@
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
+namespace mlir::triton {
+#define GEN_PASS_DEF_LIFTTTCFTOSCF
+#include "Transform/Passes.h.inc"
+} // namespace mlir::triton
+
 using namespace mlir;
 
 namespace {
@@ -42,17 +47,7 @@ struct TTControlFlowToSCFTransformation
 };
 
 struct LiftTTCFToSCFPass
-    : public PassWrapper<LiftTTCFToSCFPass, OperationPass<ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LiftTTCFToSCFPass)
-  StringRef getArgument() const final { return "lift-tt-cf-to-scf"; }
-  StringRef getDescription() const final {
-    return "Lift ControlFlow dialect to SCF inside Triton tt.func";
-  }
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<triton::TritonDialect, cf::ControlFlowDialect,
-                    scf::SCFDialect, ub::UBDialect>();
-  }
+    : public ::mlir::triton::impl::LiftTTCFToSCFBase<LiftTTCFToSCFPass> {
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
@@ -96,5 +91,3 @@ std::unique_ptr<Pass> createLiftTTCFToSCFPass() {
   return std::make_unique<LiftTTCFToSCFPass>();
 }
 } // namespace mlir::triton
-
-

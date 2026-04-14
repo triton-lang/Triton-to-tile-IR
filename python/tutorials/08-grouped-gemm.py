@@ -36,17 +36,15 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
 def is_cuda():
-    return triton.runtime.driver.active.get_current_target().backend == "cuda"
+    return triton.runtime.driver.active.get_current_target().backend in ["cuda", "tileir"]
 
-def is_tileir():
-    return triton.runtime.driver.active.get_current_target().backend == "tileir"
 
 def supports_tma():
-    return (is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] >= 9
+    return is_cuda() and torch.cuda.get_device_capability()[0] >= 9
 
 
 def num_sms():
-    if is_cuda() or is_tileir():
+    if is_cuda():
         return torch.cuda.get_device_properties("cuda").multi_processor_count
     return 148
 
@@ -227,7 +225,7 @@ tma_configs = [
 
 @triton.autotune(
     tma_configs,
-    key=['group_a_ptrs', 'group_b_ptrs', 'gropup_c_ptrs', 'group_size'],
+    key=['group_size'],
 )
 @triton.jit
 def grouped_matmul_tma_kernel(
@@ -371,37 +369,6 @@ def group_gemm_tma_fn(group_A, group_B):
     return group_C
 
 
-group_m = [1024, 512, 256, 128]
-group_n = [1024, 512, 256, 128]
-group_k = [1024, 512, 256, 128]
-group_A = []
-group_B = []
-group_B_T = []
-assert len(group_m) == len(group_n)
-assert len(group_n) == len(group_k)
-group_size = len(group_m)
-for i in range(group_size):
-    M = group_m[i]
-    N = group_n[i]
-    K = group_k[i]
-    A = torch.rand((M, K), device=DEVICE, dtype=torch.float16)
-    B = torch.rand((K, N), device=DEVICE, dtype=torch.float16)
-    B_T = B.T.contiguous()
-    group_A.append(A)
-    group_B.append(B)
-    group_B_T.append(B_T)
-
-tri_out = group_gemm_fn(group_A, group_B)
-ref_out = [torch.matmul(a, b) for a, b in zip(group_A, group_B)]
-for i in range(group_size):
-    assert torch.allclose(ref_out[i], tri_out[i], atol=1e-2, rtol=1e-2)
-
-if supports_tma():
-    tri_tma_out = group_gemm_tma_fn(group_A, group_B_T)
-    for i in range(group_size):
-        assert torch.allclose(ref_out[i], tri_tma_out[i], atol=1e-2, rtol=1e-2)
-
-
 # only launch the kernel, no tensor preparation here to remove all overhead
 def triton_perf_fn(a_ptrs, b_ptrs, c_ptrs, sizes, lds, group_size):
     grid = lambda META: (META['NUM_SM'], )
@@ -489,7 +456,7 @@ def benchmark_square_matrices(N, provider):
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: triton_tma_perf_fn(d_a_ptrs, d_b_t_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, group_size, dtype=torch.
                                        float16), quantiles=quantiles)
-    return ms, max_ms, min_ms
+    return ms, min_ms, max_ms
 
 
 @triton.testing.perf_report(
@@ -560,8 +527,38 @@ def benchmark_batches(M, provider):
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: triton_tma_perf_fn(d_a_ptrs, d_b_t_ptrs, d_c_ptrs, d_g_sizes, d_g_t_lds, group_size, dtype=torch.
                                        float16), quantiles=quantiles)
-    return ms, max_ms, min_ms
+    return ms, min_ms, max_ms
 
+if __name__ == "__main__":
+    group_m = [1024, 512, 256, 128]
+    group_n = [1024, 512, 256, 128]
+    group_k = [1024, 512, 256, 128]
+    group_A = []
+    group_B = []
+    group_B_T = []
+    assert len(group_m) == len(group_n)
+    assert len(group_n) == len(group_k)
+    group_size = len(group_m)
+    for i in range(group_size):
+        M = group_m[i]
+        N = group_n[i]
+        K = group_k[i]
+        A = torch.rand((M, K), device=DEVICE, dtype=torch.float16)
+        B = torch.rand((K, N), device=DEVICE, dtype=torch.float16)
+        B_T = B.T.contiguous()
+        group_A.append(A)
+        group_B.append(B)
+        group_B_T.append(B_T)
 
-benchmark_square_matrices.run(show_plots=True, print_data=True)
-benchmark_batches.run(show_plots=True, print_data=True)
+    tri_out = group_gemm_fn(group_A, group_B)
+    ref_out = [torch.matmul(a, b) for a, b in zip(group_A, group_B)]
+    for i in range(group_size):
+        assert torch.allclose(ref_out[i], tri_out[i], atol=1e-2, rtol=1e-2)
+
+    if supports_tma():
+        tri_tma_out = group_gemm_tma_fn(group_A, group_B_T)
+        for i in range(group_size):
+            assert torch.allclose(ref_out[i], tri_tma_out[i], atol=1e-2, rtol=1e-2)
+            
+    benchmark_square_matrices.run(show_plots=True, print_data=True)
+    benchmark_batches.run(show_plots=True, print_data=True)

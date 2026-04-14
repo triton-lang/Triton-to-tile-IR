@@ -76,7 +76,10 @@ class ASTSource:
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
     def make_ir(self, target: GPUTarget, options, codegen_fns, module_map, context):
-        from .code_generator import ast_to_ttir
+        if os.environ.get("ENABLE_TILE", "0") == "1":
+            from ..backends.tileir.code_generator import ast_to_ttir
+        else:
+            from .code_generator import ast_to_ttir
         return ast_to_ttir(self.fn, self, context=context, options=options, codegen_fns=codegen_fns,
                            module_map=module_map)
 
@@ -229,6 +232,7 @@ def compile(src, target=None, options=None, _env_vars=None):
     compilation_listener = knobs.compilation.listener
     if compilation_listener:
         timer = CompileTimer()
+
     if os.environ.get("ENABLE_TILE", "0") == "1" and target is not None and target.backend == "cuda":
         # torch.compile will set the target to cuda, but we need to compile the kernel for tileir
         target = GPUTarget("tileir", target.arch, target.warp_size)
@@ -441,6 +445,15 @@ class CompiledKernel:
         self.function = None
         self._run = None
 
+    def __del__(self):
+
+        if self.module is not None:
+            if knobs.runtime.kernel_unload_hook is not None:
+                knobs.runtime.kernel_unload_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
+
+            driver.active.utils.unload_module(self.module)
+            self.module = None
+
     def _init_handles(self):
         if self.module is not None:
             return
@@ -478,8 +491,7 @@ class CompiledKernel:
             # * n_regs, n_spills, smem size should be metadata generated in lowerings.
             # * load_binary function signature has been changed.
             if knobs.runtime.kernel_load_start_hook is not None:
-                knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group,
-                                                     self.hash)
+                knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
             from collections import namedtuple
             (
                 self.module,
@@ -490,7 +502,7 @@ class CompiledKernel:
                 self.n_max_threads,
             ) = driver.active.utils.load_binary(self.name, self.kernel, device)
             if "shared" not in self.metadata._fields:
-                KernelMetadata = namedtuple("KernelMetadata", self.metadata._fields + ("shared", ))
+                KernelMetadata = namedtuple("KernelMetadata", self.metadata._fields + ("shared",))
                 self.metadata = KernelMetadata(**self.metadata._asdict(), shared=self.static_smem_bytes)
             # not enough shared memory to run the kernel
             max_shared = max_shared_mem(device)
@@ -507,8 +519,7 @@ class CompiledKernel:
             if self.metadata.shared > max_shared:
                 raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
             if knobs.runtime.kernel_load_start_hook is not None:
-                knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group,
-                                                     self.hash)
+                knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
             # TODO: n_regs, n_spills should be metadata generated when calling `ptxas`
             self.module, self.function, self.n_regs, self.n_spills, self.n_max_threads = driver.active.utils.load_binary(
                 self.name, self.kernel, self.metadata.shared, device)
@@ -547,3 +558,4 @@ class CompiledKernel:
                      knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *args)
 
         return runner
+

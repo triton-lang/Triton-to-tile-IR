@@ -19,7 +19,7 @@ current_target.__triton_builtin__ = True
 @constexpr_function
 def is_cuda():
     target = current_target()
-    return target is not None and target.backend == "cuda"
+    return target is not None and target.backend in ["cuda", "tileir"]
 
 
 @constexpr_function

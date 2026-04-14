@@ -20,8 +20,8 @@ def is_hopper_or_blackwell():
 
 
 @pytest.mark.skipif(is_hip(), reason="warp specialization is not supported on hip devices")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, ttgir")
 @pytest.mark.skipif(not is_hopper_or_blackwell(), reason="Requires Hopper or Blackwell")
-@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support ttgir")
 def test_warp_specialize_basic_ir(tmp_path: pathlib.Path):
     ir = """
     tt.func @kernel(%arg0: !tt.ptr<i32>) {
@@ -56,8 +56,8 @@ def test_warp_specialize_basic_ir(tmp_path: pathlib.Path):
 
 
 @pytest.mark.skipif(is_hip(), reason="warp specialization is not supported on hip devices")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, ttgir")
 @pytest.mark.skipif(not is_blackwell(), reason="Requires Blackwell")
-@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support ttgir")
 def test_warp_specialize_tmem_ir(tmp_path: pathlib.Path):
     ir = """
     #blocked = #ttg.blocked<{sizePerThread = [1, 64], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [0, 1]}>
@@ -125,8 +125,8 @@ def test_warp_specialize_tmem_ir(tmp_path: pathlib.Path):
 
 
 @pytest.mark.skipif(is_hip(), reason="warp specialization is not supported on hip devices")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, ttgir")
 @pytest.mark.skipif(not is_hopper_or_blackwell(), reason="Requires Hopper or Blackwell")
-@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support ttgir")
 def test_warpgroup_reduction(tmp_path: pathlib.Path):
 
     def template(i, num_warps, in_ptr, out_ptr):
@@ -270,6 +270,7 @@ def exceeds_smem_capacity(num_stages, BLOCK_M, BLOCK_N, BLOCK_K, use_fp8):
 @pytest.mark.parametrize("a_use_tma", [False, True])
 @pytest.mark.parametrize("b_use_tma", [False, True])
 @pytest.mark.skipif(is_hip(), reason="warp specialization is not supported on hip devices")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, ttgir")
 @pytest.mark.skipif(not is_hopper_or_blackwell(), reason="Requires Hopper or Blackwell")
 def test_warp_specialize_tma_matmul(M, N, K, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages, num_warps, use_fp8,
                                     a_use_tma, b_use_tma):
@@ -303,31 +304,33 @@ def test_warp_specialize_tma_matmul(M, N, K, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_S
     cublas.matmul(A, B, ref_out)
     torch.testing.assert_close(ref_out.to(torch.float16), C.to(torch.float16), atol=0.03, rtol=0.03)
 
-    if not is_tileir():
-        ttgir = kernel.asm["ttgir"]
-        if is_blackwell():
-            assert "ttng.tc_gen5_mma" in ttgir
-        else:
-            assert "ttng.warp_group_dot" in ttgir
-        if a_use_tma or b_use_tma:
-            assert "ttng.async_tma_copy_global_to_local" in ttgir
-        if (not a_use_tma or not b_use_tma) and num_stages > 1:
-            assert "ttg.async_copy_global_to_local" in ttgir
-        if is_hopper() and (num_warps == 8 or num_stages <= 1):
-            assert "ttg.warp_specialize" not in ttgir
-        else:
-            assert "ttg.warp_specialize" in ttgir
+    ttgir = kernel.asm["ttgir"]
+    if is_blackwell():
+        assert "ttng.tc_gen5_mma" in ttgir
+    else:
+        assert "ttng.warp_group_dot" in ttgir
+    if a_use_tma or b_use_tma:
+        assert "ttng.async_tma_copy_global_to_local" in ttgir
+    if (not a_use_tma or not b_use_tma) and num_stages > 1:
+        assert "ttg.async_copy_global_to_local" in ttgir
+    if is_hopper() and (num_warps == 8 or num_stages <= 1):
+        assert "ttg.warp_specialize" not in ttgir
+    else:
+        assert "ttg.warp_specialize" in ttgir
 
 
 @pytest.mark.parametrize("M, N, K", [(512, 512, 512)])
-@pytest.mark.parametrize("a_use_tma, b_use_tma", [(False, True), (True, True)])
+@pytest.mark.parametrize("num_stages", [0, 3])
+@pytest.mark.parametrize("a_use_tma", [False, True])
+@pytest.mark.parametrize("b_use_tma", [False, True])
 @pytest.mark.skipif(not is_hopper_or_blackwell(), reason="Requires Hopper or Blackwell")
-def test_warp_specialize_tma_matmul_consan(M, N, K, a_use_tma, b_use_tma, fresh_knobs):
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, ttgir")
+def test_warp_specialize_tma_matmul_consan(M, N, K, num_stages, a_use_tma, b_use_tma, fresh_knobs):
     if is_hopper():
         # FIXME: Hopper warp specialization generates incorrect debug info.
         triton.knobs.compilation.disable_line_info = True
     triton.knobs.compilation.instrumentation_mode = "consan"
-    test_warp_specialize_tma_matmul(M, N, K, BLOCK_SIZE_M=128, BLOCK_SIZE_N=128, BLOCK_SIZE_K=64, num_stages=3,
+    test_warp_specialize_tma_matmul(M, N, K, BLOCK_SIZE_M=128, BLOCK_SIZE_N=128, BLOCK_SIZE_K=64, num_stages=num_stages,
                                     num_warps=4, use_fp8=False, a_use_tma=a_use_tma, b_use_tma=b_use_tma)
 
 
@@ -390,6 +393,7 @@ def matmul_tma_persistent_ws_kernel(  #
 @pytest.mark.parametrize("a_use_tma", [False, True])
 @pytest.mark.parametrize("b_use_tma", [False, True])
 @pytest.mark.skipif(is_hip(), reason="warp specialization is not supported on hip devices")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, ttgir")
 @pytest.mark.skipif(not is_hopper_or_blackwell(), reason="Requires Hopper or Blackwell")
 def test_warp_specialize_tma_matmul_persistent(M, N, K, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages, num_warps,
                                                use_fp8, flatten, a_use_tma, b_use_tma):
@@ -423,20 +427,19 @@ def test_warp_specialize_tma_matmul_persistent(M, N, K, BLOCK_SIZE_M, BLOCK_SIZE
                                                    BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, GROUP_SIZE_M, NUM_SMS,
                                                    num_warps=num_warps, USE_FP8=use_fp8, FLATTEN=flatten
                                                    and is_blackwell(), A_USE_TMA=a_use_tma, B_USE_TMA=b_use_tma)
-    if not is_tileir():
-        ttgir = kernel.asm["ttgir"]
-        if is_blackwell():
-            assert "ttng.tc_gen5_mma" in ttgir
-        else:
-            assert "ttng.warp_group_dot" in ttgir
-        if a_use_tma or b_use_tma:
-            assert "ttng.async_tma_copy_global_to_local" in ttgir
-        if not a_use_tma or not b_use_tma:
-            assert "ttg.async_copy_global_to_local" in ttgir
-        if is_hopper() and num_warps == 8:
-            assert "ttg.warp_specialize" not in ttgir
-        else:
-            assert "ttg.warp_specialize" in ttgir
+    ttgir = kernel.asm["ttgir"]
+    if is_blackwell():
+        assert "ttng.tc_gen5_mma" in ttgir
+    else:
+        assert "ttng.warp_group_dot" in ttgir
+    if a_use_tma or b_use_tma:
+        assert "ttng.async_tma_copy_global_to_local" in ttgir
+    if not a_use_tma or not b_use_tma:
+        assert "ttg.async_copy_global_to_local" in ttgir
+    if is_hopper() and num_warps == 8:
+        assert "ttg.warp_specialize" not in ttgir
+    else:
+        assert "ttg.warp_specialize" in ttgir
 
     ref_out = torch.empty((M, N), dtype=dtype, device=device)
     cublas.matmul(A, B, ref_out)
@@ -444,9 +447,11 @@ def test_warp_specialize_tma_matmul_persistent(M, N, K, BLOCK_SIZE_M, BLOCK_SIZE
 
 
 @pytest.mark.parametrize("M, N, K", [(512, 512, 512)])
-@pytest.mark.parametrize("a_use_tma, b_use_tma", [(False, True), (True, True)])
+@pytest.mark.parametrize("a_use_tma", [False, True])
+@pytest.mark.parametrize("b_use_tma", [False, True])
 @pytest.mark.parametrize("flatten", [False, True] if is_blackwell() else [True])
 @pytest.mark.skipif(not is_hopper_or_blackwell(), reason="Requires Hopper or Blackwell")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, ttgir")
 def test_warp_specialize_tma_matmul_persistent_consan(M, N, K, a_use_tma, b_use_tma, flatten, fresh_knobs):
     if is_hopper():
         # FIXME: Hopper warp specialization generates incorrect debug info.
@@ -506,6 +511,7 @@ def attention_inner_loop_kernel(  #
 @pytest.mark.parametrize("num_warps", [4, 8])
 @pytest.mark.parametrize("use_fp8", [False, True])
 @pytest.mark.skipif(is_hip(), reason="warp specialization is not supported on hip devices")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir")
 @pytest.mark.skipif(not is_blackwell(), reason="Requires Blackwell")
 def test_warp_specialize_attention_forward(M, N, BLOCK_M, HEAD_DIM, num_stages, disable_acc_multibuf, num_warps,
                                            use_fp8):
@@ -750,8 +756,7 @@ def group_gemm_tma_fn(group_A, group_B):
     grid = lambda META: (META['NUM_SM'], )
     out = grouped_matmul_tma_kernel[grid](d_a_ptrs, d_b_ptrs, d_c_ptrs, M, N, K, d_g_lds, group_size, BLOCK_SIZE_M=128,
                                           BLOCK_SIZE_N=128, BLOCK_SIZE_K=64, NUM_SM=4, num_stages=3)
-    if not is_tileir():
-        assert "ttg.warp_specialize" not in out.asm["ttgir"]
+    assert "ttg.warp_specialize" in out.asm["ttgir"]
     return group_C
 
 
@@ -760,6 +765,7 @@ def group_gemm_tma_fn(group_A, group_B):
 @pytest.mark.parametrize("K", [128, 512, 1024, 2048, 4096])
 @pytest.mark.parametrize("group_size", [4, 8, 16])
 @pytest.mark.skipif(not is_blackwell(), reason="Requires Blackwell")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, ttgir")
 def test_grouped_gemm(M, N, K, group_size):
     torch.manual_seed(42)
     group_A = []

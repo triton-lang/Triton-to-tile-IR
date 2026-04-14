@@ -468,9 +468,6 @@ struct DirectToLdsLoadConversionBase : public LoadStoreConversionBase {
                                    : "direct from lds stores do not support "
                                      "non-trivial block dimension");
     }
-    cvt = cvt.sublayout(
-        {str_attr("register"), str_attr("lane"), str_attr("warp")},
-        {str_attr("offset")});
 
     // Multicast is only supported for loads
     Value ctaMulticastMask;
@@ -494,7 +491,9 @@ struct DirectToLdsLoadConversionBase : public LoadStoreConversionBase {
 
     auto lowerInstForwardMulticastMask =
         [&](RewriterBase &rewriter, Location loc, ArrayRef<Value> vals,
-            Value shmemAddr, int idx, VectorType vecTy) {
+            Value shmemAddr, int idx, VectorType vecTy,
+            std::optional<Value> ctaId) {
+          assert(!ctaId.has_value() && "NYI");
           return lowerInst(rewriter, loc, vals, shmemAddr, idx, vecTy,
                            ctaMulticastMask);
         };
@@ -1028,19 +1027,39 @@ struct AsyncCopyGlobalToLocalOpConversion
       if (cacheMod != triton::CacheModifier::NONE) {
         emitRemark(loc) << "cache modifiers not yet implemented on gfx1250";
       }
-      if (multicastMask) {
-        std::string intrinsic =
-            "llvm.amdgcn.cluster.load.async.to.lds.b" + std::to_string(vecBits);
-        auto globalLoadLdsOp = LLVM::createLLVMIntrinsicCallOp(
-            rewriter, loc, intrinsic, {},
-            {srcPtr, shmemAddr, b.i32_val(0), b.i32_val(cacheModifiers),
-             multicastMask});
-      } else {
-        std::string intrinsic =
-            "llvm.amdgcn.global.load.async.to.lds.b" + std::to_string(vecBits);
-        auto globalLoadLdsOp = LLVM::createLLVMIntrinsicCallOp(
-            rewriter, loc, intrinsic, {},
-            {srcPtr, shmemAddr, b.i32_val(0), b.i32_val(cacheModifiers)});
+      switch (vecBits) {
+      case 32:
+        if (multicastMask)
+          ROCDL::ClusterLoadAsyncToLDSB32Op::create(
+              rewriter, loc, srcPtr, shmemAddr, 0, cacheModifiers,
+              multicastMask, nullptr, nullptr, nullptr);
+        else
+          ROCDL::GlobalLoadAsyncToLDSB32Op::create(rewriter, loc, srcPtr,
+                                                   shmemAddr, 0, cacheModifiers,
+                                                   nullptr, nullptr, nullptr);
+        break;
+      case 64:
+        if (multicastMask)
+          ROCDL::ClusterLoadAsyncToLDSB64Op::create(
+              rewriter, loc, srcPtr, shmemAddr, 0, cacheModifiers,
+              multicastMask, nullptr, nullptr, nullptr);
+        else
+          ROCDL::GlobalLoadAsyncToLDSB64Op::create(rewriter, loc, srcPtr,
+                                                   shmemAddr, 0, cacheModifiers,
+                                                   nullptr, nullptr, nullptr);
+        break;
+      case 128:
+        if (multicastMask)
+          ROCDL::ClusterLoadAsyncToLDSB128Op::create(
+              rewriter, loc, srcPtr, shmemAddr, 0, cacheModifiers,
+              multicastMask, nullptr, nullptr, nullptr);
+        else
+          ROCDL::GlobalLoadAsyncToLDSB128Op::create(
+              rewriter, loc, srcPtr, shmemAddr, 0, cacheModifiers, nullptr,
+              nullptr, nullptr);
+        break;
+      default:
+        llvm_unreachable("Unsupported vec size for async load");
       }
     }
   }
@@ -1295,8 +1314,21 @@ struct AsyncTDMCopyLocalToGlobalOpConversion
       barrierPtr = smemObj.getBase();
     }
 
+    auto paddedEnc = dyn_cast<PaddedSharedEncodingAttr>(smemTy.getEncoding());
+    unsigned padInterval = 0;
+    unsigned padAmount = 0;
+    triton::LinearLayout sharedLayout;
+
+    if (paddedEnc) {
+      // Verifier ensures that there is exactly one interval-padding pair
+      padInterval = paddedEnc.getIntervals()[0];
+      padAmount = paddedEnc.getPaddings()[0];
+      sharedLayout = paddedEnc.getLinearComponent();
+    } else {
+      sharedLayout = triton::gpu::toLinearLayout(smemTy);
+    }
+
     // Verifier ensures smem is not usind a PaddedSharedEncodingAttr
-    auto sharedLayout = triton::gpu::toLinearLayout(smemTy);
     auto kBlock = rewriter.getStringAttr("block");
     auto cgaLayout = sharedLayout.sublayout(
         {kBlock}, to_vector(sharedLayout.getOutDimNames()));
@@ -1306,7 +1338,7 @@ struct AsyncTDMCopyLocalToGlobalOpConversion
     Value pred = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
     mlir::LLVM::AMD::emitTDMLoadStore(
         rewriter, loc, getTypeConverter(), desc, shapePerCTA, numWarps,
-        /*padInterval=*/0, /*padAmount=*/0, offset, dstPtr, pred,
+        padInterval, padAmount, offset, dstPtr, pred,
         /*multicastMask=*/{}, elementType, barrierPtr,
         /*isLoad=*/false, cgaLayout, ctaId);
 
@@ -1330,6 +1362,11 @@ struct AsyncTDMScatterOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
+
+    // Multi-CTA not supported for scatter
+    if (lookupNumCTAs(op) > 1) {
+      return op.emitError("TDM scatter does not support multi-CTA");
+    }
 
     auto tensorDescTy = op.getDesc().getType();
     auto smemTy = op.getSrc().getType();
@@ -1385,9 +1422,10 @@ struct AsyncTDMScatterOpConversion
     // Predicate must be i32 (not i1) to match other elements in group0
     Value pred = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
     mlir::LLVM::AMD::emitTDMGatherScatter(
-        rewriter, loc, getTypeConverter(), desc, shapePerCTA, srcPtr, pred,
-        elementType, barrierPtr, cgaLayout, ctaId, dstRowIndices, dstColOffset,
-        use32BitIndices, /*isGather=*/false);
+        rewriter, loc, getTypeConverter(), desc, shapePerCTA, /*padInterval=*/0,
+        /*padAmount=*/0, srcPtr, pred, elementType, barrierPtr, cgaLayout,
+        ctaId, dstRowIndices, dstColOffset, use32BitIndices,
+        /*isGather=*/false);
 
     rewriter.eraseOp(op);
     return success();
@@ -1410,8 +1448,15 @@ struct AsyncTDMGatherOpConversion
     auto loc = op.getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
 
+    // Multi-CTA not supported for gather
+    if (lookupNumCTAs(op) > 1) {
+      return op.emitError("TDM gather does not support multi-CTA");
+    }
+
     auto tensorDescTy = op.getDesc().getType();
     auto smemTy = op.getDst().getType();
+    auto paddedEnc =
+        llvm::dyn_cast<PaddedSharedEncodingAttr>(smemTy.getEncoding());
     Type elementType = getTypeConverter()->convertType(smemTy.getElementType());
 
     SmallVector<Value> desc =
@@ -1455,7 +1500,19 @@ struct AsyncTDMGatherOpConversion
         srcRowIndicesType.getElementType().getIntOrFloatBitWidth() == 32;
 
     // Create the CGA layout
-    auto sharedLayout = triton::gpu::toLinearLayout(smemTy);
+    triton::LinearLayout sharedLayout;
+    unsigned padInterval = 0;
+    unsigned padAmount = 0;
+    if (paddedEnc) {
+      assert(paddedEnc.getIntervals().size() == 1 &&
+             paddedEnc.getPaddings().size() == 1);
+      sharedLayout = paddedEnc.getLinearComponent();
+      padInterval = paddedEnc.getIntervals()[0];
+      padAmount = paddedEnc.getPaddings()[0];
+    } else {
+      sharedLayout = triton::gpu::toLinearLayout(smemTy);
+    }
+
     auto kBlock = rewriter.getStringAttr("block");
     auto cgaLayout = sharedLayout.sublayout(
         {kBlock}, to_vector(sharedLayout.getOutDimNames()));
@@ -1464,9 +1521,9 @@ struct AsyncTDMGatherOpConversion
     // Predicate must be i32 (not i1) to match other elements in group0
     Value pred = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
     mlir::LLVM::AMD::emitTDMGatherScatter(
-        rewriter, loc, getTypeConverter(), desc, shapePerCTA, dstPtr, pred,
-        elementType, barrierPtr, cgaLayout, ctaId, srcRowIndices, srcColOffset,
-        use32BitIndices, /*isGather=*/true);
+        rewriter, loc, getTypeConverter(), desc, shapePerCTA, padInterval,
+        padAmount, dstPtr, pred, elementType, barrierPtr, cgaLayout, ctaId,
+        srcRowIndices, srcColOffset, use32BitIndices, /*isGather=*/true);
 
     rewriter.eraseOp(op);
     return success();
@@ -2152,6 +2209,51 @@ struct AtomicRMWOpConversion
             ? std::optional<Value>(getSharedMemoryBase(
                   loc, rewriter, targetInfo, op.getOperation()))
             : std::nullopt;
+
+    // Emit a compiler fence to prevent LLVM's MachineSink from sinking
+    // preceding LDS loads (e.g., from ConvertLayoutOps that feed into this
+    // atomic) past barriers introduced by the atomic lowering below.
+    //
+    // Root cause: MachineSink's isSafeToMove() only sets SawStore for
+    // instructions with mayStore(), not for UnmodeledSideEffects. AMDGPU
+    // barriers have UnmodeledSideEffects but not mayStore(), so loads can
+    // be sunk past them into successor blocks.
+    //
+    // When buffer atomics are not enabled for the target (see
+    // ConvertToBufferOps.cpp), this AtomicRMWOp lowering path is used instead.
+    // emitAtomicRMW() below creates a condBr that splits the current block to
+    // mask which threads execute the atomic. Without this fence, preceding LDS
+    // loads (from ConvertLayoutOps or reduce cross-warp communication) can be
+    // sunk past barriers in the successor blocks. On targets where buffer
+    // atomics ARE enabled (e.g., gfx950), LLVM replaces the condBr with buffer
+    // atomic OOB offset masking, eliminating the block split entirely and
+    // avoiding this issue.
+    //
+    // This inline asm has mayStore()=true via the "~{memory}" constraint,
+    // which sets SawStore in MachineSink's bottom-up walk, preventing any
+    // preceding loads from being sunk past this point.
+    //
+    // This is the only fence needed: emitAtomicRMW() is the only lowering
+    // pattern that creates a condBr splitting a block with preceding LDS
+    // loads where successor blocks contain barriers. If new lowering
+    // patterns with similar structure are added, they will need their own
+    // fence.
+    //
+    // This is a workaround for
+    // https://github.com/llvm/llvm-project/issues/181708.
+    if (tensorTy && targetInfo.getISAFamily() == ISAFamily::GFX1250) {
+      auto asmDialectAttr = LLVM::AsmDialectAttr::get(rewriter.getContext(),
+                                                      LLVM::AsmDialect::AD_ATT);
+      auto asmTy = LLVM::LLVMVoidType::get(rewriter.getContext());
+      LLVM::InlineAsmOp::create(
+          rewriter, loc, asmTy,
+          /*operands=*/ValueRange{},
+          /*asm_string=*/"",
+          /*constraints=*/"~{memory}",
+          /*has_side_effects=*/true,
+          /*is_align_stack=*/false, LLVM::TailCallKind::None, asmDialectAttr,
+          /*operand_attrs=*/ArrayAttr::get(rewriter.getContext(), {}));
+    }
 
     SmallVector<Value> resultVals(elemsPerThread);
     for (size_t i = 0; i < elemsPerThread; i += vec) {

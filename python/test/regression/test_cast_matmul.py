@@ -11,10 +11,10 @@ import torch
 
 import triton
 import triton.language as tl
-from triton._internal_testing import is_hip_cdna3, is_cuda, is_hip, is_tileir
+from triton._internal_testing import is_hip_cdna3, is_cuda, is_hip
 
 input_dtypes = ["bfloat16", "float16", "float32"]
-if is_cuda() or is_tileir():
+if is_cuda():
     input_dtypes += ["int8", "float8_e5m2"]
     cc = torch.cuda.get_device_capability(0)
     if cc >= (8, 9):

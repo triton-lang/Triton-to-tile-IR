@@ -61,9 +61,9 @@ void init_triton_to_cudatile_passes(py::module &&m) {
   // nvidia-specificontext
   m.def("add_triton_to_cudatile", [](mlir::PassManager &pm, bool approx,
                                     bool ftz, int capability, int num_ctas,
-                                    int occupancy, std::optional<int> num_stages) {
+                                    int simt_num_warps, int occupancy, std::optional<int> num_stages) {
     pm.addPass(mlir::triton::createConvertTritonToCudaTilePass(
-        approx, ftz, capability, num_ctas, occupancy, num_stages));
+        approx, ftz, capability, num_ctas, simt_num_warps, occupancy, num_stages));
   });
   m.def("add_fma_fusion", [](mlir::PassManager &pm) {
     // Add FMA fusion pass to cuda tile entry operations

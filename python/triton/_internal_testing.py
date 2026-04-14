@@ -32,23 +32,20 @@ def get_current_target():
         return None
     return triton.runtime.driver.active.get_current_target()
 
-
 def is_cuda():
     target = get_current_target()
-    return False if target is None else target.backend == "cuda"
+    return False if target is None else target.backend in ["cuda", "tileir"]
 
-
+# [Diff] add tileir backend.
 def is_tileir():
-    target = get_current_target()
-    return False if target is None else target.backend == "tileir"
-
+    return get_current_target().backend == "tileir"
 
 def is_ampere_or_newer():
-    return (is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] >= 8
+    return is_cuda() and torch.cuda.get_device_capability()[0] >= 8
 
 
 def is_blackwell():
-    return (is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] in [10, 11]
+    return is_cuda() and torch.cuda.get_device_capability()[0] in [10, 11]
 
 
 def is_blackwell_ultra():
@@ -56,11 +53,11 @@ def is_blackwell_ultra():
 
 
 def is_hopper_or_newer():
-    return (is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] >= 9
+    return is_cuda() and torch.cuda.get_device_capability()[0] >= 9
 
 
 def is_hopper():
-    return (is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] == 9
+    return is_cuda() and torch.cuda.get_device_capability()[0] == 9
 
 
 def is_sm12x():
@@ -202,7 +199,7 @@ def to_numpy(x):
 def supports_tma(byval_only=False):
     if is_interpreter():
         return True
-    if not (is_cuda() or is_tileir()):
+    if not is_cuda():
         return False
     cuda_version = knobs.nvidia.ptxas.version
     min_cuda_version = (12, 0) if byval_only else (12, 3)

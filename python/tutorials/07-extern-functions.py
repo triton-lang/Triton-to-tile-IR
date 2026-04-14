@@ -48,52 +48,54 @@ def asin_kernel(
 #  Using the default libdevice library path
 # -----------------------------------------
 # We can use the default libdevice library path encoded in `triton/language/math.py`
+def test():
+    torch.manual_seed(0)
+    size = 98432
+    x = torch.rand(size, device=DEVICE)
+    output_triton = torch.zeros(size, device=DEVICE)
+    output_torch = torch.asin(x)
+    assert x.is_cuda and output_triton.is_cuda
+    n_elements = output_torch.numel()
+    grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']), )
+    asin_kernel[grid](x, output_triton, n_elements, BLOCK_SIZE=1024)
+    print(output_torch)
+    print(output_triton)
+    print(f'The maximum difference between torch and triton is '
+        f'{torch.max(torch.abs(output_torch - output_triton))}')
 
-torch.manual_seed(0)
-size = 98432
-x = torch.rand(size, device=DEVICE)
-output_triton = torch.zeros(size, device=DEVICE)
-output_torch = torch.asin(x)
-assert x.is_cuda and output_triton.is_cuda
-n_elements = output_torch.numel()
-grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']), )
-asin_kernel[grid](x, output_triton, n_elements, BLOCK_SIZE=1024)
-print(output_torch)
-print(output_triton)
-print(f'The maximum difference between torch and triton is '
-      f'{torch.max(torch.abs(output_torch - output_triton))}')
-
-
-# %%
-#  Customize the libdevice library path
-# -------------------------------------
-# We can also customize the libdevice library path by passing the path to the `libdevice` library to the `asin` kernel.
-def is_cuda():
-    return triton.runtime.driver.active.get_current_target().backend == "cuda"
-
-
-def is_hip():
-    return triton.runtime.driver.active.get_current_target().backend == "hip"
+    # %%
+    #  Customize the libdevice library path
+    # -------------------------------------
+    # We can also customize the libdevice library path by passing the path to the `libdevice` library to the `asin` kernel.
+    def is_cuda():
+        return triton.runtime.driver.active.get_current_target().backend in ["cuda", "tileir"]
 
 
-current_file = inspect.getfile(inspect.currentframe())
-current_dir = Path(os.path.dirname(os.path.abspath(current_file)))
+    def is_hip():
+        return triton.runtime.driver.active.get_current_target().backend == "hip"
 
-if is_cuda():
-    libdir = current_dir.parent.parent / 'third_party/nvidia/backend/lib'
-    extern_libs = {'libdevice': str(libdir / 'libdevice.10.bc')}
-elif is_hip():
-    libdir = current_dir.parent.parent / 'third_party/amd/backend/lib'
-    extern_libs = {}
-    libs = ["ocml", "ockl"]
-    for lib in libs:
-        extern_libs[lib] = str(libdir / f'{lib}.bc')
-else:
-    raise RuntimeError('unknown backend')
 
-output_triton = torch.empty_like(x)
-asin_kernel[grid](x, output_triton, n_elements, BLOCK_SIZE=1024, extern_libs=extern_libs)
-print(output_torch)
-print(output_triton)
-print(f'The maximum difference between torch and triton is '
-      f'{torch.max(torch.abs(output_torch - output_triton))}')
+    current_file = inspect.getfile(inspect.currentframe())
+    current_dir = Path(os.path.dirname(os.path.abspath(current_file)))
+
+    if is_cuda():
+        libdir = current_dir.parent.parent / 'third_party/nvidia/backend/lib'
+        extern_libs = {'libdevice': str(libdir / 'libdevice.10.bc')}
+    elif is_hip():
+        libdir = current_dir.parent.parent / 'third_party/amd/backend/lib'
+        extern_libs = {}
+        libs = ["ocml", "ockl"]
+        for lib in libs:
+            extern_libs[lib] = str(libdir / f'{lib}.bc')
+    else:
+        raise RuntimeError('unknown backend')
+
+    output_triton = torch.empty_like(x)
+    asin_kernel[grid](x, output_triton, n_elements, BLOCK_SIZE=1024, extern_libs=extern_libs)
+    print(output_torch)
+    print(output_triton)
+    print(f'The maximum difference between torch and triton is '
+        f'{torch.max(torch.abs(output_torch - output_triton))}')
+
+if __name__ == "__main__":
+    test()

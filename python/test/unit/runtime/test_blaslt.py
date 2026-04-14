@@ -1,11 +1,11 @@
 import pytest
 import torch
-from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4, is_tileir
+from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4
 from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor
 
 
 def supports_block_scaling():
-    return (is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] == 10
+    return is_cuda() and torch.cuda.get_device_capability()[0] >= 10
 
 
 @pytest.mark.parametrize("m, n, k", [(16, 16, 16), (32, 16, 16), (16, 32, 16), (16, 16, 32)])
@@ -13,7 +13,7 @@ def supports_block_scaling():
 def test_blaslt(m, n, k, dtype_str, device):
     dtype = getattr(torch, dtype_str)
 
-    if is_cuda() or is_tileir():
+    if is_cuda():
         from triton._C.libtriton import nvidia as vendor
         if dtype_str == "float8_e4m3fnuz":
             pytest.skip("float8_e4m3fnuz is not supported on CUDA")
@@ -58,7 +58,16 @@ def test_blaslt(m, n, k, dtype_str, device):
     assert torch.allclose(c.to(torch.float16), ref, atol=2.0)
 
 
-@pytest.mark.parametrize("m, n, k", [(256, 256, 512), (512, 512, 512), (1024, 1024, 1024)])
+@pytest.mark.parametrize(
+    "m, n, k",
+    [
+        (256, 256, 512),
+        (256, 512, 512),
+        (512, 256, 512),
+        (512, 512, 512),
+        (1024, 1024, 1024),
+    ],
+)
 def test_block_scaled_matmul_mxfp8(m, n, k, device):
     """Test block-scaled matmul with MXFP8 format (FP8 E4M3 inputs, E8M0 scales)."""
     if not is_cuda():

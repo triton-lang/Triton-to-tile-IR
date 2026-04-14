@@ -3,11 +3,12 @@ import tracemalloc
 import pytest
 import pathlib
 import os
+import numpy as np
 
 import torch
 import triton
 import triton.language as tl
-from triton._internal_testing import is_cuda, is_hip, is_tileir
+from triton._internal_testing import is_cuda, is_hip
 
 
 def test_metadata() -> None:
@@ -153,8 +154,6 @@ def test_multiple_hooks() -> None:
 ])
 def test_launch_with_options(options) -> None:
     if "extern_libs" in options:
-        if is_tileir():
-            pytest.skip("tileir backend doesn't support extern_libs")
         # copied from tutorials/07-extern-functions.py
         current_dir = pathlib.Path(os.path.dirname(os.path.abspath(__file__)))
         if is_cuda():
@@ -231,3 +230,13 @@ def test_pre_run_hooks(device):
     a = torch.ones(n_elements, device=device, dtype=torch.int32)
     add_kernel.run(a, n_elements, grid=(1, ), warmup=False)
     assert torch.all(a == 2)
+
+
+def test_interpreter_implicit_cvt_bool() -> None:
+    from triton.runtime.interpreter import _implicit_cvt
+
+    value = _implicit_cvt(True)
+
+    assert value.dtype == tl.int1
+    assert value.handle.data.dtype == np.bool_
+    assert bool(value.handle.data[0]) is True

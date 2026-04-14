@@ -35,7 +35,7 @@ else()
 
     # Clone then fetch the pinned commit (--depth 1 alone only gets default branch tip;
     # we need this exact commit for patch compatibility).
-    set(CUDA_TILE_COMMIT 8a775693b18303d6c696be6ffd06dadad1b32a8e)
+    set(CUDA_TILE_COMMIT 0859212ad19f71133a9b940c05323286cbf28a05)
     execute_process(
       COMMAND bash -c "git clone --depth 1 https://github.com/NVIDIA/cuda-tile tileir_src && cd tileir_src && git fetch --depth 1 origin ${CUDA_TILE_COMMIT} && git checkout FETCH_HEAD"
       WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}

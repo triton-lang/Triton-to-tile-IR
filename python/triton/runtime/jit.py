@@ -23,10 +23,15 @@ from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dic
 import os
 from .cache import get_cache_key
 from ..runtime.driver import driver
+from triton.backends.tileir.driver import GlobalTileIRDriver
+from triton.backends.nvidia.driver import GlobalNvidiaDriver
+
 from triton._C.libtriton import get_cache_invalidating_env_vars, native_specialize_impl, ir
 
 TRITON_MODULE = "triton.language"
 GLUON_MODULE = "triton.experimental.gluon.language"
+
+INDENT_PATTERN = re.compile(r"^(?P<indent>[ \t]*)def\s+\w+\s*\(", re.MULTILINE)
 
 T = TypeVar("T")
 
@@ -127,6 +132,7 @@ class DependenciesFinder(ast.NodeVisitor):
             return
 
         if getattr(val, "__triton_aggregate__", False):
+            self.hasher.update(str(val.__annotations__).encode("utf-8"))
             for attr in val.hash_attrs:
                 self.record_reference(attr)
             return
@@ -180,6 +186,7 @@ class DependenciesFinder(ast.NodeVisitor):
 
         self.record_reference(val, var_dict, node.id)
         return val
+
 
     def visit_Tuple(self, node):
         # We need to explicitly return the tuple values so that visit_Assign can
@@ -358,6 +365,25 @@ def mangle_type(arg, specialize=False):
 
 class KernelInterface(Generic[T]):
     run: T
+    enable_tile = os.environ.get("ENABLE_TILE", "0") == "1"
+
+    def tileir_run(self, *args, grid, warmup, **kwargs):
+        try:
+            driver.set_active(GlobalTileIRDriver)
+            ret = self.run(grid=grid, warmup=False, *args, **kwargs)
+        except RuntimeError:
+            # Fallback TileIR -> native driver on RuntimeError; off unless TRITON_TILEIR_RUNTIME_FALLBACK=1.
+            tileir_runtime_fallback = os.environ.get("TRITON_TILEIR_RUNTIME_FALLBACK", "0") == "1"
+            if not tileir_runtime_fallback:
+                raise
+            os.environ["ENABLE_TILE"] = "0"
+            driver.set_active(GlobalNvidiaDriver)
+            try:
+                ret = self.run(grid=grid, warmup=False, *args, **kwargs)
+            finally:
+                os.environ["ENABLE_TILE"] = "1"
+                driver.set_active(GlobalTileIRDriver)
+        return ret
 
     def warmup(self, *args, grid, **kwargs):
         return self.run(grid=grid, warmup=True, *map(MockTensor.wrap_dtype, args), **kwargs)
@@ -371,6 +397,8 @@ class KernelInterface(Generic[T]):
         Hence JITFunction.__getitem__ returns a callable proxy that
         memorizes the grid.
         """
+        if os.environ.get("ENABLE_TILE", "0") == "1" or self.enable_tile:
+            return lambda *args, **kwargs: self.tileir_run(grid=grid, warmup=False, *args, **kwargs)
         return lambda *args, **kwargs: self.run(grid=grid, warmup=False, *args, **kwargs)
         # return cast(T, functools.partial(cast(Callable, self.run), grid=grid))
 
@@ -468,8 +496,16 @@ class JITCallable:
             raise ValueError("@jit functions should be defined in a Python file") from e
         self._fn_name = get_full_name(fn)
         self._hash_lock = threading.RLock()
+
         # function source code (without decorators)
-        src = textwrap.dedent("".join(self.raw_src))
+        raw_src_str = "".join(self.raw_src)
+
+        # get file name, starting line number and starting col number
+        self.file_name = fn.__code__.co_filename
+        self.def_file_line_number = get_def_line_number(self.raw_src, self.starting_line_number)
+        self.def_file_col_number = get_def_col_number(raw_src_str)
+
+        src = textwrap.dedent(raw_src_str)
         src = src[re.search(r"^def\s+\w+\s*\(", src, re.MULTILINE).start():]
         self._src = src
         self.hash = None
@@ -633,7 +669,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         name = self.fn.__qualname__
         module = self.fn.__module__
         arg_reprs = ", ".join([f"{param.name}: {ty}" for param, ty in zip(self.params, key[1])])
-        repr = f"{name}[num_warps={options.num_warps}, num_ctas={options.num_ctas}, num_stages={options.num_stages}, occupancy={options.occupancy}, enable_fp_fusion={options.enable_fp_fusion}, launch_cooperative_grid={options.launch_cooperative_grid}]({arg_reprs})"
+        repr = f"{name}[num_warps={options.num_warps}, num_ctas={options.num_ctas}, num_stages={options.num_stages}, enable_fp_fusion={options.enable_fp_fusion}, launch_cooperative_grid={options.launch_cooperative_grid}]({arg_reprs})"
         full_name = get_full_name(self.fn)
 
         specialization_data = serialize_specialization_data(full_name, signature, constants, configs[0], options, key,
@@ -646,7 +682,6 @@ class JITFunction(JITCallable, KernelInterface[T]):
             'num_warps': options.num_warps,
             'num_ctas': options.num_ctas,
             'num_stages': options.num_stages,
-            'occupancy': options.occupancy,
             'enable_fp_fusion': options.enable_fp_fusion,
             'launch_cooperative_grid': options.launch_cooperative_grid,
             'extern_libs': options.extern_libs,
@@ -811,6 +846,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         # Hooks that will be called prior to executing "run"
         self.pre_run_hooks = []
 
+
     def preload(self, specialization_data):
         import json
         import triton.language as tl
@@ -833,13 +869,13 @@ class JITFunction(JITCallable, KernelInterface[T]):
                 return tl.dtype(value)
             if isinstance(value, dict):
                 if 'constexpr' in value:
-                    return tl.constexpr(value['constexpr'])
+                    return tl.constexpr(convert_to_tuple_if_list(value['constexpr']))
                 if 'jit_function' in value:
                     jf_key = value['jit_function']
                     if jf_key in _triton_jit_function_registry:
                         return _triton_jit_function_registry[jf_key]
                     raise RuntimeError(f"Unable to resolve JITFunction {jf_key} for preload")
-            return value
+            return convert_to_tuple_if_list(value)
 
         constexprs = {key: _decode_constant(value) for key, value in zip(constant_keys, constant_vals)}
         attrs_keys = map(tuple, deserialized_obj['attrs_keys'])
@@ -1073,6 +1109,32 @@ def reinterpret(tensor, dtype):
         return TensorWrapper(tensor, dtype)
     else:
         raise TypeError(f"Cannot reinterpret a {type(tensor)}.")
+
+
+def get_def_line_number(raw_src, starting_line_number):
+    def_file_line_number = starting_line_number
+    # Match the following pattern:
+    # @triton.autotune(...) <- foo.__code__.co_firstlineno
+    # @triton.heuristics(...)
+    # @triton.jit
+    # def foo(...): <- this line is the first line
+    for idx, line in enumerate(raw_src):
+        if line.strip().startswith("def "):
+            def_file_line_number += idx
+            break
+    return def_file_line_number
+
+
+def get_def_col_number(raw_src_str):
+    # Find the amount of indenting to use in the source location information.
+    indented_def = INDENT_PATTERN.search(raw_src_str)
+    if not indented_def:
+        raise ValueError("No function definition found for kernel")
+    # Consider spaces and tabs as single characters to match the ast
+    def_file_col_number = len(indented_def.group("indent"))
+    # Columns start at 1
+    def_file_col_number += 1
+    return def_file_col_number
 
 
 def get_jit_fn_file_line(fn):

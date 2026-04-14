@@ -10,9 +10,9 @@ import numpy as np
 
 import triton
 from triton.backends.compiler import GPUTarget
-from triton._internal_testing import is_cuda, is_hip, is_tileir
+from triton._internal_testing import is_cuda, is_hip
 
-if is_cuda() or is_tileir():
+if is_cuda():
     from triton.backends.nvidia.driver import include_dirs, library_dirs
 
     def library_names():
@@ -365,7 +365,7 @@ def link_aot_kernels(dir):
 
 def generate_matmul_test_data(dir, M, N, K):
     a = np.random.randn(M * K).astype(np.float16).reshape((M, K))
-    b = np.random.randn(M * K).astype(np.float16).reshape((K, N))
+    b = np.random.randn(N * K).astype(np.float16).reshape((K, N))
     a_path = os.path.join(dir, "a.csv")
     b_path = os.path.join(dir, "b.csv")
     c_path = os.path.join(dir, "c.csv")
@@ -542,7 +542,6 @@ def test_compile_link_autotune_matmul():
             np.testing.assert_allclose(c_tri, c_ref * c_ref, atol=1e-4, rtol=1e-4)
 
 
-@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support ttgir")
 def test_ttgir_to_asm():
     src = """
 module attributes {{"ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = {warp_size} : i32, "ttg.num-ctas" = 1 : i32}} {{

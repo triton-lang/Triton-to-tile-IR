@@ -1,9 +1,11 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "MapElementwiseExpansion.h"
 #include "TritonToTileIR/Passes.h"
 #include "TritonToTileIR/TritonToTileIRPass.h"
 #include "TritonToTileIR/Utils.h"
@@ -33,6 +35,10 @@ using namespace mlir::bridge_utils;
 // We can safely assume that the pointer and strides in TMA descriptors are
 // divisible by 16. (Sizes can do not have this divisibility requirement.)
 static constexpr int64_t kTMAAlignment = 16;
+// TMA hardware limit for stride.
+constexpr unsigned long long kMaxStride = (1LL << 40) - 1;
+// TMA hardware limit for shape.
+constexpr unsigned long long kMaxShape = (1LL << 32) - 1;
 
 //
 // CudaTileConversion
@@ -111,11 +117,9 @@ public:
       rewriter.replaceOpWithNewOp<cuda_tile::FToFOp>(op, newResultTensorType,
                                                      absop);
       return success();
-    } else {
-      rewriter.replaceOpWithNewOp<cuda_tile::AbsFOp>(op, adaptor.getOperand());
-      return success();
     }
-    llvm_unreachable("unsupported type");
+    rewriter.replaceOpWithNewOp<cuda_tile::AbsFOp>(op, adaptor.getOperand());
+    return success();
   }
 };
 
@@ -195,38 +199,6 @@ public:
   }
 };
 
-class ConvertPrintOp : public OpConversionPattern<triton::PrintOp> {
-public:
-  using OpConversionPattern<triton::PrintOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(triton::PrintOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto prefix = op.getPrefix().str();
-    auto args = adaptor.getArgs();
-    std::string newPrefix = prefix;
-    for (Value arg : args) {
-      auto tileType = cast<cuda_tile::TileType>(arg.getType());
-      Type elType = tileType.getElementType();
-      if (isa<IntegerType>(elType)) {
-        newPrefix += "%i";
-      } else if (isa<FloatType>(elType)) {
-        newPrefix += "%.5f";
-      } else if (isa<cuda_tile::PointerType>(elType)) {
-        newPrefix += "%p";
-      } else {
-        llvm::report_fatal_error("unsupported type");
-      }
-    }
-    newPrefix += "\n";
-
-    // create new print op
-    auto newPrintOp =
-        cuda_tile::PrintOp::create(rewriter, op.getLoc(), newPrefix, args);
-    rewriter.replaceOp(op, newPrintOp);
-    return success();
-  }
-};
 
 class ConvertLoadOp : public OpConversionPattern<triton::LoadOp> {
 public:
@@ -250,9 +222,20 @@ public:
 
     auto sem = cuda_tile::MemoryOrderingSemanticsAttr::get(
         ctx, cuda_tile::MemoryOrderingSemantics::WEAK);
-
-    auto optHint = mlir::triton::utils::convertNumStagesToOptHint(
-        op, ctx, numStagesMap, computeCapability, numStages);
+    // There is no per op num_stages support in triton, and usually the
+    // global-scope num_stages is meant to tune for the large load op which are
+    // critical to performance. For small load op, we skip the num_stages hint.
+    auto tileType = cast<cuda_tile::TileType>(retType);
+    int64_t tileSizeInBytes =
+        tileType.getNumElements() *
+        (tileType.getElementType().getIntOrFloatBitWidth() / 8);
+    std::optional<cuda_tile::OptimizationHintsAttr> optHint;
+    if (tileSizeInBytes <= 256) {
+      optHint = std::nullopt;
+    } else {
+      optHint = mlir::triton::utils::convertNumStagesToOptHint(
+          op, ctx, numStagesMap, computeCapability, numStages);
+    }
 
     auto newLoadOp = cuda_tile::LoadPtrTkoOp::create(
         rewriter, op.getLoc(), retType, cuda_tile::TokenType::get(ctx), sem,
@@ -283,8 +266,21 @@ public:
     auto ctx = rewriter.getContext();
     auto sem = cuda_tile::MemoryOrderingSemanticsAttr::get(
         ctx, cuda_tile::MemoryOrderingSemantics::WEAK);
-    auto optHint = mlir::triton::utils::convertNumStagesToOptHint(
-        op, ctx, numStagesMap, computeCapability, numStages);
+
+    // There is no per op num_stages support in triton, and usually the
+    // global-scope num_stages is meant to tune for the large store op which are
+    // critical to performance. For small store op, we skip the num_stages hint.
+    auto tileType = cast<cuda_tile::TileType>(adaptor.getValue().getType());
+    int64_t tileSizeInBytes =
+        tileType.getNumElements() *
+        (tileType.getElementType().getIntOrFloatBitWidth() / 8);
+    std::optional<cuda_tile::OptimizationHintsAttr> optHint;
+    if (tileSizeInBytes <= 256) {
+      optHint = std::nullopt;
+    } else {
+      optHint = mlir::triton::utils::convertNumStagesToOptHint(
+          op, ctx, numStagesMap, computeCapability, numStages);
+    }
 
     cuda_tile::StorePtrTkoOp::create(
         rewriter, op.getLoc(), cuda_tile::TokenType::get(ctx), sem,
@@ -300,7 +296,8 @@ template <typename TargetOp>
 void createTargetOp(ConversionPatternRewriter &rewriter, triton::FuncOp op,
                     FunctionType newFunctionType,
                     TypeConverter::SignatureConversion &result,
-                    int computeCapability, int numCTAInCGA, int occupancy) {
+                    int computeCapability, int numCTAInCGA,
+                    int simtNumWarpsInCTA, int occupancy) {
   MLIRContext *ctx = rewriter.getContext();
 
   auto newKernelName = op.getSymName();
@@ -308,13 +305,16 @@ void createTargetOp(ConversionPatternRewriter &rewriter, triton::FuncOp op,
   TargetOp newOp;
   if constexpr (std::is_same_v<TargetOp, cuda_tile::EntryOp>) {
     llvm::StringRef archPrefix = "sm_";
-    auto numCTAAttr = rewriter.getNamedAttr(
-        "num_cta_in_cga", rewriter.getI32IntegerAttr(numCTAInCGA));
-    auto occupancyAttr = rewriter.getNamedAttr(
-        "occupancy", rewriter.getI32IntegerAttr(occupancy));
-    auto hintEntry = rewriter.getNamedAttr(
-        (archPrefix + llvm::Twine(computeCapability)).str(),
-        DictionaryAttr::get(ctx, {numCTAAttr, occupancyAttr}));
+        auto numCTAAttr =
+            rewriter.getNamedAttr("num_cta_in_cga",
+                                  rewriter.getI32IntegerAttr(numCTAInCGA));
+        auto occupancyAttr =
+            rewriter.getNamedAttr("occupancy",
+                                  rewriter.getI32IntegerAttr(occupancy));
+        auto hintEntry = rewriter.getNamedAttr(
+            (archPrefix + llvm::Twine(computeCapability)).str(),
+            DictionaryAttr::get(ctx,
+                                {numCTAAttr, occupancyAttr}));
     cuda_tile::OptimizationHintsAttr optHint =
         cuda_tile::OptimizationHintsAttr::get(
             ctx, DictionaryAttr::get(ctx, {hintEntry}));
@@ -343,12 +343,14 @@ public:
   using OpConversionPattern<triton::FuncOp>::OpConversionPattern;
   int computeCapability;
   int numCTAInCGA;
+  int simtNumWarpsInCTA;
   int occupancy;
   ConvertFuncOp(TypeConverter &typeConverter, MLIRContext *context,
-                int computeCapability, int numCTAInCGA, int occupancy)
+                int computeCapability, int numCTAInCGA, int simtNumWarpsInCTA,
+                int occupancy)
       : OpConversionPattern(typeConverter, context),
         computeCapability(computeCapability), numCTAInCGA(numCTAInCGA),
-        occupancy(occupancy) {};
+        simtNumWarpsInCTA(simtNumWarpsInCTA), occupancy(occupancy) {};
 
   LogicalResult
   matchAndRewrite(triton::FuncOp op, OpAdaptor adaptor,
@@ -384,7 +386,7 @@ public:
 
     createTargetOp<cuda_tile::EntryOp>(rewriter, op, newFunctionType, result,
                                        computeCapability, numCTAInCGA,
-                                       occupancy);
+                                       simtNumWarpsInCTA, occupancy);
     return success();
     return success();
   }
@@ -469,30 +471,34 @@ public:
     auto originalIndices = adaptor.getIndices();
 
     SmallVector<Value> indices;
-    auto tileSizes =
-        cast<cuda_tile::PartitionViewType>(view.getType()).getTileShape();
-    // openai's tma load use index id for global tensor, but we use index id for
-    // local tensor for example, if we have a global tensor G with tile size
-    // [t0, t1] openai tma load [i0, i1] means load G[i0 : i0  + t0, i1 : i1 +
-    // t1] cuda tile load [i0, i1] means load G[i0 * t0 : (i0 + 1) * t0, i1 * t1
-    // : (i1 + 1) * t1]
-    for (size_t i = 0; i < originalIndices.size(); i++) {
-      Value indicesWithBlockSize = originalIndices[i];
-      cuda_tile::TileType constType =
-          cuda_tile::TileType::get({}, rewriter.getI32Type());
-      auto tileSizeAttr = DenseIntElementsAttr::get(constType, {tileSizes[i]});
-      Value tileSizeOp = cuda_tile::ConstantOp::create(rewriter, op.getLoc(),
-                                                       constType, tileSizeAttr);
-      indices.push_back(
-          cuda_tile::DivIOp::create(rewriter, op.getLoc(), indicesWithBlockSize,
-                                    tileSizeOp, cuda_tile::Signedness::Signed));
+    SmallVector<int64_t> viewShapeVec;
+    Type viewTy = view.getType();
+
+    // Handle PartitionViewType
+    if (auto partTy = dyn_cast<cuda_tile::PartitionViewType>(viewTy)) {
+      // For PartitionViewType, we need to divide indices by tile size
+      auto tileSizes = partTy.getTileShape();
+      for (size_t i = 0; i < originalIndices.size(); i++) {
+        Value indicesWithBlockSize = originalIndices[i];
+        cuda_tile::TileType constType =
+            cuda_tile::TileType::get({}, rewriter.getI32Type());
+        auto tileSizeAttr =
+            DenseIntElementsAttr::get(constType, {tileSizes[i]});
+        Value tileSizeOp = cuda_tile::ConstantOp::create(
+            rewriter, op.getLoc(), constType, tileSizeAttr);
+        indices.push_back(cuda_tile::DivIOp::create(
+            rewriter, op.getLoc(), indicesWithBlockSize, tileSizeOp,
+            cuda_tile::Signedness::Signed));
+      }
+      for (size_t i = 0; i < tileSizes.size(); i++)
+        viewShapeVec.push_back(tileSizes[i]);
+    } else {
+      return rewriter.notifyMatchFailure(
+          op.getLoc(), "expect a partition view type");
     }
 
     auto tileShape = op.getResult().getType().getShape();
     auto elemTy = op.getResult().getType().getElementType();
-    SmallVector<int64_t> viewShapeVec;
-    for (size_t i = 0; i < tileSizes.size(); i++)
-      viewShapeVec.push_back(tileSizes[i]);
     auto viewTileTy = cuda_tile::TileType::get(ctx, viewShapeVec, elemTy);
 
     auto memOrder = cuda_tile::MemoryOrderingSemanticsAttr::get(
@@ -539,19 +545,27 @@ public:
 
     auto originalIndices = adaptor.getIndices();
     SmallVector<Value> indices;
-    auto tileSizes =
-        cast<cuda_tile::PartitionViewType>(view.getType()).getTileShape();
-    for (size_t i = 0; i < originalIndices.size(); i++) {
-      Value idxWithBlockSize = originalIndices[i];
-      auto tileSize = tileSizes[i];
-      cuda_tile::TileType constType =
-          cuda_tile::TileType::get({}, rewriter.getI32Type());
-      auto tileSizeAttr = DenseIntElementsAttr::get(constType, {tileSize});
-      Value tileSizeOp = cuda_tile::ConstantOp::create(rewriter, op.getLoc(),
-                                                       constType, tileSizeAttr);
-      indices.push_back(
-          cuda_tile::DivIOp::create(rewriter, op.getLoc(), idxWithBlockSize,
-                                    tileSizeOp, cuda_tile::Signedness::Signed));
+    Type viewTy = view.getType();
+
+    // Handle PartitionViewType
+    if (auto partTy = dyn_cast<cuda_tile::PartitionViewType>(viewTy)) {
+      // For PartitionViewType, we need to divide indices by tile size
+      auto tileSizes = partTy.getTileShape();
+      for (size_t i = 0; i < originalIndices.size(); i++) {
+        Value idxWithBlockSize = originalIndices[i];
+        auto tileSize = tileSizes[i];
+        cuda_tile::TileType constType =
+            cuda_tile::TileType::get({}, rewriter.getI32Type());
+        auto tileSizeAttr = DenseIntElementsAttr::get(constType, {tileSize});
+        Value tileSizeOp = cuda_tile::ConstantOp::create(
+            rewriter, op.getLoc(), constType, tileSizeAttr);
+        indices.push_back(cuda_tile::DivIOp::create(
+            rewriter, op.getLoc(), idxWithBlockSize, tileSizeOp,
+            cuda_tile::Signedness::Signed));
+      }
+    } else {
+      return rewriter.notifyMatchFailure(
+          op.getLoc(), "expect a partition view type");
     }
 
     auto optHint = mlir::triton::utils::convertNumStagesToOptHint(
@@ -567,6 +581,7 @@ public:
     return success();
   }
 };
+
 
 /// Convert an expand dims to a reshape by adding a new dimension (1) at a given
 /// position.
@@ -591,57 +606,324 @@ public:
   matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
+    auto symbol = op.getSymbol();
+
+    auto getTileType = [](Value v) {
+      return cast<cuda_tile::TileType>(v.getType());
+    };
+    auto rmNearestEven = cuda_tile::RoundingModeAttr::get(
+        rewriter.getContext(), cuda_tile::RoundingMode::NEAREST_EVEN);
+
+    auto splatFloat = [&](cuda_tile::TileType tileType, double value) -> Value {
+      auto elementType = cast<FloatType>(tileType.getElementType());
+      auto scalarAttr = rewriter.getFloatAttr(elementType, value);
+      auto denseAttr = cast<DenseIntOrFPElementsAttr>(
+          DenseElementsAttr::get(tileType, scalarAttr));
+      return cuda_tile::ConstantOp::create(rewriter, loc, tileType, denseAttr);
+    };
+    auto splatInt = [&](cuda_tile::TileType tileType, int64_t value) -> Value {
+      auto elementType = cast<IntegerType>(tileType.getElementType());
+      auto scalarAttr = rewriter.getIntegerAttr(elementType, value);
+      auto denseAttr = cast<DenseIntOrFPElementsAttr>(
+          DenseElementsAttr::get(tileType, scalarAttr));
+      return cuda_tile::ConstantOp::create(rewriter, loc, tileType, denseAttr);
+    };
+
+    auto addf = [&](Value a, Value b) -> Value {
+      return cuda_tile::AddFOp::create(rewriter, loc, a, b, rmNearestEven,
+                                       /*flush_to_zero=*/nullptr);
+    };
+    auto subf = [&](Value a, Value b) -> Value {
+      return cuda_tile::SubFOp::create(rewriter, loc, a, b, rmNearestEven,
+                                       /*flush_to_zero=*/nullptr);
+    };
+    auto mulf = [&](Value a, Value b) -> Value {
+      return cuda_tile::MulFOp::create(rewriter, loc, a, b, rmNearestEven,
+                                       /*flush_to_zero=*/nullptr);
+    };
+    auto divf = [&](Value a, Value b) -> Value {
+      return cuda_tile::DivFOp::create(rewriter, loc, a, b, rmNearestEven,
+                                       /*flush_to_zero=*/nullptr);
+    };
+    auto floor = [&](Value a) -> Value {
+      return cuda_tile::FloorOp::create(rewriter, loc, a);
+    };
+    auto sqrt = [&](Value a) -> Value {
+      return cuda_tile::SqrtOp::create(rewriter, loc, a, rmNearestEven,
+                                       /*flush_to_zero=*/nullptr);
+    };
+    auto exp = [&](Value a) -> Value {
+      return cuda_tile::ExpOp::create(rewriter, loc, a);
+    };
+    auto cmpf = [&](cuda_tile::ComparisonPredicate pred,
+                    cuda_tile::ComparisonOrdering ord, Value a,
+                    Value b) -> Value {
+      return cuda_tile::CmpFOp::create(rewriter, loc, pred, ord, a, b);
+    };
     // TODO: other math func support(use extern_eltwise or impl math func)
-    if (op.getSymbol() == "__nv_exp2f") {
-      rewriter.replaceOpWithNewOp<cuda_tile::Exp2Op>(op, adaptor.getSrcs()[0]);
+    if (symbol == "__nv_acosf" || symbol == "__nv_acos") {
+      // acos(x) = atan2(sqrt(1 - x^2), x)
+      Value x = adaptor.getSrcs()[0];
+      auto xType = getTileType(x);
+      Value one = splatFloat(xType, 1.0);
+      Value xx = mulf(x, x);
+      Value y = sqrt(subf(one, xx));
+      // cuda_tile.atan2 uses the conventional atan2(y, x) argument order.
+      rewriter.replaceOpWithNewOp<cuda_tile::Atan2Op>(op, y, x);
       return success();
-    } else if (op.getSymbol() == "__nv_ceil" ||
-               op.getSymbol() == "__nv_ceilf") {
+    } else if (symbol == "__nv_atanf" || symbol == "__nv_atan") {
+      // atan(x) = atan2(x, 1)
+      Value x = adaptor.getSrcs()[0];
+      auto xType = getTileType(x);
+      Value one = splatFloat(xType, 1.0);
+      // cuda_tile.atan2 uses the conventional atan2(y, x) argument order.
+      rewriter.replaceOpWithNewOp<cuda_tile::Atan2Op>(op, x, one);
+      return success();
+    } else if (symbol == "__nv_asinf" || symbol == "__nv_asin") {
+      // asin(x) = atan2(x, sqrt(1 - x^2))
+      Value x = adaptor.getSrcs()[0];
+      auto xType = getTileType(x);
+      Value one = splatFloat(xType, 1.0);
+      Value xx = mulf(x, x);
+      Value denom = sqrt(subf(one, xx));
+      // cuda_tile.atan2 uses the conventional atan2(y, x) argument order.
+      rewriter.replaceOpWithNewOp<cuda_tile::Atan2Op>(op, x, denom);
+      return success();
+    } else if (symbol == "__nv_rintf" || symbol == "__nv_rint" ||
+               symbol == "__nv_nearbyintf" || symbol == "__nv_nearbyint") {
+      // Round-to-nearest-even (ties to even).
+      Value x = adaptor.getSrcs()[0];
+      auto xType = getTileType(x);
+      Value f = floor(x);
+      Value d = subf(x, f); // d in [0, 1) for finite x
+
+      Value half = splatFloat(xType, 0.5);
+      Value one = splatFloat(xType, 1.0);
+      Value fPlusOne = addf(f, one);
+
+      Value gtHalf = cmpf(cuda_tile::ComparisonPredicate::GREATER_THAN,
+                          cuda_tile::ComparisonOrdering::ORDERED, d, half);
+      Value ltHalf = cmpf(cuda_tile::ComparisonPredicate::LESS_THAN,
+                          cuda_tile::ComparisonOrdering::ORDERED, d, half);
+
+      // Even check without int conversion: f is even iff (f * 0.5) is integer.
+      Value halfF = mulf(f, half);
+      Value halfFFloor = floor(halfF);
+      Value fIsEven =
+          cmpf(cuda_tile::ComparisonPredicate::EQUAL,
+               cuda_tile::ComparisonOrdering::ORDERED, halfF, halfFFloor);
+
+      Value tie =
+          cuda_tile::SelectOp::create(rewriter, loc, fIsEven, f, fPlusOne);
+      Value resLt = cuda_tile::SelectOp::create(rewriter, loc, ltHalf, f, tie);
+      Value res =
+          cuda_tile::SelectOp::create(rewriter, loc, gtHalf, fPlusOne, resLt);
+      rewriter.replaceOp(op, res);
+      return success();
+    } else if (symbol == "__nv_isnanf" || symbol == "__nv_isnand") {
+      // isnan(x) = unordered (x != x)
+      Value x = adaptor.getSrcs()[0];
+      auto resType = cast<cuda_tile::TileType>(
+          getTypeConverter()->convertType(op.getResult().getType()));
+      Value cond = cmpf(cuda_tile::ComparisonPredicate::NOT_EQUAL,
+                        cuda_tile::ComparisonOrdering::UNORDERED, x, x);
+      Value one = splatInt(resType, 1);
+      Value zero = splatInt(resType, 0);
+      Value res =
+          cuda_tile::SelectOp::create(rewriter, loc, resType, cond, one, zero);
+      rewriter.replaceOp(op, res);
+      return success();
+    } else if (symbol == "__nv_isinff" || symbol == "__nv_isinfd") {
+      // IEEE isinf classification via bitcast.
+      Value x = adaptor.getSrcs()[0];
+      auto xType = getTileType(x);
+      Type floatElemType = xType.getElementType();
+      auto resType = cast<cuda_tile::TileType>(
+          getTypeConverter()->convertType(op.getResult().getType()));
+
+      cuda_tile::TileType bitsType;
+      int64_t signMask = 0;
+      int64_t infBits = 0;
+      if (floatElemType.isF32()) {
+        auto shape = llvm::to_vector(xType.getShape());
+        bitsType = cuda_tile::TileType::get(shape, rewriter.getI32Type());
+        signMask = 0x7fffffffLL;
+        infBits = 0x7f800000LL;
+      } else if (floatElemType.isF64()) {
+        auto shape = llvm::to_vector(xType.getShape());
+        bitsType = cuda_tile::TileType::get(shape, rewriter.getI64Type());
+        signMask = 0x7fffffffffffffffLL;
+        infBits = 0x7ff0000000000000LL;
+      } else {
+        return rewriter.notifyMatchFailure(
+            op, llvm::Twine("unsupported type for ") + symbol +
+                    ": expected f32/f64 input");
+      }
+
+      Value bits = cuda_tile::BitcastOp::create(rewriter, loc, bitsType, x);
+      Value mask = splatInt(bitsType, signMask);
+      Value absBits = cuda_tile::AndIOp::create(rewriter, loc, bits, mask);
+      Value inf = splatInt(bitsType, infBits);
+      Value cond = cuda_tile::CmpIOp::create(
+          rewriter, loc, cuda_tile::ComparisonPredicate::EQUAL, absBits, inf,
+          cuda_tile::Signedness::Unsigned);
+
+      Value one = splatInt(resType, 1);
+      Value zero = splatInt(resType, 0);
+      Value res =
+          cuda_tile::SelectOp::create(rewriter, loc, resType, cond, one, zero);
+      rewriter.replaceOp(op, res);
+      return success();
+    } else if (symbol == "__nv_finitef" || symbol == "__nv_isfinited") {
+      // IEEE isfinite classification via bitcast.
+      Value x = adaptor.getSrcs()[0];
+      auto xType = getTileType(x);
+      Type floatElemType = xType.getElementType();
+      auto resType = cast<cuda_tile::TileType>(
+          getTypeConverter()->convertType(op.getResult().getType()));
+
+      cuda_tile::TileType bitsType;
+      int64_t signMask = 0;
+      int64_t infBits = 0;
+      if (symbol == "__nv_finitef") {
+        // finitef is only defined for fp32 in libdevice.
+        if (!floatElemType.isF32())
+          return rewriter.notifyMatchFailure(op,
+                                             "__nv_finitef expects f32 input");
+        auto shape = llvm::to_vector(xType.getShape());
+        bitsType = cuda_tile::TileType::get(shape, rewriter.getI32Type());
+        signMask = 0x7fffffffLL;
+        infBits = 0x7f800000LL;
+      } else {
+        // __nv_isfinited is fp64.
+        if (!floatElemType.isF64())
+          return rewriter.notifyMatchFailure(
+              op, "__nv_isfinited expects f64 input");
+        auto shape = llvm::to_vector(xType.getShape());
+        bitsType = cuda_tile::TileType::get(shape, rewriter.getI64Type());
+        signMask = 0x7fffffffffffffffLL;
+        infBits = 0x7ff0000000000000LL;
+      }
+
+      Value bits = cuda_tile::BitcastOp::create(rewriter, loc, bitsType, x);
+      Value mask = splatInt(bitsType, signMask);
+      Value absBits = cuda_tile::AndIOp::create(rewriter, loc, bits, mask);
+      Value inf = splatInt(bitsType, infBits);
+      Value cond = cuda_tile::CmpIOp::create(
+          rewriter, loc, cuda_tile::ComparisonPredicate::LESS_THAN, absBits,
+          inf, cuda_tile::Signedness::Unsigned);
+
+      Value one = splatInt(resType, 1);
+      Value zero = splatInt(resType, 0);
+      Value res =
+          cuda_tile::SelectOp::create(rewriter, loc, resType, cond, one, zero);
+      rewriter.replaceOp(op, res);
+      return success();
+    } else if (symbol == "__nv_erff" || symbol == "__nv_erf") {
+      // High-accuracy approximation (max error ~1.5e-7):
+      // https://stackoverflow.com/a/4578056
+      //
+      // t = 1 / (1 + 0.5 * |x|)
+      // tau = t * exp(-x^2 - 1.26551223 + t*(1.00002368 + t*(0.37409196 + ...
+      // ))) erf(x) = sign(x) * (1 - tau)
+      Value x = adaptor.getSrcs()[0];
+      auto xType = getTileType(x);
+      Type floatElemType = xType.getElementType();
+      if (!floatElemType.isF32() && !floatElemType.isF64()) {
+        return rewriter.notifyMatchFailure(
+            op, llvm::Twine("unsupported type for ") + symbol +
+                    ": expected f32/f64 input");
+      }
+
+      Value zero = splatFloat(xType, 0.0);
+      Value one = splatFloat(xType, 1.0);
+      Value half = splatFloat(xType, 0.5);
+
+      Value ax = cuda_tile::AbsFOp::create(rewriter, loc, x);
+      Value t = divf(one, addf(one, mulf(half, ax)));
+
+      // Horner form for the nested polynomial.
+      Value p = splatFloat(xType, 0.17087277);
+      p = addf(splatFloat(xType, -0.82215223), mulf(t, p));
+      p = addf(splatFloat(xType, 1.48851587), mulf(t, p));
+      p = addf(splatFloat(xType, -1.13520398), mulf(t, p));
+      p = addf(splatFloat(xType, 0.27886807), mulf(t, p));
+      p = addf(splatFloat(xType, -0.18628806), mulf(t, p));
+      p = addf(splatFloat(xType, 0.09678418), mulf(t, p));
+      p = addf(splatFloat(xType, 0.37409196), mulf(t, p));
+      p = addf(splatFloat(xType, 1.00002368), mulf(t, p));
+
+      Value negAx2 = subf(zero, mulf(ax, ax));
+      Value expArg =
+          addf(addf(negAx2, splatFloat(xType, -1.26551223)), mulf(t, p));
+      Value tau = mulf(t, exp(expArg));
+      Value erfAbs = subf(one, tau);
+
+      Value isNeg = cmpf(cuda_tile::ComparisonPredicate::LESS_THAN,
+                         cuda_tile::ComparisonOrdering::ORDERED, x, zero);
+      Value negErfAbs = subf(zero, erfAbs);
+      Value res =
+          cuda_tile::SelectOp::create(rewriter, loc, isNeg, negErfAbs, erfAbs);
+      rewriter.replaceOp(op, res);
+      return success();
+    } else if (symbol == "__nv_ceil" || symbol == "__nv_ceilf") {
       rewriter.replaceOpWithNewOp<cuda_tile::CeilOp>(op, adaptor.getSrcs()[0]);
       return success();
-    } else if (op.getSymbol() == "__nv_pow" || op.getSymbol() == "__nv_powf") {
+    } else if (symbol == "__nv_pow" || symbol == "__nv_powf") {
       rewriter.replaceOpWithNewOp<cuda_tile::PowOp>(op, adaptor.getSrcs()[0],
                                                     adaptor.getSrcs()[1]);
       return success();
-    } else if (op.getSymbol() == "__nv_cos" || op.getSymbol() == "__nv_cosf") {
+    } else if (symbol == "__nv_cos" || symbol == "__nv_cosf") {
       rewriter.replaceOpWithNewOp<cuda_tile::CosOp>(op, adaptor.getSrcs()[0]);
       return success();
-    } else if (op.getSymbol() == "__nv_sin" || op.getSymbol() == "__nv_sinf") {
+    } else if (symbol == "__nv_sin" || symbol == "__nv_sinf") {
       rewriter.replaceOpWithNewOp<cuda_tile::SinOp>(op, adaptor.getSrcs()[0]);
       return success();
-    } else if (op.getSymbol() == "__nv_tan" || op.getSymbol() == "__nv_tanf") {
+    } else if (symbol == "__nv_tan" || symbol == "__nv_tanf") {
       rewriter.replaceOpWithNewOp<cuda_tile::TanOp>(op, adaptor.getSrcs()[0]);
       return success();
-    } else if (op.getSymbol() == "__nv_exp" || op.getSymbol() == "__nv_expf") {
+    } else if (symbol == "__nv_exp" || symbol == "__nv_expf") {
       rewriter.replaceOpWithNewOp<cuda_tile::ExpOp>(op, adaptor.getSrcs()[0]);
       return success();
-    } else if (op.getSymbol() == "__nv_exp2" ||
-               op.getSymbol() == "__nv_exp2f") {
+    } else if (symbol == "__nv_fast_expf") {
+          rewriter.replaceOpWithNewOp<cuda_tile::ExpOp>(
+              op, adaptor.getSrcs()[0]);
+      return success();
+    } else if (symbol == "__nv_exp2" || symbol == "__nv_exp2f") {
       rewriter.replaceOpWithNewOp<cuda_tile::Exp2Op>(op, adaptor.getSrcs()[0]);
       return success();
-    } else if (op.getSymbol() == "__nv_log2f" ||
-               op.getSymbol() == "__nv_log2") {
+    } else if (symbol == "__nv_log2f" || symbol == "__nv_log2") {
       rewriter.replaceOpWithNewOp<cuda_tile::Log2Op>(op, adaptor.getSrcs()[0]);
       return success();
-    } else if (op.getSymbol() == "__nv_rsqrtf") {
+    } else if (symbol == "__nv_rsqrtf" || symbol == "__nv_rsqrt") {
       rewriter.replaceOpWithNewOp<cuda_tile::RsqrtOp>(op, adaptor.getSrcs()[0]);
       return success();
-    } else if (op.getSymbol() == "__nv_sqrtf") {
+    } else if (symbol == "__nv_sqrtf") {
       rewriter.replaceOpWithNewOp<cuda_tile::SqrtOp>(
           op, adaptor.getSrcs()[0], cuda_tile::RoundingMode::APPROX);
       return success();
-    } else if (op.getSymbol() == "__nv_floorf") {
+    } else if (symbol == "__nv_sqrt") {
+      // Prefer IEEE-style rounding for fp64 sqrt.
+      Value x = adaptor.getSrcs()[0];
+      rewriter.replaceOp(op, sqrt(x));
+      return success();
+    } else if (symbol == "__nv_floorf" || symbol == "__nv_floor") {
       rewriter.replaceOpWithNewOp<cuda_tile::FloorOp>(op, adaptor.getSrcs()[0]);
       return success();
-    } else if (op.getSymbol() == "__nv_tanhf" ||
-               op.getSymbol() == "__nv_tanh") {
-      rewriter.replaceOpWithNewOp<cuda_tile::TanHOp>(op, adaptor.getSrcs()[0]);
+    } else if (symbol == "__nv_tanhf" || symbol == "__nv_tanh") {
+      rewriter.replaceOpWithNewOp<cuda_tile::TanHOp>(
+          op, adaptor.getSrcs()[0]);
       return success();
-    } else if (op.getSymbol() == "__nv_fast_tanhf") {
-      rewriter.replaceOpWithNewOp<cuda_tile::TanHOp>(op, adaptor.getSrcs()[0]);
+    } else if (symbol == "__nv_fast_tanhf") {
+      rewriter.replaceOpWithNewOp<cuda_tile::TanHOp>(
+          op, adaptor.getSrcs()[0]);
       return success();
     }
-    return failure();
+    return rewriter.notifyMatchFailure(
+        op, llvm::Twine("unsupported extern_elementwise symbol for stable "
+                        "cuda_tile lowering: ") +
+                symbol +
+                ". Please add a rewrite in ConvertExternElementwiseOp.");
   }
 };
 
@@ -1375,18 +1657,23 @@ public:
   }
 };
 
-Value wrapIntoScalarTile(OpBuilder &rewriter, Value v,
-                         unsigned attachAlignment) {
+Value wrapIntoScalarTile(OpBuilder &rewriter, Value v, unsigned attachAlignment,
+                         int64_t attachRange) {
   auto ctx = v.getType().getContext();
   auto loc = v.getLoc();
-  if (v.getType().isInteger(64))
-    v = arith::TruncIOp::create(rewriter, loc, rewriter.getI32Type(), v)
+  if (v.getType().isInteger(32))
+    v = arith::ExtSIOp::create(rewriter, loc, rewriter.getI64Type(), v)
             .getResult();
   auto elemType = v.getType();
   auto scalarTileTy = cuda_tile::TileType::get(ctx, /*shape=*/{}, elemType);
   auto scalarTile =
       UnrealizedConversionCastOp::create(rewriter, loc, scalarTileTy, v)
           .getResult(0);
+  scalarTile = cuda_tile::AssumeOp::create(
+                   rewriter, loc, scalarTile,
+                   cuda_tile::BoundedAttr::get(ctx, 0, attachRange))
+                   .getResult();
+
   // we can always assume the stride are divisible by 16
   // because openai has already make it into host tma api.
   if (!attachAlignment)
@@ -1407,11 +1694,14 @@ Value wrapIntoScalarTile(OpBuilder &rewriter, Value v,
 /// devices which support tensor descriptors."
 ///
 /// This means that we can safely assume that the pointer and strides are
-/// divisible by 16. (Sizes can do not have this divisibility requirement.)
+/// divisible by 16. (Sizes do not have this divisibility requirement.)
 /// Using a pointer or strides that are not divisible by 16 will result in
 /// undefined behavior.
-///
 /// This lowering attaches the divisibility hints to the pointer and strides.
+///
+/// It is safe to assume that shapes are in the range [0, 2^32 - 1] and
+/// strides are in the range [0, 2^40 - 1]
+/// This lowering attaches the range hints to the shapes and strides.
 class ConvertMakeTensorDescOp
     : public OpConversionPattern<triton::MakeTensorDescOp> {
 public:
@@ -1454,9 +1744,13 @@ public:
     };
 
     SmallVector<Value> wrappedDynShapes;
+    // It is safe to assume that shapes are in the range [0, 2^32 - 1] which is
+    // the TMA hardware limit for shape. This ensures that if users explicitly
+    // want to use TMA for this operation, the shape parameters will satisfy TMA
+    // descriptor encoding requirements.
     for (auto v : op.getShape())
       wrappedDynShapes.push_back(
-          wrapIntoScalarTile(rewriter, v, /*attachAlignment=*/0));
+          wrapIntoScalarTile(rewriter, v, /*attachAlignment=*/0, kMaxShape));
     // Strides are required to be divisible by 16.
     SmallVector<Value> wrappedDynStrides;
     auto strides = op.getStrides();
@@ -1475,11 +1769,15 @@ public:
             (constValOpt.value() % align_byte != 0)) {
           op.emitWarning("the stride is expected to be divisible by 16-bytes, "
                          "may result in error");
-          wrappedDynStrides.push_back(
-              wrapIntoScalarTile(rewriter, stride, /*attachAlignment=*/0));
+          // It is safe to assume that shapes are in the range [0, 2^40 - 1]
+          // which is the TMA hardware limit for stride. This ensures that if
+          // users explicitly want to use TMA for this operation, the stride
+          // parameters will satisfy TMA descriptor encoding requirements.
+          wrappedDynStrides.push_back(wrapIntoScalarTile(
+              rewriter, stride, /*attachAlignment=*/0, kMaxStride));
         } else
           wrappedDynStrides.push_back(wrapIntoScalarTile(
-              rewriter, stride, /*attachAlignment=*/align_byte));
+              rewriter, stride, /*attachAlignment=*/align_byte, kMaxStride));
       }
     }
 
@@ -1507,18 +1805,19 @@ public:
 
     auto tileShape = op.getTensorShape();
     SmallVector<int32_t> arrayOfi32Shape;
-    for (auto i64Shape : tileShape)
+    for (auto i64Shape : tileShape) {
       arrayOfi32Shape.push_back(i64Shape);
+    }
 
-    auto tilePartitionViewTy = cuda_tile::PartitionViewType::get(
-        ctx, rewriter.getDenseI32ArrayAttr(arrayOfi32Shape), tensorViewTy,
-        dimMap,
-        cuda_tile::PaddingValueAttr::get(ctx, cuda_tile::PaddingValue::zero));
-
-    auto partitionViewOp = cuda_tile::MakePartitionViewOp::create(
-        rewriter, loc, tilePartitionViewTy, makeTensorViewOp);
-
-    rewriter.replaceOp(op, partitionViewOp);
+        auto tilePartViewTy = cuda_tile::PartitionViewType::get(
+            ctx, rewriter.getDenseI32ArrayAttr(arrayOfi32Shape), tensorViewTy,
+            dimMap,
+            cuda_tile::PaddingValueAttr::get(ctx, cuda_tile::PaddingValue::zero));
+    
+        auto partViewOp = cuda_tile::MakePartitionViewOp::create(
+            rewriter, loc, tilePartViewTy, makeTensorViewOp);
+    
+        rewriter.replaceOp(op, partViewOp);
     return success();
   }
 };
@@ -1715,6 +2014,7 @@ class ConvertDotOp : public OpConversionPattern<triton::DotOp> {
     return success();
   }
 };
+
 
 class ConvertTransOp : public OpConversionPattern<triton::TransOp> {
 public:
@@ -1989,7 +2289,8 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
     TypeConverter &typeConverter, RewritePatternSet &patterns,
     ConversionTarget &target, bool approx, bool flushToZero,
     DenseMap<Operation *, int> &numStagesMap, int computeCapability,
-    int numCTAInCGA, int occupancy, std::optional<int> numStages) {
+    int numCTAInCGA, int simtNumWarpsInCTA, int occupancy,
+    std::optional<int> numStages) {
   MLIRContext *context = patterns.getContext();
   // clang-format off
   patterns.add<
@@ -2037,6 +2338,7 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
     ConvertGenericOp<math::CosOp, cuda_tile::CosOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<math::CoshOp, cuda_tile::CosHOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<math::Exp2Op, cuda_tile::Exp2Op, Signedness::None, IntegerUpCast::None>,
+    ConvertGenericOp<math::ExpOp, cuda_tile::ExpOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<math::FloorOp, cuda_tile::FloorOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<math::FmaOp, cuda_tile::FmaOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<math::Log2Op, cuda_tile::Log2Op, Signedness::None, IntegerUpCast::None>,
@@ -2056,9 +2358,8 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
     ConvertGenericOp<triton::PreciseSqrtOp, cuda_tile::SqrtOp, Signedness::None, IntegerUpCast::None>
 >(typeConverter, context, approx, flushToZero);
 
-  patterns.add<ConvertFuncOp>(typeConverter, context, computeCapability, numCTAInCGA,  occupancy);
+  patterns.add<ConvertFuncOp>(typeConverter, context, computeCapability, numCTAInCGA, simtNumWarpsInCTA, occupancy);
   patterns.add<
-    ConvertGenericOp<math::ExpOp, cuda_tile::ExpOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<math::LogOp, cuda_tile::LogOp, Signedness::None, IntegerUpCast::None>
   >(typeConverter, context);
 
@@ -2087,7 +2388,6 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
     ConvertMaximumFOp,
     ConvertMinNumFOp,
     ConvertMinimumFOp,
-    ConvertPrintOp,
     ConvertReduceOp,
     ConvertReduceReturnOp,
     ConvertReshapeOp,
@@ -2107,7 +2407,8 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
 
   patterns.add<ConvertLoadOp, ConvertStoreOp>(typeConverter, context, numStagesMap, computeCapability, numStages);
 
-  patterns.add<ConvertDescriptorLoadOp, ConvertDescriptorStoreOp>(typeConverter, context, numStagesMap, computeCapability, numStages);
+    patterns.add<ConvertDescriptorLoadOp, ConvertDescriptorStoreOp>(
+        typeConverter, context, numStagesMap, computeCapability, numStages);
   patterns.add<ConvertMakeTensorDescOp>(context);
   // clang-format on
 }
@@ -2311,14 +2612,23 @@ static void convertTmaDescriptorOps(Operation *op, TypeConverter &converter) {
           i = i + rank - 1;
 
           SmallVector<Value> wrappedDynShapes;
+          // It is safe to assume that shapes are in the range [0, 2^32 - 1]
+          // which is the TMA hardware limit for shape. This ensures that if
+          // users explicitly want to use TMA for this operation, the shape
+          // parameters will satisfy TMA descriptor encoding requirements.
           for (auto v : shape)
-            wrappedDynShapes.push_back(
-                wrapIntoScalarTile(rewriter, v, /*attachAlignment=*/0));
+            wrappedDynShapes.push_back(wrapIntoScalarTile(
+                rewriter, v, /*attachAlignment=*/0, kMaxShape));
 
           SmallVector<Value> wrappedDynStrides;
+          // It is safe to assume that strides are in the range [0, 2^40 - 1]
+          // which is the TMA hardware limit for stride. This ensures that if
+          // users explicitly want to use TMA for this operation, the stride
+          // parameters will satisfy TMA descriptor encoding requirements.
           for (int i = 0; i < stride.size() - 1; i++)
-            wrappedDynStrides.push_back(wrapIntoScalarTile(
-                rewriter, stride[i], /*attachAlignment=*/align_byte));
+            wrappedDynStrides.push_back(
+                wrapIntoScalarTile(rewriter, stride[i],
+                                   /*attachAlignment=*/align_byte, kMaxStride));
 
           auto tileIRPtrType = cuda_tile::PointerType::get(pointeeType);
           auto ptrTypeWrapper =
@@ -2352,24 +2662,25 @@ static void convertTmaDescriptorOps(Operation *op, TypeConverter &converter) {
 
           auto tileShape = descBlock.getShape();
           SmallVector<int32_t> arrayOfi32Shape;
-          for (auto i64Shape : tileShape)
+          for (auto i64Shape : tileShape) {
             arrayOfi32Shape.push_back(i64Shape);
+          }
 
           SmallVector<int32_t> dimMap(rank);
           std::iota(dimMap.begin(), dimMap.end(), 0);
 
-          auto tilePartitionViewTy = cuda_tile::PartitionViewType::get(
-              ctx, rewriter.getDenseI32ArrayAttr(arrayOfi32Shape), tensorViewTy,
-              dimMap,
-              cuda_tile::PaddingValueAttr::get(ctx,
-                                               cuda_tile::PaddingValue::zero));
-
-          auto partitionViewOp = cuda_tile::MakePartitionViewOp::create(
-              rewriter, loc, tilePartitionViewTy, makeTensorViewOp);
-
-          auto castBackToTensorDescriptorOp =
-              UnrealizedConversionCastOp::create(rewriter, loc, tensorDescType,
-                                                 partitionViewOp.getResult());
+              auto tilePartViewTy = cuda_tile::PartitionViewType::get(
+                  ctx, rewriter.getDenseI32ArrayAttr(arrayOfi32Shape),
+                  tensorViewTy, dimMap,
+                  cuda_tile::PaddingValueAttr::get(ctx,
+                                                   cuda_tile::PaddingValue::zero));
+          
+              auto partViewOp = cuda_tile::MakePartitionViewOp::create(
+                  rewriter, loc, tilePartViewTy, makeTensorViewOp);
+          
+              auto castBackToTensorDescriptorOp =
+                  UnrealizedConversionCastOp::create(rewriter, loc, tensorDescType,
+                                                     partViewOp.getResult());
 
           rewriter.replaceAllUsesWith(
               tensorDesc, castBackToTensorDescriptorOp.getResult(0));
@@ -2426,6 +2737,9 @@ static void convertAxisAttributes(mlir::ModuleOp op,
     assumeAxisAttributes(rewriter, converter, assumption);
 }
 
+// map_elementwise pre-processing functions are in MapElementwiseExpansion.cpp.
+// expandMapElementwiseOps() is called from runOnOperation() below.
+
 struct ConvertTritonToCudaTile
     : public ::mlir::triton::impl::ConvertTritonToCudaTileBase<
           ConvertTritonToCudaTile> {
@@ -2437,12 +2751,14 @@ public:
 
   ConvertTritonToCudaTile() = default;
   ConvertTritonToCudaTile(bool approxModifier, bool flushToZeroModifier,
-                          int computeCapability, int numCTAInCGA, int occupancy,
+                          int computeCapability, int numCTAInCGA,
+                          int simtNumWarpsInCTA, int occupancy,
                           std::optional<int> numStages) {
     this->approxModifier = approxModifier;
     this->flushToZeroModifier = flushToZeroModifier;
     this->computeCapability = computeCapability;
     this->numCTAInCGA = numCTAInCGA;
+    this->simtNumWarpsInCTA = simtNumWarpsInCTA;
     this->occupancy = occupancy;
     this->numStages = numStages;
   }
@@ -2477,13 +2793,20 @@ public:
     // Get num_stages for load/store ops.
     getNumStages(mod.getOperation(), this->numStagesMap);
 
+    // Pre-processing: expand tt.map_elementwise into tensor-level ops.
+    // This must run before dialect conversion so the expanded arith/math ops
+    // get picked up by ConvertGenericOp patterns.
+    if (failed(mlir::triton::expandMapElementwiseOps(mod.getOperation())))
+      return signalPassFailure();
+
     // Dialect conversion: Convert all operations.
     CudaTileConversionTarget target(*context, typeConverter);
     RewritePatternSet patterns(context);
     populateTTirToCudaTileConversionPatternsAndLegality(
         typeConverter, patterns, target, this->approxModifier,
         this->flushToZeroModifier, this->numStagesMap, this->computeCapability,
-        this->numCTAInCGA, this->occupancy, this->numStages);
+        this->numCTAInCGA, this->simtNumWarpsInCTA, this->occupancy,
+        this->numStages);
 
     ConversionConfig config = ConversionConfig();
     config.buildMaterializations = false;
@@ -2518,8 +2841,9 @@ mlir::triton::createConvertTritonToCudaTilePass() {
 std::unique_ptr<OperationPass<ModuleOp>>
 mlir::triton::createConvertTritonToCudaTilePass(bool approx, bool ftz,
                                                 int capability, int num_ctas,
+                                                int simt_num_warps,
                                                 int occupancy,
                                                 std::optional<int> num_stages) {
   return std::make_unique<ConvertTritonToCudaTile>(
-      approx, ftz, capability, num_ctas, occupancy, num_stages);
+      approx, ftz, capability, num_ctas, simt_num_warps, occupancy, num_stages);
 }
