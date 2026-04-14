@@ -1,0 +1,92 @@
+name: nvtriton-tileir-ci
+on:
+  push:
+    branches:
+      - "pull-request/[0-9]+"
+  workflow_dispatch:  # Manual trigger since this is not the default branch
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/tileir' }}
+permissions:
+  contents: read
+  packages: write
+  pull-requests: read
+
+jobs:
+
+  config:
+    name: determine-context
+    runs-on: ubuntu-latest
+    outputs:
+      is_pr: ${{ steps.context.outputs.is_pr }}
+      artifact_suffix: ${{ steps.context.outputs.artifact_suffix }}
+      # Single place to change which wheel is tested in Docker and published as verified
+      wheel_py_version: ${{ steps.wheel.outputs.wheel_py_version }}
+      wheel_arch: ${{ steps.wheel.outputs.wheel_arch }}
+    steps:
+      - name: Determine if PR or main
+        id: context
+        run: |
+          if [[ "${{ github.ref }}" == refs/heads/pull-request/* ]]; then
+            echo "is_pr=true" >> $GITHUB_OUTPUT
+            echo "artifact_suffix=-pr" >> $GITHUB_OUTPUT
+            echo "Running in PR context"
+          else
+            echo "is_pr=false" >> $GITHUB_OUTPUT
+            echo "artifact_suffix=" >> $GITHUB_OUTPUT
+            echo "Running in main/nightly context"
+          fi
+      # Change these two lines to test/publish a different wheel (e.g. 3.13, arm64)
+      - name: Set tested wheel (py version + arch)
+        id: wheel
+        run: |
+          echo "wheel_py_version=3.12" >> $GITHUB_OUTPUT
+          echo "wheel_arch=x86_64" >> $GITHUB_OUTPUT
+
+  runner-preparation:
+    uses: ./.github/workflows/runner-preparation.yml
+
+  pre-commit:
+    uses: ./.github/workflows/pre-commit.yml
+
+  build-wheel:
+    name: build-nvtriton-wheels
+    needs: config
+    uses: NVIDIA/TileGym/.github/workflows/build-wheel.yml@main
+    with:
+      package-name: nvtriton
+      artifact-suffix: ${{ needs.config.outputs.artifact_suffix }}
+      python-versions: '["3.10", "3.11", "3.12", "3.13", "3.14"]'
+      architectures: '["x86_64", "arm64"]'
+      retention-days: 7
+      skip-import-test: true  # Triton requires CUDA/GPU
+      check-wheel-contents-ignore: 'W002'  # nvtriton ships .so + versioned symlinks (duplicate content)
+      runner-x86-64: 'linux-amd64-cpu32m'
+      runner-arm64: 'linux-arm64-cpu32m'
+
+  integration-tests-tileir:
+    needs: [config, runner-preparation, build-wheel]
+    if: needs.runner-preparation.outputs.matrix-NVIDIA != ''
+    uses: ./.github/workflows/integration-tests-tileir.yml
+    with:
+      matrix: ${{ needs.runner-preparation.outputs.matrix-NVIDIA }}
+      wheel-artifact-base: ${{ needs.build-wheel.outputs.artifact-name }}
+      wheel-py-version: ${{ needs.config.outputs.wheel_py_version }}
+      wheel-arch: ${{ needs.config.outputs.wheel_arch }}
+
+  publish-wheel:
+    name: publish-verified-wheels
+    needs: [config, build-wheel, integration-tests-tileir]
+    if: |
+      always() &&
+      needs.config.outputs.is_pr == 'false' &&
+      needs.build-wheel.result == 'success' &&
+      needs.integration-tests-tileir.result == 'success'
+    uses: NVIDIA/TileGym/.github/workflows/publish-wheel.yml@main
+    with:
+      artifact-name: ${{ needs.build-wheel.outputs.artifact-name }}
+      python-versions: ${{ format('["{0}"]', needs.config.outputs.wheel_py_version) }}
+      architectures: ${{ format('["{0}"]', needs.config.outputs.wheel_arch) }}
+      retention-days: 30
+      publish-to-pypi: false  # Set to true and add PYPI_TOKEN secret when ready
+

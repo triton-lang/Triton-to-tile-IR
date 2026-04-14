@@ -262,8 +262,6 @@ getIdentitiesFromCombineOp(Region &combineOp, ArrayRef<Type> retType,
   // It's hard to code a general logic to cover all complicate region
   // calculations. Hence, backend should ensure ReduceOp to be identity
   // insensitive in power of 2 cases. Details refer to:
-  // https://gitlab-master.nvidia.com/dlarch-fastkernels/dynamic-kernel-generator/-/merge_requests/4264
-
   Block &block = combineOp.front();
   auto blockArgs = block.getArguments();
   size_t numReturns = blockArgs.size() / 2;
@@ -422,16 +420,18 @@ CudaTileTypeConverter::CudaTileTypeConverter() {
     std::iota(dimMap.begin(), dimMap.end(), 0);
 
     SmallVector<int32_t> arrayOfi32Shape;
-    for (auto i64Shape : tileShape)
+    for (auto i64Shape : tileShape) {
       arrayOfi32Shape.push_back(i64Shape);
+    }
     auto shapeAttr = DenseI32ArrayAttr::get(ctx, arrayOfi32Shape);
 
-    return cuda_tile::PartitionViewType::get(
-        ctx, shapeAttr, tensorViewTy, dimMap,
-        cuda_tile::PaddingValueAttr::get(ctx, cuda_tile::PaddingValue::zero));
+        return cuda_tile::PartitionViewType::get(
+            ctx, shapeAttr, tensorViewTy, dimMap,
+            cuda_tile::PaddingValueAttr::get(ctx, cuda_tile::PaddingValue::zero));
   });
   addConversion([](cuda_tile::TensorViewType type) { return type; });
   addConversion([](cuda_tile::PartitionViewType type) { return type; });
+  addConversion([](cuda_tile::TokenType type) { return type; });
   addConversion(
       [](FloatType type) { return cuda_tile::TileType::get({}, type); });
   addConversion(

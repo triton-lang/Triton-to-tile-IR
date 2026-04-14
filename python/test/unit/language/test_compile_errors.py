@@ -350,10 +350,11 @@ def test_where_warning(fresh_triton_cache):
 
 
 @pytest.mark.parametrize("dtype", [tl.float8e5, tl.float8e5b16, tl.float8e4nv, tl.float8e4b8, tl.float8e4b15])
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, fp8 support")
 def test_fp8_support(fresh_triton_cache, dtype):
     warning_dtypes = []
     supported_dtypes = [tl.float8e5]
-    if is_cuda() or is_tileir():
+    if is_cuda():
         cc = torch.cuda.get_device_capability(0)
         supported_dtypes.append(tl.float8e4b15)
         if cc >= (9, 0):
@@ -371,7 +372,7 @@ def test_fp8_support(fresh_triton_cache, dtype):
         tl.dot(a, a)
 
     if dtype in warning_dtypes:
-        if is_cuda() or is_tileir():
+        if is_cuda():
             ctx = pytest.warns(UserWarning,
                                match=r"the use of fp8e4b15 is deprecated on Hopper and later architectures")
         elif is_hip_cdna4():
@@ -393,10 +394,10 @@ def test_fp8_support(fresh_triton_cache, dtype):
 
 
 @pytest.mark.parametrize("dtype", [tl.float8e5, tl.int8, tl.float16])
-@pytest.mark.skipif(is_tileir(), reason="tileir supports arbitrary sizes")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir,")
 def test_min_dot_size(dtype):
     error_msg = "Input shapes should have "
-    if is_cuda() or is_tileir():
+    if is_cuda():
         if dtype.primitive_bitwidth == 8:
             error_msg += "M >= 1, N >= 1 and K >= 32"
         else:

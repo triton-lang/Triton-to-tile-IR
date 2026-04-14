@@ -18,7 +18,7 @@ namespace triton {
 std::unique_ptr<OperationPass<ModuleOp>> createConvertTritonToCudaTilePass();
 std::unique_ptr<OperationPass<ModuleOp>>
 createConvertTritonToCudaTilePass(bool approx, bool ftz, int capability,
-                                  int num_ctas, int occupancy,
+                                  int num_ctas, int simt_num_warps, int occupancy,
                                   std::optional<int> num_stages);
 
 } // namespace triton

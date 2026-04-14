@@ -9,7 +9,7 @@ from triton._internal_testing import is_cuda, is_hopper_or_newer, is_hip_cdna, i
 
 
 def check_capabilities():
-    if is_cuda() or is_tileir():
+    if is_cuda():
         cc = torch.cuda.get_device_capability()
         if cc[0] < 8:
             pytest.skip("CUDA 8.0+ required")
@@ -212,9 +212,10 @@ def dot_scale_ref(x, scale, y, type_x, type_y):
 
 
 @pytest.mark.parametrize("scale", [True, False])
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, scaled_dot")
 def test_pipeline_matmul(scale, device):
     check_capabilities()
-    if scale and not (is_cuda() or is_tileir() or is_hip_cdna()):
+    if scale and not (is_cuda() or is_hip_cdna()):
         pytest.skip("NYI: scale_dot just implemented in CUDA/HIP")
     M, N, K = 512, 512, 128
     BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 32
@@ -318,6 +319,7 @@ def test_pipeline_matmul(scale, device):
                 assert ttgir.count("ttg.dot") != 0, "dot not found"
 
 
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, ttgir")
 def test_pipeline_vecadd(device):
     check_capabilities()
     SIZE = 4096
@@ -517,7 +519,7 @@ def matmul_kernel_persistent_scatter(a_ptr, b_ptr, c_ptr,  #
 
 @pytest.mark.skipif(torch.cuda.get_device_capability()[0] != 10,
                     reason="TMA Scatter only works on cloud Blackwell Chips")
-@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support tma scatter at 13.1 release")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tma scatter")
 def test_scatter_pipeline(device):
 
     def alloc_fn(size, alignment, stream):

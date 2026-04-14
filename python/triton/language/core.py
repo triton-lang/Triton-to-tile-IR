@@ -22,7 +22,6 @@ TRITON_BUILTIN = "__triton_builtin__"
 
 PropagateNan = ir.PROPAGATE_NAN
 
-
 def must_use_result(x, s=True):
     """If the result of this function is unused, throw an error."""
     if isinstance(x, str):
@@ -146,6 +145,9 @@ class base_value:
     """
     type: base_type
 
+    def _set_name(self, builder: ir.builder, name: str) -> None:
+        raise NotImplementedError
+
     def _flatten_ir(self, handles: List[ir.value]) -> None:
         """Flatten frontend value into a sequence of mlir handles, which are appended
         to the output list
@@ -219,6 +221,9 @@ class constexpr(base_value):
 
     def __hash__(self):
         return hash((self.value, self.type))
+
+    def _set_name(self, builder: ir.builder, name: str) -> None:
+        return
 
     def _flatten_ir(self, handles: List[ir.value]) -> None:
         return
@@ -710,6 +715,7 @@ class block_type(dtype):
         self.shape = tuple(_unwrap_shape(shape))
         if not self.shape:
             raise TypeError('0d block_type is forbidden')
+
         self.numel = validate_block_shape(self.shape)
         self.name = f'<{self.shape}, {self.element_ty}>'
 
@@ -879,6 +885,9 @@ class tensor(base_value):
         # Following the practice in pytorch, dtype is scalar type
         self.dtype = type.scalar
         self.shape = tuple([constexpr(s) for s in self.shape])
+
+    def _set_name(self, builder: ir.builder, name: str) -> None:
+        self.handle.set_loc(builder.create_name_loc(name, self.handle.get_loc()))
 
     def _flatten_ir(self, handles: List[ir.value]) -> None:
         handles.append(self.handle)
@@ -1290,6 +1299,7 @@ class tuple(base_value):
             raise AttributeError(f"'tuple' object has no attribute {name}")
         return self.values[fields.index(name)]
 
+
     # TODO: remove
     def _setitem(self, idx, value):
         idx = _unwrap_if_constexpr(idx)
@@ -1321,6 +1331,15 @@ class tuple(base_value):
 
     def __len__(self):
         return len(self.values)
+
+    def _set_name(self, builder: ir.builder, name: str) -> None:
+        fields = self.type.fields
+        if fields is not None:
+            for field, v in zip(fields, self.values):
+                v._set_name(builder, f"{name}.{field}")
+        else:
+            for i, v in enumerate(self.values):
+                v._set_name(builder, f"{name}.{i}")
 
     def _flatten_ir(self, handles: List[ir.value]):
         for v in self.values:
@@ -1379,6 +1398,9 @@ class tensor_descriptor_base(base_value):
 
         self.handle = handle  # IR handle
         self.type = tensor_descriptor_base_type(block_type)  # Tensor type (block_type)
+
+    def _set_name(self, builder: ir.builder, name: str) -> None:
+        self.handle.set_loc(builder.create_name_loc(name, self.handle.get_loc()))
 
     def _flatten_ir(self, handles: List[ir.value]) -> None:
         handles.append(self.handle)
@@ -1533,8 +1555,13 @@ class tensor_descriptor(tensor_descriptor_base):
             strides_type=self.strides.type,
         )
 
+    def _set_name(self, builder: ir.builder, name: str) -> None:
+        super()._set_name(builder, name)
+        self.shape._set_name(builder, name + ".shape")
+        self.strides._set_name(builder, name + ".stride")
+
     def _flatten_ir(self, handles: List[ir.value]) -> None:
-        handles.append(self.handle)
+        super()._flatten_ir(handles)
         self.shape._flatten_ir(handles)
         self.strides._flatten_ir(handles)
 
@@ -1597,12 +1624,54 @@ class _aggregate_type(base_type):
         return f"{name}<{', '.join(fields)}>"
 
 
+def _wrap_init_args(x):
+    if isinstance(x, tuple):
+        from triton.compiler.code_generator import _apply_to_tuple_values
+        return _apply_to_tuple_values(x, _wrap_init_args)
+    if isinstance(x, builtins.tuple):
+        wrapped = builtins.tuple(_wrap_init_args(i) for i in x)
+        fields = getattr(x, "_fields", None)
+        ty = tuple_type([v.type for v in wrapped], fields)
+        return tuple(wrapped, ty)
+    if isinstance(x, base_value):
+        return x
+    return constexpr(x)
+
+
 def _aggregate(cls):
+    init = cls.__dict__.get("__init__", None)
+    if init is None:
+        field_names = builtins.tuple(cls.__annotations__.keys())
+
+        def init(self, *args, **kwargs):
+            if len(args) > len(field_names):
+                raise TypeError(f"{cls.__name__}.__init__() takes {len(field_names) + 1} positional arguments "
+                                f"but {len(args) + 1} were given")
+
+            for index, name in enumerate(field_names):
+                if index < len(args):
+                    if name in kwargs:
+                        raise TypeError(f"{cls.__name__}.__init__() got multiple values for argument '{name}'")
+                    value = args[index]
+                elif name in kwargs:
+                    value = kwargs.pop(name)
+                else:
+                    raise TypeError(f"{cls.__name__}.__init__() missing required argument: '{name}'")
+
+                value = _wrap_init_args(value)
+                setattr(self, name, value)
+
+            if kwargs:
+                unexpected = next(iter(kwargs))
+                raise TypeError(f"{cls.__name__}.__init__() got an unexpected keyword argument '{unexpected}'")
+
+        init.__triton_builtin__ = True
 
     # Define the wrapped Triton value type.
     class aggregate_value(base_value):
         __triton_builtin__ = True
         __triton_aggregate__ = True
+        __annotations__ = cls.__annotations__
 
         @classmethod
         def _get_instance(this_cls):
@@ -1612,15 +1681,15 @@ def _aggregate(cls):
             # Call into the user-defined constructor.
             instance = this_cls._get_instance()
             extra_kwargs = {}
-            if isinstance(cls.__init__, JITCallable):
+            if isinstance(init, JITCallable):
                 # raise ValueError(f"{cls.__name__}.__init__ cannot be a @triton.jit function")
                 pass
             else:
-                if "_semantic" in inspect.signature(cls.__init__).parameters:
+                if "_semantic" in inspect.signature(init).parameters:
                     extra_kwargs["_semantic"] = _semantic
-                if "_generator" in inspect.signature(cls.__init__).parameters:
+                if "_generator" in inspect.signature(init).parameters:
                     extra_kwargs["_generator"] = _generator
-            cls.__init__(instance, *args, **extra_kwargs, **kwargs)
+            init(instance, *args, **extra_kwargs, **kwargs)
 
             # Require that the user-defined constructor initialized all fields.
             for name in cls.__annotations__.keys():
@@ -1637,6 +1706,10 @@ def _aggregate(cls):
                 raise TypeError(f"Expected {cls.__annotations__[name]} for attribute '{name}', got {type(value)}")
             super().__setattr__(name, value)
 
+        def _set_name(self, builder: ir.builder, name: str) -> None:
+            for key_name in cls.__annotations__.keys():
+                getattr(self, key_name)._set_name(builder, f"{name}.{key_name}")
+
         def _flatten_ir(self, handles: List[ir.value]) -> None:
             for name in cls.__annotations__.keys():
                 getattr(self, name)._flatten_ir(handles)
@@ -1646,12 +1719,17 @@ def _aggregate(cls):
             return _aggregate_type(aggregate_value,
                                    [(name, getattr(self, name).type) for name in cls.__annotations__.keys()])
 
-    hash_attrs = [cls.__init__]
+    hash_attrs = [init]
 
     for (name, member) in inspect.getmembers(cls):
         if inspect.isfunction(member) or inspect.ismethod(member) or isinstance(member, JITCallable):
             if name != "__init__":
                 setattr(aggregate_value, name, member)
+
+            # Exclude the members with names from hash:
+            #  * __init__ - added above.
+            #  * __annotate_func__ - isn't user facing.
+            if name not in {"__init__", "__annotate_func__"}:
                 hash_attrs.append(member)
 
     aggregate_value.hash_attrs = hash_attrs
@@ -1905,6 +1983,7 @@ def join(a, b, _semantic=None):
     :type b: Tensor
     """
     return _semantic.join(a, b)
+
 
 
 def _unsplat(x, _semantic=None, _generator=None):
@@ -2677,6 +2756,8 @@ def _add_reduction_docstr(name: str, return_indices_arg: str = None, tie_break_a
     def _decorator(func: T) -> T:
         docstr = """
     Returns the {name} of all elements in the :code:`input` tensor along the provided :code:`axis`
+
+    The reduction operation should be associative and commutative.
 
     :param input: the input values
     :type input: Tensor

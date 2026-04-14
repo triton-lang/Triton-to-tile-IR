@@ -7,19 +7,16 @@ import numbers
 
 from triton.runtime import driver
 
+
 import os
-
-
 def is_tileir():
     return os.environ.get("ENABLE_TILE", "0") == "1"
-
 
 from .._C.libtriton import ir
 from . import core as tl
 
 T = TypeVar('T')
 TensorTy = TypeVar('TensorTy')
-
 
 class IncompatibleTypeErrorImpl(Exception):
 
@@ -1575,6 +1572,7 @@ class TritonSemantic(Generic[TensorTy]):
         else:
             acc_handle = acc.handle
             assert acc.type.shape == ret_ty.shape and acc.type.element_ty == out_dtype
+
         # max_num_imprecise_acc only applies to fp8 -> fp32 dot on sm_90
         if max_num_imprecise_acc is None:
             if lhs.dtype.is_fp8() and rhs.dtype.is_fp8():
@@ -1985,3 +1983,4 @@ class TritonSemantic(Generic[TensorTy]):
         if target.backend == "tileir":
             return tl.tileir_tensor_descriptor(handle, shape, strides, type, base)
         return tl.tensor_descriptor(handle, shape, strides, type)
+

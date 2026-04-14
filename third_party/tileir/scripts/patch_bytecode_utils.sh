@@ -37,7 +37,6 @@ fi
 BYTECODE_UTIL_PATH="${REPO_ROOT}/tools/cuda-tile-tblgen/BytecodeGenUtilities.cpp"
 OPS_TD_PATH="${REPO_ROOT}/include/cuda_tile/Dialect/CudaTile/IR/Ops.td"
 CUDATILE_CPP_PATH="${REPO_ROOT}/lib/Dialect/CudaTile/IR/CudaTile.cpp"
-BYTECODE_READER_PATH="${REPO_ROOT}/lib/Bytecode/Reader/BytecodeReader.cpp"
 
 echo "[patch] repo_root=${REPO_ROOT}"
 
@@ -69,3 +68,31 @@ if [[ -f "${CUDATILE_CPP_PATH}" ]]; then
   patch_in_place "${CUDATILE_CPP_PATH}" \
     -e 's|ValueRange(), /\*attributes=\*/std::nullopt)|ValueRange(), /\*attributes=\*/llvm::ArrayRef<mlir::NamedAttribute>{})|g'
 fi
+
+# 4) Global rename: DenseTypedElementsAttr → DenseIntOrFPElementsAttr
+# cuda-tile 13.2 uses the newer LLVM class name 'DenseTypedElementsAttr' in C++ and
+# tablegen. Triton's pinned LLVM (979132a) uses the older 'DenseIntOrFPElementsAttr'.
+# This is a no-op for NDA (bundled cuda-tile uses the matching LLVM name), but
+# required for PUBLIC which FetchContent-clones a potentially newer cuda-tile release.
+echo "[patch] Global rename: DenseTypedElementsAttr → DenseIntOrFPElementsAttr"
+find "${REPO_ROOT}" -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.td" \) \
+  -exec sed -i 's/DenseTypedElementsAttr/DenseIntOrFPElementsAttr/g' {} +
+
+# 5) Patch BytecodeReader.cpp for LLVM api changes:
+# - DenseElementsAttr::isValidRawBuffer now takes 3 args (Type, ArrayRef, bool& detectedSplat)
+#   in Triton's LLVM; cuda-tile 13.2 still uses the old 2-arg form.
+# - llvm::make_scope_exit is deprecated; use llvm::scope_exit.
+BYTECODE_READER_PATH="${REPO_ROOT}/lib/Bytecode/Reader/BytecodeReader.cpp"
+if [[ -f "${BYTECODE_READER_PATH}" ]]; then
+  echo "[patch] Patching: ${BYTECODE_READER_PATH}"
+  if grep -q 'isValidRawBuffer(tileType, rawData))' "${BYTECODE_READER_PATH}"; then
+    patch_in_place "${BYTECODE_READER_PATH}" \
+      -e 's|// Validate the buffer size and format\.|&\n    bool detectedSplat = false;|' \
+      -e 's/isValidRawBuffer(tileType, rawData))/isValidRawBuffer(tileType, rawData, detectedSplat))/g'
+  fi
+  if grep -q 'llvm::make_scope_exit' "${BYTECODE_READER_PATH}"; then
+    patch_in_place "${BYTECODE_READER_PATH}" -e 's/llvm::make_scope_exit/llvm::scope_exit/g'
+  fi
+fi
+
+echo "[patch] DONE"

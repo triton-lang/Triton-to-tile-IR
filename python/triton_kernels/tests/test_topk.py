@@ -14,10 +14,6 @@ import torch.distributed as dist
 @pytest.mark.parametrize("apply_softmax", [True, False])
 @pytest.mark.parametrize("dtype", ["float16", "bfloat16", "float32"])
 def test_topk(n_rows, n_cols, k, apply_softmax, dtype):
-    if (k == 8 and n_cols == 128) and is_tileir():
-        pytest.skip(
-            "skip for CUDA Tile IR (tileir), compilation time causes timeout. see jira https://jirasw.nvidia.com/browse/CFK-31185")
-
     device = "cuda"
 
     torch.manual_seed(0)

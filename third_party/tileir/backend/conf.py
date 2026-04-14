@@ -1,7 +1,6 @@
 from contextlib import contextmanager
 import os
 import triton
-import functools
 
 
 class TileIREnvConf:
@@ -25,29 +24,23 @@ class TileIREnvConf:
         return os.getenv("TILE_IR_DISABLE_FMAD", "0") != "1"
 
     @staticmethod
-    @functools.lru_cache(maxsize=1)
     def get_tileiras_path():
-        env_path = os.getenv("TRITON_TILEIRAS_PATH")
-        if env_path:
-            return os.path.join(env_path, "tileiras")
-        cuda_home = os.getenv("CUDA_HOME")
-        if cuda_home:
-            path = os.path.join(cuda_home, "bin", "tileiras")
-            if os.path.exists(path):
-                import subprocess
-                version_output = subprocess.check_output([path, "--version"], encoding="utf-8", stderr=subprocess.STDOUT)
-                if "release 13.1" in version_output:
-                    return path
-        from shutil import which
-        tileiras_path = which("tileiras")
-        if tileiras_path:
-            return tileiras_path
-        return None
+        env_path = os.getenv("TRITON_TILEIRAS_PATH", None)
+        if env_path is None:
+            # Check if tileiras exists in system PATH
+            from shutil import which
 
-    # todo: DKG CI related, need to be removed
+            tileiras_path = which("tileiras")
+            if tileiras_path is None:
+                raise RuntimeError(
+                    "tileiras not found in PATH and TRITON_TILEIRAS_PATH not set"
+                )
+            return tileiras_path
+        return os.path.join(env_path, "tileiras")
+
     @staticmethod
     def get_device():
-        return 'cpu' if os.environ.get("ENABLE_CPU_TORCH", False) else 'cuda'
+        return "cpu" if os.environ.get("ENABLE_CPU_TORCH", False) else "cuda"
 
     @staticmethod
     def in_nightly_pipeline():
@@ -70,6 +63,7 @@ class TileIREnvConf:
     @staticmethod
     def enable_tma_offset_assert_check():
         return os.getenv("NVT_TMA_OFFSET_CHECK", "0") == "1"
+
 
 @contextmanager
 def set_env_var(var_name, new_value):

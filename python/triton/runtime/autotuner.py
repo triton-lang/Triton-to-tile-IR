@@ -95,6 +95,7 @@ class Autotuner(KernelInterface):
         self.num_reps = rep
         self.use_cuda_graph = use_cuda_graph
 
+
         # If we got explicitly called via the old interface, raise a warning
         # and proceed with the old behavior.
         if warmup is not None or rep is not None or use_cuda_graph:
@@ -234,7 +235,6 @@ class Autotuner(KernelInterface):
                     full_nargs = {**self.nargs, **kwargs, **self.cache[key].all_kwargs()}
                     self.pre_hook(full_nargs, reset_only=True)
                     self.configs_timings = timings
-
                 if self.cache_results:
                     used_cached_result = self.check_disk_cache(key, pruned_configs, benchmark)
                 else:
@@ -322,14 +322,13 @@ class Config:
                     function are args.
     :ivar ir_override: filename of a user-defined IR (*.{ttgir|llir|ptx|amdgcn}).
     :ivar opt_level: tileir backend optimization level.
-    :ivar occupancy: tileir backend occupancy hint.
     """
 
+    # [Diff]
     # TODO: do we retain opt_level? rename it or remove it?
     # - Better autotune with Better kernel naming
     # - Add opt_level in Config's every builtin methods
-    def __init__(self, kwargs, num_warps=4, num_stages=3, num_ctas=1, maxnreg=None, pre_hook=None, ir_override=None,
-                 opt_level=3, occupancy=None):
+    def __init__(self, kwargs, num_warps=4, num_stages=3, num_ctas=1, maxnreg=None, pre_hook=None, ir_override=None, opt_level=3):
         self.kwargs = kwargs
         self.num_warps = num_warps
         self.num_ctas = num_ctas
@@ -338,7 +337,6 @@ class Config:
         self.pre_hook = pre_hook
         self.ir_override = ir_override
         self.opt_level = opt_level
-        self.occupancy = occupancy
 
     def __setstate__(self, state):
         self.kwargs = state.get("kwargs", {})
@@ -349,7 +347,6 @@ class Config:
         self.pre_hook = state.get("pre_hook", None)
         self.ir_override = state.get("ir_override", None)
         self.opt_level = state.get("opt_level", 0)
-        self.occupancy = state.get("occupancy", None)
 
     def all_kwargs(self):
         # NOTE:
@@ -367,12 +364,14 @@ class Config:
         ]
         if backend == "tileir":
             extra_kwargs.append(("opt_level", self.opt_level))
-            extra_kwargs.append(("occupancy", self.occupancy))
 
         return {
             **self.kwargs,
-            **{k: v
-               for (k, v) in extra_kwargs if v is not None},
+            **{
+                k: v
+                for (k, v) in extra_kwargs
+                if v is not None
+            },
         }
 
     def __str__(self):
@@ -384,7 +383,6 @@ class Config:
         res.append(f"num_stages: {self.num_stages}")
         res.append(f"maxnreg: {self.maxnreg}")
         res.append(f"opt_level: {self.opt_level}")
-        res.append(f"occupancy: {self.occupancy}")
         return ", ".join(res)
 
     def __hash__(self):

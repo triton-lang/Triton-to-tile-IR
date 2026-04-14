@@ -2,7 +2,7 @@
 Fused Attention
 ===============
 
-This is tileIR backend friendly version of the Triton implementation of the Flash Attention v2 
+This is cuTile backend friendly version of the Triton implementation of the Flash Attention v2 
 
 """
 

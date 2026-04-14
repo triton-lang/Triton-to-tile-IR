@@ -6,9 +6,9 @@ import triton.language as tl
 import pytest
 from triton.tools.tensor_descriptor import TensorDescriptor
 
-from triton.tools.triton_to_gluon_translater.translator import convert_triton_to_gluon
-from triton.tools.triton_to_gluon_translater.translator_helpers import convert_host_descriptor
-from triton._internal_testing import is_blackwell, is_hopper_or_newer, is_cuda, is_tileir
+from triton.tools.triton_to_gluon_translator.translator import convert_triton_to_gluon
+from triton.tools.triton_to_gluon_translator.translator_helpers import convert_host_descriptor
+from triton._internal_testing import is_blackwell, is_hopper_or_newer, is_cuda
 
 
 def convert_kernel(kernel, kernel_name, tmp_path):
@@ -71,7 +71,6 @@ def matmul_tile_kernel(a_ptr, b_ptr, c_ptr, BLOCK_M: tl.constexpr, BLOCK_N: tl.c
 
 
 @pytest.mark.skipif(not is_blackwell(), reason="Requires Blackwell")
-@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support gluon")
 def test_triton_to_gluon_dot_minimal(tmp_path):
     # Convert directly from the Triton kernel object
     kernel = convert_kernel(matmul_tile_kernel, "matmul_tile_kernel", tmp_path)
@@ -133,7 +132,6 @@ def matmul_kernel(  #
 @pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES", [(128, 128, 64, 1)])
 @pytest.mark.parametrize("NUM_WARPS", [4])
 @pytest.mark.skipif(not is_blackwell(), reason="Requires Blackwell")
-@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support gluon")
 def test_simple_matmul(dtype_src_str, dtype_dst_str, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, NUM_WARPS, tmp_path):
     device = "cuda"
     M, N, K = 1024, 512, 256
@@ -164,7 +162,6 @@ def descriptor_store_kernel(desc, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, 
 
 
 @pytest.mark.skipif(not is_hopper_or_newer(), reason="Requires Hopper or newer")
-@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support gluon")
 def test_triton_to_gluon_descriptor_roundtrip(tmp_path):
     kernel = convert_kernel(descriptor_store_kernel, "descriptor_store_kernel", tmp_path)
 
@@ -189,7 +186,6 @@ def descriptor_copy_kernel(in_desc, out_desc, BLOCK_M: tl.constexpr, BLOCK_N: tl
 
 
 @pytest.mark.skipif(not is_hopper_or_newer(), reason="Requires Hopper or newer")
-@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support gluon")
 def test_triton_to_gluon_descriptor_load_roundtrip(tmp_path):
     kernel = convert_kernel(descriptor_copy_kernel, "descriptor_copy_kernel", tmp_path)
 
@@ -231,7 +227,6 @@ def reshape_trans_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr,
 
 @pytest.mark.parametrize("TRANS_KIND", ["trans_method", "tl_trans_separate", "tl_trans_tuple", "tl_trans"])
 @pytest.mark.skipif(not is_cuda(), reason="Requires CUDA")
-@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support gluon")
 def test_triton_reshape_trans(tmp_path, TRANS_KIND):
     kernel = convert_kernel(reshape_trans_kernel, "reshape_trans_kernel", tmp_path)
 
@@ -263,7 +258,6 @@ def split_kernel(x_ptr, out_ptr):
 
 
 @pytest.mark.skipif(not is_cuda(), reason="Requires CUDA")
-@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support gluon")
 def test_split(tmp_path):
     kernel = convert_kernel(split_kernel, "split_kernel", tmp_path)
 
@@ -286,7 +280,6 @@ def reduce_to_scalar_kernel(out_ptr):
 
 
 @pytest.mark.skipif(not is_cuda(), reason="Requires CUDA")
-@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support gluon")
 def test_reduce_to_scalar(tmp_path):
     kernel = convert_kernel(reduce_to_scalar_kernel, "reduce_to_scalar_kernel", tmp_path)
     grid = (1, )
@@ -306,7 +299,6 @@ def num_threads_kernel(out_ptr):
 
 
 @pytest.mark.skipif(not is_cuda(), reason="Requires CUDA")
-@pytest.mark.skipif(is_tileir(), reason="tileir backend doesn't support gluon")
 def test_num_threads(tmp_path):
     kernel = convert_kernel(num_threads_kernel, "num_threads_kernel", tmp_path)
 

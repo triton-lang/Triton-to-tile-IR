@@ -2,7 +2,7 @@ import os
 import pytest
 import shutil
 import triton
-from triton._internal_testing import is_hip, is_tileir
+from triton._internal_testing import is_hip
 
 from pathlib import Path
 
@@ -235,7 +235,7 @@ def test_set_knob_directly(fresh_knobs_including_libraries, monkeypatch):
 
 
 @pytest.mark.skipif(
-    is_hip() or is_tileir(),
+    is_hip(),
     reason="PTXAS is not installed on AMD",
 )
 def test_nvidia_tool(fresh_knobs, tmp_path, monkeypatch):

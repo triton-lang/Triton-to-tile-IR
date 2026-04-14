@@ -1,0 +1,429 @@
+name: nvtriton-tileir-ci-integration-tests
+
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        required: true
+        type: string
+      wheel-artifact-base:
+        description: 'Base name of wheel artifact for CI image (e.g. nvtriton-wheel-abc123). If set, builds --target wheel.'
+        required: false
+        type: string
+        default: ''
+      wheel-py-version:
+        description: 'Python version of the wheel to install in CI image (e.g. 3.12, 3.13). Must match artifact suffix (py312, py313).'
+        required: false
+        type: string
+        default: '3.12'
+      wheel-arch:
+        description: 'Architecture of the wheel for CI image (e.g. x86_64, arm64). Must match artifact suffix.'
+        required: false
+        type: string
+        default: 'x86_64'
+  push:
+    branches: [tileir_public_tot_ci]
+
+jobs:
+  build-docker:
+    runs-on: linux-amd64-cpu8
+    timeout-minutes: 180
+    outputs:
+      image-tag: ${{ steps.build-info.outputs.image-tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: "true"
+          lfs: true
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Get build info
+        id: build-info
+        run: |
+          # Convert repo name to lowercase for ghcr.io
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_TAG="ghcr.io/${REPO_LOWER}/triton-cuda:${{ github.run_id }}"
+          echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "Building image: ${IMAGE_TAG}"
+      - name: Check disk space
+        run: |
+          echo "=== Available disk space ==="
+          df -h
+      - name: Set wheel artifact suffix
+        if: inputs.wheel-artifact-base != ''
+        id: wheel-suffix
+        run: |
+          PY_TAG=$(echo "${{ inputs.wheel-py-version }}" | tr -d '.')
+          echo "artifact-suffix=py${PY_TAG}-${{ inputs.wheel-arch }}" >> $GITHUB_OUTPUT
+      - name: Download wheel (CI)
+        if: inputs.wheel-artifact-base != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.wheel-artifact-base }}-${{ steps.wheel-suffix.outputs.artifact-suffix }}
+          path: wheel_download
+      - name: Determine architecture and set dependency directory
+        id: arch-setup
+        run: |
+          ARCH=$(uname -m)
+          case "${ARCH}" in
+            x86_64|amd64) DEP_ARCH="x86" ;;
+            aarch64|arm64) DEP_ARCH="arm64" ;;
+            *)
+              echo "Unsupported architecture: ${ARCH}"
+              exit 1
+              ;;
+          esac
+          echo "dep-arch=${DEP_ARCH}" >> $GITHUB_OUTPUT
+          echo "Using dependency directory: cuda_dep_${DEP_ARCH}"
+      - name: Prepare build context
+        run: |
+          echo "=== Preparing build context ==="
+          TRITON_RELEASE_CTX_DIR="${{ github.workspace }}/docker_build_ctx"
+          mkdir -p "${TRITON_RELEASE_CTX_DIR}/src"
+
+          # Copy cuda_dep directory
+          echo "Copying CUDA 13.1 dependencies..."
+          cp -r "third_party/tileir/scripts/cuda_dep_${{ steps.arch-setup.outputs.dep-arch }}" \
+            "${TRITON_RELEASE_CTX_DIR}/cuda_dep"
+
+          # Optionally add wheel for CI (version/arch from inputs)
+          if [ -n "${{ inputs.wheel-artifact-base }}" ] && [ -d "wheel_download" ]; then
+            mkdir -p "${TRITON_RELEASE_CTX_DIR}/wheel"
+            cp wheel_download/*.whl "${TRITON_RELEASE_CTX_DIR}/wheel/"
+            echo "Added wheel for CI target"
+          fi
+
+          # Verify the copied dependency binaries match the current platform (x86 vs arm64)
+          if ! command -v file >/dev/null 2>&1; then
+            echo "Installing 'file' utility for binary format verification..."
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends file
+          fi
+
+          DEP_ARCH="${{ steps.arch-setup.outputs.dep-arch }}"
+          DEP_BIN_DIR="${TRITON_RELEASE_CTX_DIR}/cuda_dep/bin"
+          EXPECTED=""
+          case "${DEP_ARCH}" in
+            x86) EXPECTED="x86-64" ;;
+            arm64) EXPECTED="aarch64" ;;
+          esac
+
+          for BIN in tileiras ptxas; do
+            BIN_PATH="${DEP_BIN_DIR}/${BIN}"
+            echo "=== Copied binary type check: ${BIN_PATH} ==="
+            if [ ! -f "${BIN_PATH}" ]; then
+              echo "ERROR: missing expected binary: ${BIN_PATH}"
+              ls -la "${DEP_BIN_DIR}" || true
+              exit 1
+            fi
+            if [ ! -x "${BIN_PATH}" ]; then
+              echo "ERROR: binary is not executable (missing +x): ${BIN_PATH}"
+              ls -la "${BIN_PATH}" || true
+              exit 1
+            fi
+            # Detect Git LFS pointer files (means LFS objects were not downloaded)
+            if head -n 1 "${BIN_PATH}" | grep -q "version https://git-lfs.github.com/spec/v1"; then
+              echo "ERROR: ${BIN_PATH} looks like a Git LFS pointer file. LFS objects were not fetched."
+              echo "First lines:"
+              sed -n '1,5p' "${BIN_PATH}" || true
+              exit 1
+            fi
+            file -L "${BIN_PATH}"
+            if ! file -L "${BIN_PATH}" | grep -qi "${EXPECTED}"; then
+              echo "ERROR: ${BIN} does not look like a ${EXPECTED} executable (DEP_ARCH=${DEP_ARCH})"
+              exit 1
+            fi
+          done
+
+          # Copy source (exclude large/unnecessary files)
+          echo "Copying source code..."
+          tar --exclude=.git \
+              --exclude=build \
+              --exclude=llvm-project \
+              --exclude=.llvm-project \
+              --exclude='*.tar' \
+              --exclude='docker_build_ctx' \
+              -cf - . | (cd "${TRITON_RELEASE_CTX_DIR}/src" && tar xf -)
+
+          # Copy Dockerfile to build context
+          cp third_party/tileir/scripts/build_helper/Dockerfile.release "${TRITON_RELEASE_CTX_DIR}/"
+
+          echo "=== Build context ready ==="
+          du -sh "${TRITON_RELEASE_CTX_DIR}"
+          df -h
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ github.workspace }}/docker_build_ctx
+          file: ${{ github.workspace }}/docker_build_ctx/Dockerfile.release
+          target: ${{ inputs.wheel-artifact-base != '' && 'wheel' || 'source' }}
+          build-args: |
+            BASE_IMAGE=nvcr.io/nvidia/pytorch:25.08-py3
+          tags: ${{ steps.build-info.outputs.image-tag }}
+          push: true
+          # Cache Docker layers and BuildKit cache mounts (including ccache)
+          cache-from: type=gha,scope=triton-cuda-build
+          cache-to: type=gha,mode=max,scope=triton-cuda-build
+      - name: Cleanup build context
+        if: always()
+        run: |
+          echo "=== Cleaning up build context ==="
+          rm -rf ${{ github.workspace }}/docker_build_ctx
+          echo "=== Final disk usage ==="
+          df -h
+
+  integration-tests-default-backend:
+    needs: build-docker
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    # Let A100 and H100 continue even if GB200 fails, as it's a bit flaky
+    continue-on-error: ${{ matrix.runner[0] == 'nvidia-gb200'}}
+    container:
+      image: ${{ needs.build-docker.outputs.image-tag }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --gpus all
+    strategy:
+      matrix:
+        runner: ${{ fromJson(inputs.matrix) }}
+    env:
+      RUNNER_TYPE: ${{ matrix.runner[0] }}
+      TRITON_DISABLE_LINE_INFO: 1
+      PROTON_SKIP_PC_SAMPLING_TEST: 1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: "true"
+      - name: Display default backend environment info
+        run: |
+          echo "=== Default Backend Integration Tests ==="
+          nvidia-smi
+          python3 --version
+          pip list | grep -i triton
+      - name: Run lit tests
+        id: lit-tests
+        continue-on-error: true
+        working-directory: /workspace/triton-src
+        run: make test-lit
+      - name: Run python tests on CUDA
+        id: python-tests
+        working-directory: /workspace/triton-src
+        run: make NUM_PROCS=24 test-unit
+        continue-on-error: true
+      - name: Run distributed tests
+        id: distributed-tests
+        working-directory: /workspace/triton-src
+        run: make test-distributed
+        continue-on-error: true
+      - name: Run interpreter tests
+        id: interpreter-tests
+        if: ${{ matrix.runner[0] == 'linux-amd64-gpu-rtxpro6000-latest-1' }}
+        working-directory: /workspace/triton-src
+        run: make test-interpret
+        continue-on-error: true
+      - name: Run regression tests
+        id: regression-tests
+        working-directory: /workspace/triton-src
+        run: make test-regression
+        continue-on-error: true
+      - name: Run microbenchmark tests
+        id: microbenchmark-tests
+        # Microbenchmark never fail but running them gives us an easy way to track performance changes.
+        working-directory: /workspace/triton-src
+        run: make test-microbenchmark
+        continue-on-error: true
+      - name: Run C++ unittests
+        id: cpp-tests
+        working-directory: /workspace/triton-src
+        run: make test-cpp
+        continue-on-error: true
+      - name: Run Proton tests
+        id: proton-tests
+        working-directory: /workspace/triton-src
+        run: make test-proton
+        continue-on-error: true
+      - name: Check test results
+        if: always()
+        run: |
+          echo "=== Test Results Summary ==="
+          FAILED_TESTS=""
+
+          if [ "${{ steps.lit-tests.outcome }}" == "failure" ]; then
+            echo "[FAILED] Lit tests"
+            FAILED_TESTS="${FAILED_TESTS}lit-tests "
+          else
+            echo "[PASSED] Lit tests"
+          fi
+
+          if [ "${{ steps.python-tests.outcome }}" == "failure" ]; then
+            echo "[FAILED] Python tests"
+            FAILED_TESTS="${FAILED_TESTS}python-tests "
+          else
+            echo "[PASSED] Python tests"
+          fi
+
+          if [ "${{ steps.distributed-tests.outcome }}" == "failure" ]; then
+            echo "[FAILED] Distributed tests"
+            FAILED_TESTS="${FAILED_TESTS}distributed-tests "
+          else
+            echo "[PASSED] Distributed tests"
+          fi
+
+          if [ "${{ steps.interpreter-tests.outcome }}" == "failure" ]; then
+            echo "[FAILED] Interpreter tests"
+            FAILED_TESTS="${FAILED_TESTS}interpreter-tests "
+          elif [ "${{ steps.interpreter-tests.outcome }}" == "success" ]; then
+            echo "[PASSED] Interpreter tests"
+          else
+            echo "[SKIPPED] Interpreter tests"
+          fi
+
+          if [ "${{ steps.regression-tests.outcome }}" == "failure" ]; then
+            echo "[FAILED] Regression tests"
+            FAILED_TESTS="${FAILED_TESTS}regression-tests "
+          else
+            echo "[PASSED] Regression tests"
+          fi
+
+          if [ "${{ steps.microbenchmark-tests.outcome }}" == "failure" ]; then
+            echo "[FAILED] Microbenchmark tests"
+            FAILED_TESTS="${FAILED_TESTS}microbenchmark-tests "
+          else
+            echo "[PASSED] Microbenchmark tests"
+          fi
+
+          if [ "${{ steps.cpp-tests.outcome }}" == "failure" ]; then
+            echo "[FAILED] C++ tests"
+            FAILED_TESTS="${FAILED_TESTS}cpp-tests "
+          else
+            echo "[PASSED] C++ tests"
+          fi
+
+          if [ "${{ steps.proton-tests.outcome }}" == "failure" ]; then
+            echo "[FAILED] Proton tests"
+            FAILED_TESTS="${FAILED_TESTS}proton-tests "
+          else
+            echo "[PASSED] Proton tests"
+          fi
+
+          if [ -n "$FAILED_TESTS" ]; then
+            echo ""
+            echo "FAILED: The following tests failed: $FAILED_TESTS"
+            exit 1
+          else
+            echo ""
+            echo "SUCCESS: All tests passed!"
+          fi
+
+  integration-tests-tileir-backend:
+    needs: build-docker
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    continue-on-error: true  # TileIR backend is experimental
+    container:
+      image: ${{ needs.build-docker.outputs.image-tag }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --gpus all
+    strategy:
+      matrix:
+        runner: [["linux-amd64-gpu-rtxpro6000-latest-1"]]  # Use same runner as regular tests
+    env:
+      RUNNER_TYPE: ${{ matrix.runner[0] }}
+      ENABLE_TILE: "1"  # Enable TileIR backend
+      TRITON_DISABLE_LINE_INFO: 1
+      PROTON_SKIP_PC_SAMPLING_TEST: 1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: "true"
+      - name: Display TileIR environment info
+        run: |
+          echo "=== TileIR Backend Integration Tests ==="
+          echo "ENABLE_TILE is set to: ${ENABLE_TILE}"
+          nvidia-smi
+          python3 --version
+      - name: Run Python unit tests
+        id: tileir-core-tests
+        continue-on-error: true
+        working-directory: /workspace/triton-src
+        run: |
+          echo "=== Running Python unit tests ==="
+          pytest python/test/unit -n 16 -ra --junitxml=.pytest_tileir_core.xml
+      - name: Run basic integration tests
+        id: tileir-standard-tests
+        continue-on-error: true
+        working-directory: /workspace/triton-src
+        run: |
+          echo "=== Running basic integration tests ==="
+          pytest python/test/unit/language/test_standard.py -ra --junitxml=.pytest_tileir_standard.xml
+      - name: Check TileIR test results
+        if: always()
+        working-directory: /workspace/triton-src
+        run: |
+          echo "=== TileIR Backend Test Results Summary ==="
+          echo "Core tests step outcome: ${{ steps.tileir-core-tests.outcome }}"
+          echo "Standard tests step outcome: ${{ steps.tileir-standard-tests.outcome }}"
+          echo ""
+          python3 - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          junit_files = [
+              ("core", Path(".pytest_tileir_core.xml")),
+              ("standard", Path(".pytest_tileir_standard.xml")),
+          ]
+
+          failures = []
+
+          def collect_from_junit(label: str, path: Path):
+              if not path.exists():
+                  failures.append((label, f"missing junit xml: {path}"))
+                  return
+              try:
+                  root = ET.parse(path).getroot()
+              except Exception as e:
+                  failures.append((label, f"cannot parse junit xml {path}: {e}"))
+                  return
+
+              for tc in root.iter("testcase"):
+                  classname = tc.get("classname") or ""
+                  name = tc.get("name") or ""
+                  for tag in ("failure", "error"):
+                      node = tc.find(tag)
+                      if node is None:
+                          continue
+                      msg = (node.get("message") or "").strip()
+                      ident = "::".join([p for p in [classname, name] if p])
+                      line = f"{ident} [{tag}]"
+                      if msg:
+                          line += f" - {msg}"
+                      failures.append((label, line))
+                      text = (node.text or "").strip()
+                      if text:
+                          failures.append((label, "  " + text.splitlines()[0]))
+                      break
+
+          for label, path in junit_files:
+              collect_from_junit(label, path)
+
+          if failures:
+              print("FAILED TileIR tests detected:")
+              for label, line in failures:
+                  print(f"- [{label}] {line}")
+              sys.exit(1)
+
+          print("SUCCESS: No failed TileIR testcases found in JUnit reports.")
+          PY

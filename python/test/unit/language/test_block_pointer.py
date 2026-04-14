@@ -28,7 +28,7 @@ def block_copy_kernel(a_ptr, b_ptr, N, BLOCK_SIZE: tl.constexpr, PADDING_OPTION:
     tl.store(b_block_ptr, a, boundary_check=(0, ))
 
 
-@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support tt.make_tensor_ptr")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tt.make_tensor_ptr")
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtypes_str, n, padding_option, boundary_check", [  #
     (dtypes_str, n, padding, boundary_check)  #
@@ -101,7 +101,7 @@ def matmul_no_scf_with_advance_kernel(  #
         [64, 64, 64],
     ] for num_warps in [4, 8]
 ])
-@pytest.mark.skipif(is_tileir(), reason="tileir doesn't support tt.make_tensor_ptr")
+@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tt.make_tensor_ptr")
 def test_block_ptr_matmul_no_scf(shape, num_warps, device):
     m, n, k = shape
     a = torch.randn((m, k), device=device, dtype=torch.float16)

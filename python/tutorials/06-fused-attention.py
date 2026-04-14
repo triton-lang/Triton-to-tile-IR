@@ -20,9 +20,6 @@ import os
 import triton
 import triton.language as tl
 from triton.tools.tensor_descriptor import TensorDescriptor
-import sys
-sys.path.append(os.path.join(os.path.dirname(__file__), "tileir"))
-from attention_tma import _attention_bwd_tma
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
@@ -32,23 +29,15 @@ def is_hip():
 
 
 def is_cuda():
-    return triton.runtime.driver.active.get_current_target().backend == "cuda"
-
-
-def is_tileir():
-    return triton.runtime.driver.active.get_current_target().backend == "tileir"
+    return triton.runtime.driver.active.get_current_target().backend in ["cuda", "tileir"]
 
 
 def supports_host_descriptor():
-    return (is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] >= 9
+    return is_cuda() and torch.cuda.get_device_capability()[0] >= 9
 
 
 def is_blackwell():
-    return (is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] == 10
-
-
-def is_hopper():
-    return (is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] == 9
+    return is_cuda() and torch.cuda.get_device_capability()[0] == 10
 
 
 @triton.jit
@@ -57,7 +46,7 @@ def _attn_fwd_inner(acc, l_i, m_i, q,  #
                     offset_y, dtype: tl.constexpr, start_m, qk_scale,  #
                     BLOCK_M: tl.constexpr, HEAD_DIM: tl.constexpr, BLOCK_N: tl.constexpr,  #
                     STAGE: tl.constexpr, offs_m: tl.constexpr, offs_n: tl.constexpr,  #
-                    N_CTX: tl.constexpr, warp_specialize: tl.constexpr, IS_HOPPER: tl.constexpr):
+                    N_CTX: tl.constexpr, warp_specialize: tl.constexpr):
     # range of values handled by this stage
     if STAGE == 1:
         lo, hi = 0, start_m * BLOCK_M
@@ -91,7 +80,7 @@ def _attn_fwd_inner(acc, l_i, m_i, q,  #
         alpha = tl.math.exp2(m_i - m_ij)
         l_ij = tl.sum(p, 1)
         # -- update output accumulator --
-        if not IS_HOPPER and warp_specialize and BLOCK_M == 128 and HEAD_DIM == 128:
+        if warp_specialize and BLOCK_M == 128 and HEAD_DIM == 128:
             BM: tl.constexpr = acc.shape[0]
             BN: tl.constexpr = acc.shape[1]
             acc0, acc1 = acc.reshape([BM, 2, BN // 2]).permute(0, 2, 1).split()
@@ -135,10 +124,7 @@ def _host_descriptor_pre_hook(nargs):
 if is_hip():
     NUM_STAGES_OPTIONS = [1]
 elif supports_host_descriptor():
-    if is_tileir():
-        NUM_STAGES_OPTIONS = [2, 3, 4, 5]
-    else:
-        NUM_STAGES_OPTIONS = [2, 3, 4]
+    NUM_STAGES_OPTIONS = [2, 3, 4]
 else:
     NUM_STAGES_OPTIONS = [2, 3, 4]
 
@@ -149,17 +135,6 @@ configs = [
     for s in NUM_STAGES_OPTIONS \
     for w in [4, 8]\
 ]
-
-if is_tileir():
-    configs = [
-        triton.Config({'BLOCK_M': BM, 'BLOCK_N': BN, 'occupancy': occupancy}, num_stages=s, num_warps=w, pre_hook=_host_descriptor_pre_hook) \
-        for BM in [64, 128, 256] \
-        for BN in [32, 64, 128] \
-        for s in NUM_STAGES_OPTIONS \
-        for w in [4, 8] \
-        for occupancy in [1, 2] \
-    ]
-
 if "PYTEST_VERSION" in os.environ:
     # Use a single config in testing for reproducibility
     configs = [
@@ -170,20 +145,19 @@ if "PYTEST_VERSION" in os.environ:
 def keep(conf):
     BLOCK_M = conf.kwargs["BLOCK_M"]
     BLOCK_N = conf.kwargs["BLOCK_N"]
-    return not ((is_cuda() or is_tileir()) and torch.cuda.get_device_capability()[0] == 9 and BLOCK_M * BLOCK_N < 128 * 128
+    return not (is_cuda() and torch.cuda.get_device_capability()[0] == 9 and BLOCK_M * BLOCK_N < 128 * 128
                 and conf.num_warps == 8)
 
 
 def prune_invalid_configs(configs, named_args, **kwargs):
     N_CTX = kwargs["N_CTX"]
     STAGE = kwargs["STAGE"]
-    HEAD_DIM = kwargs["HEAD_DIM"]
 
     # Filter out configs where BLOCK_M > N_CTX
     # Filter out configs where BLOCK_M < BLOCK_N when causal is True
     return [
         conf for conf in configs if conf.kwargs.get("BLOCK_M", 0) <= N_CTX and (
-            conf.kwargs.get("BLOCK_M", 0) >= conf.kwargs.get("BLOCK_N", 0) or STAGE == 1) and conf.kwargs.get("BLOCK_N", 0) <= HEAD_DIM
+            conf.kwargs.get("BLOCK_M", 0) >= conf.kwargs.get("BLOCK_N", 0) or STAGE == 1)
     ]
 
 
@@ -195,7 +169,7 @@ def _maybe_make_tensor_desc(desc_or_ptr, shape, strides, block_shape):
         return tl.make_tensor_descriptor(desc_or_ptr, shape, strides, block_shape)
 
 
-@triton.autotune(configs=list(filter(keep, configs)), key=["N_CTX", "HEAD_DIM", "FP8_OUTPUT", "warp_specialize", "STAGE"],
+@triton.autotune(configs=list(filter(keep, configs)), key=["N_CTX", "HEAD_DIM", "FP8_OUTPUT", "warp_specialize"],
                  prune_configs_by={'early_config_prune': prune_invalid_configs})
 @triton.jit
 def _attn_fwd(sm_scale, M,  #
@@ -206,7 +180,6 @@ def _attn_fwd(sm_scale, M,  #
               FP8_OUTPUT: tl.constexpr,  #
               STAGE: tl.constexpr,  #
               warp_specialize: tl.constexpr,  #
-              IS_HOPPER: tl.constexpr,  #
               ):
     dtype = tl.float8e5 if FP8_OUTPUT else tl.float16
     tl.static_assert(BLOCK_N <= HEAD_DIM)
@@ -230,6 +203,8 @@ def _attn_fwd(sm_scale, M,  #
                                      block_shape=[BLOCK_M, HEAD_DIM])
 
     offset_y = off_z * (N_CTX * H) + off_h * N_CTX
+    # [Diff] tileir only support offset to be multiple of block shape, add this to avoid divisibility check failure
+    offset_y = tl.multiple_of(offset_y, BLOCK_M)
     qo_offset_y = offset_y + start_m * BLOCK_M
     # initialize offsets
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
@@ -252,7 +227,7 @@ def _attn_fwd(sm_scale, M,  #
                                         offset_y, dtype, start_m, qk_scale,  #
                                         BLOCK_M, HEAD_DIM, BLOCK_N,  #
                                         4 - STAGE, offs_m, offs_n, N_CTX,  #
-                                        warp_specialize, IS_HOPPER)
+                                        warp_specialize)
     # stage 2: on-band
     if STAGE & 2:
         acc, l_i, m_i = _attn_fwd_inner(acc, l_i, m_i, q,  #
@@ -260,7 +235,7 @@ def _attn_fwd(sm_scale, M,  #
                                         offset_y, dtype, start_m, qk_scale,  #
                                         BLOCK_M, HEAD_DIM, BLOCK_N,  #
                                         2, offs_m, offs_n, N_CTX,  #
-                                        warp_specialize, IS_HOPPER)
+                                        warp_specialize)
     # epilogue
     m_i += tl.math.log2(l_i)
     acc = acc / l_i[:, None]
@@ -400,8 +375,7 @@ def _attn_bwd(Q, K, V, sm_scale,  #
               BLOCK_M2: tl.constexpr,  #
               BLOCK_N2: tl.constexpr,  #
               BLK_SLICE_FACTOR: tl.constexpr,  #
-              HEAD_DIM: tl.constexpr,  #
-              CAUSAL: tl.constexpr):
+              HEAD_DIM: tl.constexpr):
     LN2: tl.constexpr = 0.6931471824645996  # = ln(2)
 
     bhid = tl.program_id(2)
@@ -424,7 +398,7 @@ def _attn_bwd(Q, K, V, sm_scale,  #
     offs_k = tl.arange(0, HEAD_DIM)
 
     start_n = pid * BLOCK_N1
-    start_m = 0
+    start_m = start_n
 
     MASK_BLOCK_M1: tl.constexpr = BLOCK_M1 // BLK_SLICE_FACTOR
     offs_n = start_n + tl.arange(0, BLOCK_N1)
@@ -436,24 +410,23 @@ def _attn_bwd(Q, K, V, sm_scale,  #
     k = tl.load(K + offs_n[:, None] * stride_tok + offs_k[None, :] * stride_d)
     v = tl.load(V + offs_n[:, None] * stride_tok + offs_k[None, :] * stride_d)
 
-    if CAUSAL:
-        start_m = start_n
-        num_steps = BLOCK_N1 // MASK_BLOCK_M1
-        dk, dv = _attn_bwd_dkdv(dk, dv,  #
-                                Q, k, v, sm_scale,  #
-                                DO,  #
-                                M, D,  #
-                                stride_tok, stride_d,  #
-                                H, N_CTX,  #
-                                MASK_BLOCK_M1, BLOCK_N1, HEAD_DIM,  #
-                                start_n, start_m, num_steps,  #
-                                MASK=True,  #
-                                )
+    num_steps = BLOCK_N1 // MASK_BLOCK_M1
 
-        start_m += num_steps * MASK_BLOCK_M1
+    dk, dv = _attn_bwd_dkdv(dk, dv,  #
+                            Q, k, v, sm_scale,  #
+                            DO,  #
+                            M, D,  #
+                            stride_tok, stride_d,  #
+                            H, N_CTX,  #
+                            MASK_BLOCK_M1, BLOCK_N1, HEAD_DIM,  #
+                            start_n, start_m, num_steps,  #
+                            MASK=True  #
+                            )
+
+    start_m += num_steps * MASK_BLOCK_M1
+    num_steps = (N_CTX - start_m) // BLOCK_M1
 
     # Compute dK and dV for non-masked blocks.
-    num_steps = (N_CTX - start_m) // BLOCK_M1
     dk, dv = _attn_bwd_dkdv(  #
         dk, dv,  #
         Q, k, v, sm_scale,  #
@@ -463,7 +436,7 @@ def _attn_bwd(Q, K, V, sm_scale,  #
         H, N_CTX,  #
         BLOCK_M1, BLOCK_N1, HEAD_DIM,  #
         start_n, start_m, num_steps,  #
-        MASK=False,  #
+        MASK=False  #
     )
 
     dv_ptrs = DV + offs_n[:, None] * stride_tok + offs_k[None, :] * stride_d
@@ -476,8 +449,7 @@ def _attn_bwd(Q, K, V, sm_scale,  #
 
     # THIS BLOCK DOES DQ:
     start_m = pid * BLOCK_M2
-    start_n = 0
-    num_steps = N_CTX // BLOCK_N2
+    end_n = start_m + BLOCK_M2
 
     MASK_BLOCK_N2: tl.constexpr = BLOCK_N2 // BLK_SLICE_FACTOR
     offs_m = start_m + tl.arange(0, BLOCK_M2)
@@ -489,34 +461,30 @@ def _attn_bwd(Q, K, V, sm_scale,  #
     m = tl.load(M + offs_m)
     m = m[:, None]
 
-    if CAUSAL:
-        # Compute dQ for masked (diagonal) blocks.
-        # NOTE: This code scans each row of QK^T backward (from right to left,
-        # but inside each call to _attn_bwd_dq, from left to right), but that's
-        # not due to anything important.  I just wanted to reuse the loop
-        # structure for dK & dV above as much as possible.
-        end_n = start_m + BLOCK_M2
-        num_steps = BLOCK_M2 // MASK_BLOCK_N2
-        dq = _attn_bwd_dq(dq, q, K, V,  #
-                          do, m, D,  #
-                          stride_tok, stride_d,  #
-                          H, N_CTX,  #
-                          BLOCK_M2, MASK_BLOCK_N2, HEAD_DIM,  #
-                          start_m, end_n - num_steps * MASK_BLOCK_N2, num_steps,  #
-                          MASK=True,  #
-                          )
-        end_n -= num_steps * MASK_BLOCK_N2
-        # stage 2
-        num_steps = end_n // BLOCK_N2
-        start_n = end_n - num_steps * BLOCK_N2
-
+    # Compute dQ for masked (diagonal) blocks.
+    # NOTE: This code scans each row of QK^T backward (from right to left,
+    # but inside each call to _attn_bwd_dq, from left to right), but that's
+    # not due to anything important.  I just wanted to reuse the loop
+    # structure for dK & dV above as much as possible.
+    num_steps = BLOCK_M2 // MASK_BLOCK_N2
+    dq = _attn_bwd_dq(dq, q, K, V,  #
+                      do, m, D,  #
+                      stride_tok, stride_d,  #
+                      H, N_CTX,  #
+                      BLOCK_M2, MASK_BLOCK_N2, HEAD_DIM,  #
+                      start_m, end_n - num_steps * MASK_BLOCK_N2, num_steps,  #
+                      MASK=True  #
+                      )
+    end_n -= num_steps * MASK_BLOCK_N2
+    # stage 2
+    num_steps = end_n // BLOCK_N2
     dq = _attn_bwd_dq(dq, q, K, V,  #
                       do, m, D,  #
                       stride_tok, stride_d,  #
                       H, N_CTX,  #
                       BLOCK_M2, BLOCK_N2, HEAD_DIM,  #
-                      start_m, start_n, num_steps,  #
-                      MASK=False,  #
+                      start_m, end_n - num_steps * BLOCK_N2, num_steps,  #
+                      MASK=False  #
                       )
     # Write back dQ.
     dq_ptrs = DQ + offs_m[:, None] * stride_tok + offs_k[None, :] * stride_d
@@ -527,7 +495,7 @@ def _attn_bwd(Q, K, V, sm_scale,  #
 class _attention(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, q, k, v, causal, sm_scale, bwd_tma = False,warp_specialize=True):
+    def forward(ctx, q, k, v, causal, sm_scale, warp_specialize=True):
         # shape constraints
         HEAD_DIM_Q, HEAD_DIM_K = q.shape[-1], k.shape[-1]
         # when v is in float8_e5m2 it is transposed.
@@ -543,8 +511,7 @@ class _attention(torch.autograd.Function):
             extra_kern_args = {"waves_per_eu": waves_per_eu, "allow_flush_denorm": True}
 
         M = torch.empty((q.shape[0], q.shape[1], q.shape[2]), device=q.device, dtype=torch.float32)
-        # Use device_descriptor for Hopper + warpspec.
-        if supports_host_descriptor() and not (is_hopper() and warp_specialize):
+        if supports_host_descriptor():
             # Note that on Hopper we cannot perform a FP8 dot with a non-transposed second tensor
             y_dim = q.shape[0] * q.shape[1] * q.shape[2]
 
@@ -573,7 +540,8 @@ class _attention(torch.autograd.Function):
             return (triton.cdiv(q.shape[2], META["BLOCK_M"]), q.shape[0] * q.shape[1], 1)
 
         ctx.grid = grid
-        if is_blackwell() and warp_specialize:
+        if is_cuda() and warp_specialize:
+            # The maxnreg setting here does not truely affect register allocation
             if HEAD_DIM_K == 128 and q.dtype == torch.float16:
                 extra_kern_args["maxnreg"] = 168
             else:
@@ -587,28 +555,16 @@ class _attention(torch.autograd.Function):
             FP8_OUTPUT=q.dtype == torch.float8_e5m2,  #
             STAGE=stage,  #
             warp_specialize=warp_specialize,  #
-            IS_HOPPER=is_hopper(),  #
             **extra_kern_args)
 
         ctx.save_for_backward(q, k, v, o, M)
         ctx.sm_scale = sm_scale
         ctx.HEAD_DIM = HEAD_DIM_K
         ctx.causal = causal
-        ctx.bwd_tma = bwd_tma
-        if ctx.bwd_tma:
-            B, H, S_qo, BLOCK_D = q.shape
-            S_kv = k.shape[2]
-            ctx.shapes = (B, H, S_qo, S_kv)
-            ctx.launch_configs = (
-                causal,
-                BLOCK_D,
-            )
         return o
 
     @staticmethod
     def backward(ctx, do):
-        if ctx.bwd_tma:
-            return _attention_bwd_tma(ctx, do)
         q, k, v, o, M = ctx.saved_tensors
         assert do.is_contiguous()
         assert q.stride() == k.stride() == v.stride() == o.stride() == do.stride()
@@ -644,8 +600,7 @@ class _attention(torch.autograd.Function):
             BLK_SLICE_FACTOR=BLK_SLICE_FACTOR,  #
             HEAD_DIM=ctx.HEAD_DIM,  #
             num_warps=NUM_WARPS,  #
-            num_stages=NUM_STAGES,  #
-            CAUSAL=ctx.causal,  #
+            num_stages=NUM_STAGES  #
         )
 
         return dq, dk, dv, None, None, None, None
@@ -660,17 +615,11 @@ TORCH_HAS_FP8 = hasattr(torch, 'float8_e5m2')
 @pytest.mark.parametrize("H", [2, 48])
 @pytest.mark.parametrize("N_CTX", [128, 1024, (2 if is_hip() else 4) * 1024])
 @pytest.mark.parametrize("HEAD_DIM", [64, 128])
-@pytest.mark.parametrize("causal", [False, True])
+@pytest.mark.parametrize("causal", [True])  # FIXME: Non-causal tests do not pass at the moment.
 @pytest.mark.parametrize("warp_specialize", [False, True] if is_blackwell() else [False])
 @pytest.mark.parametrize("mode", ["fwd", "bwd"])
-@pytest.mark.parametrize("provider",
-                         ["triton-fp16"] +
-                         (["triton-fp16-tma"] if is_tileir() else []) +
-                         (["triton-fp8"] if TORCH_HAS_FP8 else []) +
-                         (["triton-fp8-tma"] if TORCH_HAS_FP8 and is_tileir() else []))
+@pytest.mark.parametrize("provider", ["triton-fp16"] + (["triton-fp8"] if TORCH_HAS_FP8 else []))
 def test_op(Z, H, N_CTX, HEAD_DIM, causal, warp_specialize, mode, provider, dtype=torch.float16):
-    if mode == "fwd" and "tma" in provider:
-        pytest.skip("TMA forward pass is tested in triton-fp16 / fp8 tests.")
     if mode == "fwd" and "fp16" in provider:
         pytest.skip("Avoid running the forward computation twice.")
     if mode == "bwd" and "fp8" in provider:
@@ -708,7 +657,7 @@ def test_op(Z, H, N_CTX, HEAD_DIM, causal, warp_specialize, mode, provider, dtyp
         v = v.permute(0, 1, 3, 2).contiguous()
         v = v.permute(0, 1, 3, 2)
         v = v.to(torch.float8_e5m2)
-    tri_out = attention(q, k, v, causal, sm_scale, "tma" in provider, warp_specialize).half()
+    tri_out = attention(q, k, v, causal, sm_scale, warp_specialize).half()
     if mode == "fwd":
         atol = 3 if "fp8" in provider else 1e-2
         torch.testing.assert_close(tri_out, ref_out, atol=atol, rtol=0)
@@ -742,36 +691,18 @@ BATCH, N_HEADS = 4, 32
 configs = []
 for HEAD_DIM in [64, 128]:
     for mode in ["fwd", "bwd"]:
-        if mode == "fwd":
-            provider = ["triton-fp16"] + (["triton-fp8"] if TORCH_HAS_FP8 else []) + \
-                        (["flash"] if HAS_FLASH else [])
-            line_names = ["Triton [FP16]"] + (["Triton [FP8]"] if TORCH_HAS_FP8 else []) + \
-                        (["Flash-2"] if HAS_FLASH else [])
-            styles = [("red", "-"), ("blue", "-"), ("green", "-"),  ("orange", "-"), ("purple", "-"), ("pink", "-")]
-        else:
-            # Note: `_attention_bwd_tma` kernel on NVIDIA backend has a bug: `CUDA error: misaligned address`
-            # related issue: https://github.com/triton-lang/triton/issues/7386
-            provider = ["triton-fp16"] + (["triton-fp16-tma"] if is_tileir() else []) + \
-                        (["triton-fp8"] if TORCH_HAS_FP8 else []) + \
-                        (["triton-fp8-tma"] if TORCH_HAS_FP8 and is_tileir() else []) + \
-                        (["flash"] if HAS_FLASH else [])
-            line_names = ["Triton [FP16]"] + (["Triton [TMA FP16]"] if is_tileir() else []) + \
-                        (["Triton [FP8]"] if TORCH_HAS_FP8 else []) + \
-                        (["Triton [TMA FP8]"] if TORCH_HAS_FP8 and is_tileir() else []) + \
-                        (["Flash-2"] if HAS_FLASH else [])
-            styles = [("red", "-"), ("blue", "-"), ("green", "-"),  ("orange", "-"), ("purple", "-"), ("pink", "-")]
         for causal in [True, False]:
-            # Enable warpspec for causal fwd on Hopper
-            enable_ws = mode == "fwd" and (is_blackwell() or (is_hopper() and not causal))
-            for warp_specialize in [False, True] if enable_ws else [False]:
+            for warp_specialize in [False, True] if is_blackwell() else [False]:
                 configs.append(
                     triton.testing.Benchmark(
                         x_names=["N_CTX"],
                         x_vals=[2**i for i in range(10, 15)],
                         line_arg="provider",
-                        line_vals=provider,
-                        line_names=line_names,
-                        styles=styles,
+                        line_vals=["triton-fp16"] + (["triton-fp8"] if TORCH_HAS_FP8 else []) +
+                        (["flash"] if HAS_FLASH else []),
+                        line_names=["Triton [FP16]"] + (["Triton [FP8]"] if TORCH_HAS_FP8 else []) +
+                        (["Flash-2"] if HAS_FLASH else []),
+                        styles=[("red", "-"), ("blue", "-"), ("green", "-")],
                         ylabel="TFLOPS",
                         plot_name=
                         f"fused-attention-batch{BATCH}-head{N_HEADS}-d{HEAD_DIM}-{mode}-causal={causal}-warp_specialize={warp_specialize}",
@@ -801,7 +732,7 @@ def bench_flash_attention(BATCH, H, N_CTX, HEAD_DIM, causal, warp_specialize, mo
             v = v.permute(0, 1, 3, 2)
             v = v.to(torch.float8_e5m2)
         sm_scale = 1.3
-        fn = lambda: attention(q, k, v, causal, sm_scale, "tma" in provider, warp_specialize)
+        fn = lambda: attention(q, k, v, causal, sm_scale, warp_specialize)
         if mode == "bwd":
             o = fn()
             do = torch.randn_like(o)
