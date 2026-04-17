@@ -43,12 +43,12 @@ else()
     )
     # Track specific tag to avoid breaking change conflict with patch
     execute_process(
-      COMMAND bash -c "git fetch --tags && git checkout v13.1.3"
+      COMMAND bash -c "git fetch --tags && git checkout v13.2.0"
       WORKING_DIRECTORY ${CUDA_TILE_SOURCE_DIR}
       RESULT_VARIABLE CUDA_TILE_CHECKOUT_RESULT
     )
     if(NOT CUDA_TILE_CHECKOUT_RESULT EQUAL 0)
-      message(FATAL_ERROR "Failed to checkout v13.1.3 in ${CUDA_TILE_SOURCE_DIR}")
+      message(FATAL_ERROR "Failed to checkout v13.2.0 in ${CUDA_TILE_SOURCE_DIR}")
     endif()
     if(NOT CUDA_TILE_GIT_CLONE_RESULT EQUAL 0)
       message(FATAL_ERROR "Failed to clone https://github.com/NVIDIA/cuda-tile into ${CUDA_TILE_SOURCE_DIR}")
