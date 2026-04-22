@@ -199,6 +199,37 @@ public:
   }
 };
 
+class ConvertPrintOp : public OpConversionPattern<triton::PrintOp> {
+public:
+  using OpConversionPattern<triton::PrintOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::PrintOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto prefix = op.getPrefix().str();
+    auto args = adaptor.getArgs();
+    std::string newPrefix = prefix;
+    for (Value arg : args) {
+      auto tileType = cast<cuda_tile::TileType>(arg.getType());
+      Type elType = tileType.getElementType();
+      if (isa<IntegerType>(elType)) {
+        newPrefix += "%i";
+      } else if (isa<FloatType>(elType)) {
+        newPrefix += "%.5f";
+      } else if (isa<cuda_tile::PointerType>(elType)) {
+        newPrefix += "%p";
+      } else {
+        llvm::report_fatal_error("unsupported type");
+      }
+    }
+    newPrefix += "\n";
+
+    cuda_tile::PrintTkoOp::create(rewriter, op.getLoc(), newPrefix, args,
+                                           /*token=*/Value());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
 
 class ConvertLoadOp : public OpConversionPattern<triton::LoadOp> {
 public:
@@ -2388,6 +2419,7 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
     ConvertMaximumFOp,
     ConvertMinNumFOp,
     ConvertMinimumFOp,
+    ConvertPrintOp,
     ConvertReduceOp,
     ConvertReduceReturnOp,
     ConvertReshapeOp,
