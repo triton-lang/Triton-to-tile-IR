@@ -66,6 +66,7 @@ cuobjdump
 nvdisasm
 ptxas
 ptxas-blackwell
+tileiras
 
 # Third-party include
 third_party/nvidia/backend/include

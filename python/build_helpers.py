@@ -51,6 +51,7 @@ class BuildHelperArgs:
     cupti_include_path: Optional[str]
     cupti_lib_path: Optional[str]
     cupti_lib_blackwell_path: Optional[str]
+    tileiras_path: Optional[str]
 
 
 def _normalize_bool(value: str, default: str = "") -> bool:
@@ -413,6 +414,17 @@ def download_and_copy_dependencies(helper_args: BuildHelperArgs):
         f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
         helper_args=helper_args,
     )
+    download_and_copy(
+        name="tileiras",
+        src_func=lambda system, arch, version:
+        f"cuda_tileiras-{system}-{arch}-{version}-archive/bin/tileiras{exe_extension}",
+        dst_path="bin/tileiras",
+        override_path=helper_args.tileiras_path,
+        version=nvidia_toolchain_version["tileiras"],
+        url_func=lambda system, arch, version:
+        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_tileiras/{system}-{arch}/cuda_tileiras-{system}-{arch}-{version}-archive.tar.xz",
+        helper_args=helper_args,
+    )
 
 
 def add_common_args(parser: argparse.ArgumentParser):
@@ -439,6 +451,8 @@ def add_common_args(parser: argparse.ArgumentParser):
     parser.add_argument("--triton-cupti-lib-path", default="", help="Path override for TRITON_CUPTI_LIB_PATH")
     parser.add_argument("--triton-cupti-lib-blackwell-path", default="",
                         help="Path override for TRITON_CUPTI_LIB_BLACKWELL_PATH")
+    parser.add_argument("--triton-tileiras-path", default="",
+                        help="Path override for TRITON_TILEIRAS_PATH")
 
 
 def normalize_parsed_args(parsed_args) -> BuildHelperArgs:
@@ -457,6 +471,7 @@ def normalize_parsed_args(parsed_args) -> BuildHelperArgs:
         cupti_include_path=_normalize_optional_path(parsed_args.triton_cupti_include_path),
         cupti_lib_path=_normalize_optional_path(parsed_args.triton_cupti_lib_path),
         cupti_lib_blackwell_path=_normalize_optional_path(parsed_args.triton_cupti_lib_blackwell_path),
+        tileiras_path=_normalize_optional_path(parsed_args.triton_tileiras_path),
     )
 
 
