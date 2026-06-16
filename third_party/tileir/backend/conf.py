@@ -25,18 +25,32 @@ class TileIREnvConf:
 
     @staticmethod
     def get_tileiras_path():
+        # Resolution order: explicit env override > bundled binary > system PATH.
         env_path = os.getenv("TRITON_TILEIRAS_PATH", None)
-        if env_path is None:
-            # Check if tileiras exists in system PATH
-            from shutil import which
+        if env_path is not None:
+            return os.path.join(env_path, "tileiras")
 
-            tileiras_path = which("tileiras")
-            if tileiras_path is None:
-                raise RuntimeError(
-                    "tileiras not found in PATH and TRITON_TILEIRAS_PATH not set"
-                )
-            return tileiras_path
-        return os.path.join(env_path, "tileiras")
+        # Bundled binary downloaded at build time into the nvidia backend.
+        bundled_path = os.path.join(
+            os.path.dirname(triton.__file__),
+            "backends",
+            "nvidia",
+            "bin",
+            "tileiras",
+        )
+        if os.path.isfile(bundled_path) and os.access(bundled_path, os.X_OK):
+            return bundled_path
+
+        # Fall back to system PATH.
+        from shutil import which
+
+        tileiras_path = which("tileiras")
+        if tileiras_path is None:
+            raise RuntimeError(
+                "tileiras not found: TRITON_TILEIRAS_PATH unset, no bundled "
+                "binary, and not in PATH"
+            )
+        return tileiras_path
 
     @staticmethod
     def get_device():

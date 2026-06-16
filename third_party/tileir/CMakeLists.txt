@@ -35,7 +35,7 @@ else()
 
     # Clone then fetch the pinned commit (--depth 1 alone only gets default branch tip;
     # we need this exact commit for patch compatibility).
-    set(CUDA_TILE_COMMIT 0859212ad19f71133a9b940c05323286cbf28a05)
+    set(CUDA_TILE_COMMIT 2e5ccba66fb3afdba34b26cf358418283027c248)
     execute_process(
       COMMAND bash -c "git clone --depth 1 https://github.com/NVIDIA/cuda-tile tileir_src && cd tileir_src && git fetch --depth 1 origin ${CUDA_TILE_COMMIT} && git checkout FETCH_HEAD"
       WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
@@ -43,12 +43,12 @@ else()
     )
     # Track specific tag to avoid breaking change conflict with patch
     execute_process(
-      COMMAND bash -c "git fetch --tags && git checkout v13.2.0"
+      COMMAND bash -c "git fetch --tags && git checkout v13.3.0"
       WORKING_DIRECTORY ${CUDA_TILE_SOURCE_DIR}
       RESULT_VARIABLE CUDA_TILE_CHECKOUT_RESULT
     )
     if(NOT CUDA_TILE_CHECKOUT_RESULT EQUAL 0)
-      message(FATAL_ERROR "Failed to checkout v13.2.0 in ${CUDA_TILE_SOURCE_DIR}")
+      message(FATAL_ERROR "Failed to checkout v13.3.0 in ${CUDA_TILE_SOURCE_DIR}")
     endif()
     if(NOT CUDA_TILE_GIT_CLONE_RESULT EQUAL 0)
       message(FATAL_ERROR "Failed to clone https://github.com/NVIDIA/cuda-tile into ${CUDA_TILE_SOURCE_DIR}")
