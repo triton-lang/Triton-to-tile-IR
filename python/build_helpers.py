@@ -418,11 +418,53 @@ def download_and_copy_dependencies(helper_args: BuildHelperArgs):
         name="tileiras",
         src_func=lambda system, arch, version:
         f"cuda_tileiras-{system}-{arch}-{version}-archive/bin/tileiras{exe_extension}",
-        dst_path="bin/tileiras",
+        dst_path="tileir_cuda/bin/tileiras",
         override_path=helper_args.tileiras_path,
         version=nvidia_toolchain_version["tileiras"],
         url_func=lambda system, arch, version:
         f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_tileiras/{system}-{arch}/cuda_tileiras-{system}-{arch}-{version}-archive.tar.xz",
+        helper_args=helper_args,
+    )
+    # tileiras (13.3.x) invokes ptxas + libnvvm/libdevice from a CUDA_HOME at
+    # runtime to lower Tile IR -> SASS. The container's system CUDA may be older
+    # (e.g. 13.2) and cannot codegen SM100 tcgen05 MMA. Bundle a matching 13.3
+    # ptxas + libnvvm + libdevice into a self-contained tileir CUDA_HOME
+    # (backends/nvidia/tileir_cuda) that conf.py points CUDA_HOME at for the
+    # tileiras subprocess only. NOTE: must NOT reuse bin/ (Triton's own ptxas
+    # 12.9.86 lives there).
+    # ptxas is published only inside the cuda_nvcc redist archive; we extract ONLY
+    # bin/ptxas from it (we do NOT bundle nvcc), same as Triton's own ptxas download.
+    download_and_copy(
+        name="tileir-ptxas",
+        src_func=lambda system, arch, version:
+        f"cuda_nvcc-{system}-{arch}-{version}-archive/bin/ptxas{exe_extension}",
+        dst_path="tileir_cuda/bin/ptxas",
+        override_path=None,
+        version=nvidia_toolchain_version["tileir-ptxas"],
+        url_func=lambda system, arch, version:
+        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/{system}-{arch}/cuda_nvcc-{system}-{arch}-{version}-archive.tar.xz",
+        helper_args=helper_args,
+    )
+    download_and_copy(
+        name="tileir-libnvvm",
+        src_func=lambda system, arch, version:
+        f"libnvvm-{system}-{arch}-{version}-archive/nvvm/lib64",
+        dst_path="tileir_cuda/nvvm/lib64",
+        override_path=None,
+        version=nvidia_toolchain_version["tileir-libnvvm"],
+        url_func=lambda system, arch, version:
+        f"https://developer.download.nvidia.com/compute/cuda/redist/libnvvm/{system}-{arch}/libnvvm-{system}-{arch}-{version}-archive.tar.xz",
+        helper_args=helper_args,
+    )
+    download_and_copy(
+        name="tileir-libdevice",
+        src_func=lambda system, arch, version:
+        f"libnvvm-{system}-{arch}-{version}-archive/nvvm/libdevice",
+        dst_path="tileir_cuda/nvvm/libdevice",
+        override_path=None,
+        version=nvidia_toolchain_version["tileir-libnvvm"],
+        url_func=lambda system, arch, version:
+        f"https://developer.download.nvidia.com/compute/cuda/redist/libnvvm/{system}-{arch}/libnvvm-{system}-{arch}-{version}-archive.tar.xz",
         helper_args=helper_args,
     )
 

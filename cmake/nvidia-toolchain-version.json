@@ -7,5 +7,7 @@
   "cudart": "13.1.80",
   "cupti": "12.8.90",
   "cupti-blackwell": "13.0.85",
-  "tileiras": "13.3.36"
+  "tileiras": "13.3.36",
+  "tileir-ptxas": "13.3.33",
+  "tileir-libnvvm": "13.3.33"
 }

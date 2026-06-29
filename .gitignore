@@ -9,6 +9,7 @@ llvm-project-*/
 # Triton Python module builds
 python/build/
 python/dist/
+dist/
 python/triton*.egg-info/
 python/triton_kernels/triton*.egg-info/
 
@@ -67,6 +68,10 @@ nvdisasm
 ptxas
 ptxas-blackwell
 tileiras
+
+# Bundled self-contained tileir CUDA root (tileiras + ptxas + libnvvm + libdevice, downloaded at build time)
+third_party/nvidia/backend/tileir_cuda/
+python/triton/backends/nvidia/tileir_cuda/
 
 # Third-party include
 third_party/nvidia/backend/include

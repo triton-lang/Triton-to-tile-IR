@@ -4,6 +4,7 @@ import copy
 import hashlib
 import inspect
 import itertools
+import logging
 import threading
 import re
 import textwrap
@@ -363,11 +364,47 @@ def mangle_type(arg, specialize=False):
     return native_specialize_impl(BaseBackend, arg, is_const, specialize, align)[0]
 
 
+# WORKAROUND (tileir 13.3.x): the tileir compiler can fail to compile warp_specialize=True
+# kernels on SM100 with HEAD_DIM=128. The tileir backend applies warp specialization
+# automatically, so this user-facing flag is effectively a no-op for it; forcing it to False is
+# mathematically lossless and avoids the affected compilation path. This is a temporary
+# workaround — REMOVE this helper and its call in tileir_run once the fix ships in tileir 13.4.
+_TILEIR_WS_FORCED_OFF_WARNED = False
+
+
+def _tileir_force_warp_specialize_off(arg_names, args, kwargs):
+    """Force the `warp_specialize` constexpr to False on the tileir backend (temporary WA)."""
+    global _TILEIR_WS_FORCED_OFF_WARNED
+
+    def _is_on(v):
+        return bool(getattr(v, "value", v))  # handles bare bool and tl.constexpr
+
+    forced = False
+    if "warp_specialize" in kwargs:
+        if _is_on(kwargs["warp_specialize"]):
+            kwargs = {**kwargs, "warp_specialize": False}
+            forced = True
+    elif arg_names is not None and "warp_specialize" in arg_names:
+        i = arg_names.index("warp_specialize")
+        if i < len(args) and _is_on(args[i]):
+            args = args[:i] + (False, ) + args[i + 1:]
+            forced = True
+    if forced and not _TILEIR_WS_FORCED_OFF_WARNED:
+        _TILEIR_WS_FORCED_OFF_WARNED = True
+        logging.warning(
+            "[tileir WORKAROUND] forcing warp_specialize=False: tileir auto-applies warp "
+            "specialization (this flag is a no-op for it) and tileir 13.3.x can fail to compile "
+            "warp_specialize=True on SM100 d128. Remove at tileir 13.4.")
+    return args, kwargs
+
+
 class KernelInterface(Generic[T]):
     run: T
     enable_tile = os.environ.get("ENABLE_TILE", "0") == "1"
 
     def tileir_run(self, *args, grid, warmup, **kwargs):
+        # {WORKAROUND tileir 13.3.x WS+d128 compile failure — REMOVE at 13.4} force warp_specialize=False
+        args, kwargs = _tileir_force_warp_specialize_off(getattr(self, "arg_names", None), args, kwargs)
         try:
             driver.set_active(GlobalTileIRDriver)
             ret = self.run(grid=grid, warmup=False, *args, **kwargs)

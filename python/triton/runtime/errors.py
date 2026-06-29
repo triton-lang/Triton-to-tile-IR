@@ -36,6 +36,16 @@ class PTXASError(TritonError):
         return f"PTXAS error: {error_message}"
 
 
+class TileirasError(TritonError):
+
+    def __init__(self, error_message: Optional[str] = None):
+        self.error_message = error_message
+
+    def __str__(self) -> str:
+        error_message = self.error_message or ""
+        return f"tileiras error: {error_message}"
+
+
 class AutotunerError(TritonError):
 
     def __init__(self, error_message: Optional[str] = None):

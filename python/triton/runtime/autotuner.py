@@ -10,7 +10,7 @@ from typing import Dict, Tuple, List, Optional
 
 from .. import knobs
 from .jit import KernelInterface, JITFunction
-from .errors import OutOfResources, PTXASError, AutotunerError
+from .errors import OutOfResources, PTXASError, TileirasError, AutotunerError
 from .driver import driver
 from .cache import get_cache_manager, triton_key
 from triton._C.libtriton import get_cache_invalidating_env_vars
@@ -164,7 +164,7 @@ class Autotuner(KernelInterface):
 
         try:
             return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
-        except (OutOfResources, CompileTimeAssertionFailure, PTXASError) as e:
+        except (OutOfResources, CompileTimeAssertionFailure, PTXASError, TileirasError) as e:
             if verbose:
                 print(f"Autotuning failed with {e}")
             return [float("inf"), float("inf"), float("inf")]

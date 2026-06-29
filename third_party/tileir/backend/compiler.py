@@ -1,4 +1,4 @@
-from triton.runtime.errors import OutOfResources
+from triton.runtime.errors import OutOfResources, TileirasError
 from triton.backends.tileir.errors import HitFallback
 from triton.runtime.cache import get_cache_manager
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
@@ -218,6 +218,12 @@ class TileIRBackend(BaseBackend):
         bytecode_cache_name = f"{name}.bytecode"
         bytecode_file = fn_cache_manager.put(bytecode, bytecode_cache_name)
 
+        # Scoped CUDA_HOME for the tileiras subprocess only (NOT global os.environ):
+        # tileiras locates ptxas + libnvvm + libdevice under $CUDA_HOME for SM100 codegen.
+        # Derived from the bundled tileiras location (tileir_cuda) so a stale system
+        # CUDA can never shadow the matching 13.3 toolchain.
+        tileiras_env = {**os.environ, "CUDA_HOME": TileIREnvConf.get_tileir_cuda_home()}
+
         # Use temp file for cubin output to avoid race conditions.
         with (
             tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".log") as flog,
@@ -228,7 +234,7 @@ class TileIRBackend(BaseBackend):
             tileiras_cmd.append(fbin.name)
 
             try:
-                subprocess.run(tileiras_cmd, check=True, close_fds=False, stderr=flog)
+                subprocess.run(tileiras_cmd, check=True, close_fds=False, stderr=flog, env=tileiras_env)
             except subprocess.CalledProcessError as e:
                 with open(flog.name) as log_file:
                     log = log_file.read()
@@ -253,10 +259,16 @@ class TileIRBackend(BaseBackend):
                         max_tmem = int(match.group(2))
                         raise OutOfResources(used_tmem, max_tmem, "tensor memory")
                 error = f"`tileiras` failed with error code {e.returncode}"
-                raise RuntimeError(
+                repro = ' '.join(str(item) for item in tileiras_cmd)
+                # A negative returncode means tileiras was killed by a signal (e.g. -11 SIGSEGV) —
+                # a compiler crash, not a user error. Surface it as TileirasError so the autotuner
+                # can prune the offending config (mirrors PTXASError), but always log it so the
+                # underlying tileiras failure stays visible and is never silently swallowed.
+                logging.warning("tileiras failed (code %s). Repro: %s", e.returncode, repro)
+                raise TileirasError(
                     f"{error}\n"
                     f"`tileiras` stderr:\n{log}\n"
-                    f"Repro command: {' '.join(str(item) for item in tileiras_cmd)}\n"
+                    f"Repro command: {repro}\n"
                 )
             with open(fbin.name, "rb") as f:
                 cubin = f.read()
