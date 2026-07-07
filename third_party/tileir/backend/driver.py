@@ -61,8 +61,10 @@ class TileIRUtils(object):
 
     def init_nvidia_function(self, mod):
         self.get_device_properties = mod.get_device_properties
+        self.get_device_capability = mod.get_device_capability
         self.cuOccupancyMaxActiveClusters = mod.cuOccupancyMaxActiveClusters
         self.set_printf_fifo_size = mod.set_printf_fifo_size
+        self.unload_module = mod.unload_module
 
 
 # ------------------------
