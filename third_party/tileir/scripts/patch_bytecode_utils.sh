@@ -69,30 +69,34 @@ if [[ -f "${CUDATILE_CPP_PATH}" ]]; then
     -e 's|ValueRange(), /\*attributes=\*/std::nullopt)|ValueRange(), /\*attributes=\*/llvm::ArrayRef<mlir::NamedAttribute>{})|g'
 fi
 
-# 4) Global rename: DenseTypedElementsAttr → DenseIntOrFPElementsAttr
-# cuda-tile 13.2 uses the newer LLVM class name 'DenseTypedElementsAttr' in C++ and
-# tablegen. Triton's pinned LLVM (979132a) uses the older 'DenseIntOrFPElementsAttr'.
-# This is a no-op for NDA (bundled cuda-tile uses the matching LLVM name), but
-# required for PUBLIC which FetchContent-clones a potentially newer cuda-tile release.
-echo "[patch] Global rename: DenseTypedElementsAttr → DenseIntOrFPElementsAttr"
+# 4) Triton 3.7's LLVM renamed DenseIntOrFPElementsAttr to
+# DenseTypedElementsAttr. Keep TileIR 13.3 pinned and bridge the copied build
+# source instead of changing the released TileIR sources.
+echo "[patch] Global rename: DenseIntOrFPElementsAttr → DenseTypedElementsAttr"
 find "${REPO_ROOT}" -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.td" \) \
-  -exec sed -i 's/DenseTypedElementsAttr/DenseIntOrFPElementsAttr/g' {} +
+  -exec sed -i 's/DenseIntOrFPElementsAttr/DenseTypedElementsAttr/g' {} +
+
+# DenseElementsAttr<i1> raw layout differs across the LLVM versions used by
+# Triton and the bundled tileiras. Patch only the copied cuda-tile source tree.
+python3 "$(dirname "${BASH_SOURCE[0]}")/patch_cuda_tile_i1_bytecode_compat.py" "${REPO_ROOT}"
 
 # 5) Patch BytecodeReader.cpp for LLVM api changes:
-# - DenseElementsAttr::isValidRawBuffer now takes 3 args (Type, ArrayRef, bool& detectedSplat)
-#   in Triton's LLVM; cuda-tile 13.2 still uses the old 2-arg form.
-# - llvm::make_scope_exit is deprecated; use llvm::scope_exit.
+# - Triton 3.7's LLVM uses the 2-argument isValidRawBuffer overload.
+# - Triton 3.7's LLVM exposes make_scope_exit rather than a directly
+#   constructible scope_exit template.
 BYTECODE_READER_PATH="${REPO_ROOT}/lib/Bytecode/Reader/BytecodeReader.cpp"
 if [[ -f "${BYTECODE_READER_PATH}" ]]; then
   echo "[patch] Patching: ${BYTECODE_READER_PATH}"
-  if grep -q 'isValidRawBuffer(tileType, rawData))' "${BYTECODE_READER_PATH}"; then
-    patch_in_place "${BYTECODE_READER_PATH}" \
-      -e 's|// Validate the buffer size and format\.|&\n    bool detectedSplat = false;|' \
-      -e 's/isValidRawBuffer(tileType, rawData))/isValidRawBuffer(tileType, rawData, detectedSplat))/g'
-  fi
-  if grep -q 'llvm::make_scope_exit' "${BYTECODE_READER_PATH}"; then
-    patch_in_place "${BYTECODE_READER_PATH}" -e 's/llvm::make_scope_exit/llvm::scope_exit/g'
-  fi
+  patch_in_place "${BYTECODE_READER_PATH}" \
+    -e 's/llvm::scope_exit removeIndex(/auto removeIndex = llvm::make_scope_exit(/g' \
+    -e 's/DenseElementsAttr::isValidRawBuffer(tileType, rawData, isSplat)/DenseElementsAttr::isValidRawBuffer(tileType, rawData)/g'
+fi
+
+# This option is newer than the LLVM pinned by Triton 3.7.
+DIALECT_TD_PATH="${REPO_ROOT}/include/cuda_tile/Dialect/CudaTile/IR/Dialect.td"
+if [[ -f "${DIALECT_TD_PATH}" ]] && grep -q 'usePropertiesForAttributes' "${DIALECT_TD_PATH}"; then
+  echo "[patch] Removing unsupported usePropertiesForAttributes"
+  patch_in_place "${DIALECT_TD_PATH}" -e '/usePropertiesForAttributes/d'
 fi
 
 echo "[patch] DONE"
