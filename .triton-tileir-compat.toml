@@ -1,0 +1,11 @@
+schema_version = 1
+line = "triton-3.6.x-tileir-13.3"
+status = "frozen-baseline"
+triton_version = "3.6.0"
+tileir_version = "13.3.0"
+public_source_commit = "a78d3040bc3d0b9bbf516f57552f8be8cdc64e10"
+accepted_oait_commit = "58bc6d37af25737d388eb9bfd936edb444d5e426"
+target_oait_commit = "58bc6d37af25737d388eb9bfd936edb444d5e426"
+cuda_tile_commit = "2e5ccba66fb3afdba34b26cf358418283027c248"
+python_gate_baseline = "39 PASS, 22 known FAIL, 61 total"
+push_requires_explicit_owner_command = true
