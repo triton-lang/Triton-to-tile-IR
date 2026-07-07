@@ -661,6 +661,8 @@ class CodeGenerator(ast.NodeVisitor):
         arg_names = []
         for arg in node.args:
             arg_names += [self.visit(arg)]
+        if node.vararg is not None:
+            arg_names += [self.visit(node.vararg)]
         kwarg_names = self.visit(node.kwarg)
         return arg_names, kwarg_names
 
@@ -1428,6 +1430,9 @@ class CodeGenerator(ast.NodeVisitor):
         for arg in node.args:
             if isinstance(arg, ast.Starred):
                 arg = self.visit(arg.value)
+                arg = _unwrap_if_constexpr(arg)
+                if isinstance(arg, tuple):
+                    arg = language.core.tuple(arg)
                 assert isinstance(arg, language.core.tuple)
                 args.extend(arg.values)
             else:
