@@ -1772,6 +1772,11 @@ class TritonSemantic(Generic[TensorTy]):
         return x
 
     def debug_barrier(self) -> TensorTy:
+        # TileIR lowers gpu.barrier directly and does not run the TTG lowering
+        # that handles ttg.barrier. Keep this backend bridge until TileIR gains
+        # native ttg.barrier support.
+        if is_tileir():
+            return self.tensor(self.builder.create_gpu_barrier(), tl.void)
         return self.tensor(self.builder.create_barrier(), tl.void)
 
     def device_print(self, prefix: str, args: List[TensorTy], hex: bool) -> TensorTy:
@@ -1873,4 +1878,3 @@ class TritonSemantic(Generic[TensorTy]):
         if target.backend == "tileir":
             return tl.tileir_tensor_descriptor(handle, shape, strides, type, base)
         return tl.tensor_descriptor(handle, shape, strides, type)
-
