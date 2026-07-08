@@ -1834,10 +1834,11 @@ public:
     SmallVector<int32_t> dimMap(rank);
     std::iota(dimMap.begin(), dimMap.end(), 0);
 
-    auto tileShape = op.getTensorShape();
+    auto descType = cast<triton::TensorDescType>(op.getResult().getType());
+    auto tileShape = descType.getShape();
     SmallVector<int32_t> arrayOfi32Shape;
     for (auto i64Shape : tileShape) {
-      arrayOfi32Shape.push_back(i64Shape);
+      arrayOfi32Shape.push_back(static_cast<int32_t>(i64Shape));
     }
 
         auto tilePartViewTy = cuda_tile::PartitionViewType::get(
