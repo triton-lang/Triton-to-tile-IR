@@ -85,14 +85,14 @@ static LogicalResult rewriteReshapeLike(const TypeConverter *typeConverter,
   return success();
 }
 
-static DenseIntOrFPElementsAttr
+static DenseTypedElementsAttr
 convertArithAttrToCudaTileAttr(const TypedAttr &attr,
                                const ShapedType &shapeType) {
   auto shape = shapeType.getShape();
   if (auto arithDense = dyn_cast<DenseElementsAttr>(attr))
-    return cast<DenseIntOrFPElementsAttr>(DenseElementsAttr::getFromRawBuffer(
+    return cast<DenseTypedElementsAttr>(DenseElementsAttr::getFromRawBuffer(
         shapeType, arithDense.getRawData()));
-  return cast<DenseIntOrFPElementsAttr>(
+  return cast<DenseTypedElementsAttr>(
       DenseElementsAttr::get(shapeType, {cast<Attribute>(attr)}));
 }
 
@@ -137,7 +137,7 @@ public:
       return rewriter.notifyMatchFailure(loc,
                                          "typeConversion of current op failed");
 
-    DenseIntOrFPElementsAttr tensorAttr = convertArithAttrToCudaTileAttr(
+    DenseTypedElementsAttr tensorAttr = convertArithAttrToCudaTileAttr(
         adaptor.getValueAttr(), cast<ShapedType>(tensorType));
 
     SmallVector<Type> retTypes;
@@ -648,14 +648,14 @@ public:
     auto splatFloat = [&](cuda_tile::TileType tileType, double value) -> Value {
       auto elementType = cast<FloatType>(tileType.getElementType());
       auto scalarAttr = rewriter.getFloatAttr(elementType, value);
-      auto denseAttr = cast<DenseIntOrFPElementsAttr>(
+      auto denseAttr = cast<DenseTypedElementsAttr>(
           DenseElementsAttr::get(tileType, scalarAttr));
       return cuda_tile::ConstantOp::create(rewriter, loc, tileType, denseAttr);
     };
     auto splatInt = [&](cuda_tile::TileType tileType, int64_t value) -> Value {
       auto elementType = cast<IntegerType>(tileType.getElementType());
       auto scalarAttr = rewriter.getIntegerAttr(elementType, value);
-      auto denseAttr = cast<DenseIntOrFPElementsAttr>(
+      auto denseAttr = cast<DenseTypedElementsAttr>(
           DenseElementsAttr::get(tileType, scalarAttr));
       return cuda_tile::ConstantOp::create(rewriter, loc, tileType, denseAttr);
     };
@@ -1677,7 +1677,7 @@ public:
     ShapedType retTyAsShape = cast<ShapedType>(retTy);
     IntegerAttr attr =
         rewriter.getIntegerAttr(retTyAsShape.getElementType(), start);
-    DenseIntOrFPElementsAttr denseAttr = cast<DenseIntOrFPElementsAttr>(
+    DenseTypedElementsAttr denseAttr = cast<DenseTypedElementsAttr>(
         DenseElementsAttr::get(retTyAsShape, attr));
     cuda_tile::ConstantOp cstOp =
         cuda_tile::ConstantOp::create(rewriter, loc, retTy, denseAttr);
@@ -1915,7 +1915,7 @@ class ConvertDotOp : public OpConversionPattern<triton::DotOp> {
       auto c0Attr = DenseElementsAttr::get(shapedType, zeroAttr);
       return cuda_tile::ConstantOp::create(
           rewriter, op.getLoc(), value.getType(),
-          cast<DenseIntOrFPElementsAttr>(c0Attr));
+          cast<DenseTypedElementsAttr>(c0Attr));
     };
     auto convertFloat = [&](Value value, FloatType dstFloatTy) -> Value {
       auto srcTy = dyn_cast<cuda_tile::TileType>(value.getType());

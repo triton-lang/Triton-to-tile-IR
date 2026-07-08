@@ -90,9 +90,6 @@ void init_triton_to_cudatile_passes(py::module &&m) {
     auto &mpm = pm.nest<cuda_tile::ModuleOp>();
     mpm.addPass(cuda_tile::createSynthesizeDebugInfoScopesPass());
   });
-  m.def("add_rewrite_tensor_pointers_to_ldst", [](mlir::PassManager &pm) {
-    pm.addPass(mlir::triton::createTritonRewriteTensorPointer());
-  });
   m.def("add_assume_to_tileir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::createRewriteAssumeWithCudaTilePass());
   });
