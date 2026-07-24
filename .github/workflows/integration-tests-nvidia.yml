@@ -15,7 +15,7 @@ jobs:
       image-tag: ${{ steps.build-info.outputs.image-tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: "true"
           lfs: true
@@ -118,7 +118,7 @@ jobs:
       PROTON_SKIP_PC_SAMPLING_TEST: 1
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: "true"
       - name: Display default backend environment info
@@ -272,7 +272,7 @@ jobs:
       PROTON_SKIP_PC_SAMPLING_TEST: 1
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: "true"
       - name: Display TileIR environment info
