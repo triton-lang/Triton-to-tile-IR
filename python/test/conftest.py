@@ -95,11 +95,16 @@ def _tileir_134_profile():
     ) is not None
 
 
+def _tileir_matmul_test(item):
+    from pathlib import Path
+    return item.path.resolve() == Path(__file__).resolve().parent / "unit/language/test_matmul.py"
+
+
 def pytest_collection_modifyitems(items):
     if not _tileir_134_profile():
         return
     for item in items:
-        if item.path.name != "test_matmul.py" or item.originalname != "test_mxfp8_mxfp4_matmul":
+        if not _tileir_matmul_test(item) or item.originalname != "test_mxfp8_mxfp4_matmul":
             continue
         params = item.callspec.params
         if params["A_DATA_TYPE"] != params["B_DATA_TYPE"] or not (
@@ -114,7 +119,7 @@ def pytest_collection_modifyitems(items):
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     outcome = yield
-    if not _tileir_134_profile() or item.path.name != "test_matmul.py" or call.when != "call":
+    if not _tileir_134_profile() or not _tileir_matmul_test(item) or call.when != "call":
         return
     stages = _TILEIR_STAGE_TESTS.get(item.originalname, set())
     error = call.excinfo.value if call.excinfo is not None else None
