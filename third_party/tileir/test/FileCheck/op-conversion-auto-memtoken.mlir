@@ -61,7 +61,6 @@ module {
     %c0_i32 = arith.constant 0 : i32
     %cst = arith.constant dense<1> : tensor<128xi64>
     %c1_i32 = arith.constant 1 : i32
-    %start = tt.elementwise_inline_asm "mov.u64 $0, %globaltimer;" {constraints = "=l", packed_element = 1 : i32, pure = false} -> i64
     %off = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
     %0 = tt.splat %Out1 : !tt.ptr<i64> -> tensor<128x!tt.ptr<i64>>
     %1 = tt.addptr %0, %off : tensor<128x!tt.ptr<i64>>, tensor<128xi32>
@@ -70,10 +69,6 @@ module {
       %4 = arith.addi %3, %cst : tensor<128xi64>
       tt.store %1, %4 : tensor<128x!tt.ptr<i64>>
     }
-    %end = tt.elementwise_inline_asm "mov.u64 $0, %globaltimer;" {constraints = "=l", packed_element = 1 : i32, pure = false} -> i64
-    tt.store %Out2, %start : !tt.ptr<i64>
-    %2 = tt.addptr %Out2, %c1_i32 : !tt.ptr<i64>, i32
-    tt.store %2, %end : !tt.ptr<i64>
     tt.return
   }
 }

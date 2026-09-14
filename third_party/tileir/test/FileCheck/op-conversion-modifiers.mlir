@@ -11,7 +11,7 @@ module {
 }
 // APPROX-LABEL: entry @exp_precision
 // APPROX-SAME: num_worker_warps_per_cta = 8
-// APPROX: exp approx
+// APPROX: exp {{.*}} rounding<approx>
 // FULL-LABEL: entry @exp_precision
 // FULL-SAME: num_worker_warps_per_cta = 4
-// FULL: exp full
+// FULL: exp {{.*}} rounding<full>
