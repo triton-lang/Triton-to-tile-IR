@@ -68,7 +68,7 @@ else()
 
   # Patch cuda-tile sources for LLVM API changes before building.
   execute_process(
-    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/patch_bytecode_utils.sh ${CUDA_TILE_SOURCE_DIR}
+    COMMAND ${CMAKE_COMMAND} -E env LLVM_SYSPATH=${LLVM_SYSPATH} bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/patch_bytecode_utils.sh ${CUDA_TILE_SOURCE_DIR}
     WORKING_DIRECTORY ${CUDA_TILE_SOURCE_DIR}
     RESULT_VARIABLE CUDA_TILE_PATCH_RESULT
   )
