@@ -901,7 +901,7 @@ public:
       rewriter.replaceOpWithNewOp<cuda_tile::CeilOp>(op, adaptor.getSrcs()[0]);
       return success();
     } else if (symbol == "__nv_pow" || symbol == "__nv_powf") {
-      rewriter.replaceOpWithNewOp<cuda_tile::PowOp>(op, adaptor.getSrcs()[0],
+      rewriter.replaceOpWithNewOp<cuda_tile::FPowFOp>(op, adaptor.getSrcs()[0],
                                                     adaptor.getSrcs()[1]);
       return success();
     } else if (symbol == "__nv_cos" || symbol == "__nv_cosf") {
@@ -2374,7 +2374,7 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
     ConvertGenericOp<math::FloorOp, cuda_tile::FloorOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<math::FmaOp, cuda_tile::FmaOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<math::Log2Op, cuda_tile::Log2Op, Signedness::None, IntegerUpCast::None>,
-    ConvertGenericOp<math::PowFOp, cuda_tile::PowOp, Signedness::None, IntegerUpCast::None>,
+    ConvertGenericOp<math::PowFOp, cuda_tile::FPowFOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<math::SinOp, cuda_tile::SinOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<math::SinhOp, cuda_tile::SinHOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<math::SqrtOp, cuda_tile::SqrtOp, Signedness::None, IntegerUpCast::None>,

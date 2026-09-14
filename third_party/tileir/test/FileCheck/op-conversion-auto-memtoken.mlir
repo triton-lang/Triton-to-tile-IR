@@ -1,4 +1,4 @@
-// RUN: triton-cuda-tile-opt %s -split-input-file --pass-pipeline="builtin.module(convert-triton-to-cuda-tile,cuda_tile.module(cuda_tile.experimental\$func(fuse-fma)),reconcile-unrealized-casts,auto-gen-memory-token{autogen-alias-memtoken=true})" | FileCheck %s
+// RUN: triton-cuda-tile-opt %s -split-input-file --pass-pipeline="builtin.module(convert-triton-to-cuda-tile,cuda_tile.module(cuda_tile.entry(fuse-fma)),reconcile-unrealized-casts,auto-gen-memory-token{autogen-alias-memtoken=true})" | FileCheck %s
 
 module {
   tt.func public @test_auto_memtoken_if_normal(%Cond: !tt.ptr<i32> {tt.divisibility = 16 : i32}, %XTrue: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %XFalse: !tt.ptr<f32> {tt.divisibility = 16 : i32} , %Ret: !tt.ptr<f32> {tt.divisibility = 16 : i32}) attributes {noinline = false} {

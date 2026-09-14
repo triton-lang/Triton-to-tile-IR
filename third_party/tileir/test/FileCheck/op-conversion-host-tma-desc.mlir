@@ -1,4 +1,4 @@
-// RUN: triton-cuda-tile-opt %s -split-input-file --pass-pipeline="builtin.module(convert-triton-to-cuda-tile,cuda_tile.module(cuda_tile.experimental\$func(fuse-fma)),reconcile-unrealized-casts)" | FileCheck %s
+// RUN: triton-cuda-tile-opt %s -split-input-file --pass-pipeline="builtin.module(convert-triton-to-cuda-tile,cuda_tile.module(cuda_tile.entry(fuse-fma)),reconcile-unrealized-casts)" | FileCheck %s
 
 module {
   tt.func public @host_tma_load_store(%in_desc: !tt.tensordesc<tensor<2x128xf16>>, %in_desc_0: !tt.ptr<f16>, %in_desc_1: i32, %in_desc_2: i32 {tt.divisibility = 16 : i32}, %in_desc_3: i64, %in_desc_4: i64, %out_desc: !tt.tensordesc<tensor<2x128xf16>>, %out_desc_5: !tt.ptr<f16>, %out_desc_6: i32, %out_desc_7: i32 {tt.divisibility = 16 : i32}, %out_desc_8: i64, %out_desc_9: i64) attributes {noinline = false} {
