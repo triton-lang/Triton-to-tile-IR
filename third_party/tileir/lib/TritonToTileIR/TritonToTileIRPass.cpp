@@ -2288,6 +2288,283 @@ class ConvertDotOp : public OpConversionPattern<triton::DotOp> {
 };
 
 
+class ConvertDotScaledOp : public OpConversionPattern<triton::DotScaledOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  // Check if element type argument equals with tile element type.
+  bool checkInputElemType(Type type,
+                          triton::ScaleDotElemType elemType) const {
+    switch (elemType) {
+      case triton::ScaleDotElemType::E4M3:
+        return isa<Float8E4M3FNType>(type);
+      case triton::ScaleDotElemType::E5M2:
+        return isa<Float8E5M2Type>(type);
+      case triton::ScaleDotElemType::E2M1:
+        return type.isInteger(8);
+      case triton::ScaleDotElemType::BF16:
+        return isa<BFloat16Type>(type);
+      case triton::ScaleDotElemType::FP16:
+        return isa<Float16Type>(type);
+      default:
+        return false;
+    }
+  }
+
+  bool isF4Type(triton::ScaleDotElemType elemType) const {
+    return elemType == triton::ScaleDotElemType::E2M1;
+  }
+
+  bool isF8Type(triton::ScaleDotElemType elemType) const {
+    return elemType == triton::ScaleDotElemType::E4M3 ||
+           elemType == triton::ScaleDotElemType::E5M2;
+  }
+
+  // Swap the last two dimensions of a tile.
+  // e.g., [M, K] -> [K, M] or [B, M, K] -> [B, K, M].
+  Value permuteLastTwoDims(Value value, ConversionPatternRewriter &rewriter,
+                           Location loc) const {
+    auto tileType = dyn_cast<cuda_tile::TileType>(value.getType());
+    if (!tileType)
+      return value;
+
+    auto valueShape = tileType.getShape();
+    auto elemType = tileType.getElementType();
+    int rank = valueShape.size();
+    assert(rank >= 2 && "tile rank must be at least 2");
+
+    // Permute order of dimensions.
+    SmallVector<int32_t> permuteDims;
+    for (int i = 0; i < rank - 2; ++i)
+      permuteDims.push_back(i);
+    permuteDims.push_back(rank - 1);
+    permuteDims.push_back(rank - 2);
+
+    // Swap the last 2 dimensions of the input tile with permute op.
+    auto permuteAttr = rewriter.getDenseI32ArrayAttr(permuteDims);
+    return cuda_tile::PermuteOp::create(rewriter, loc, value, permuteAttr)
+        .getResult();
+  }
+
+  // TTIR uses i8 to represent packed f4 values,
+  // use reshape + unpack + reshape to convert it to fp4 tile.
+  // Only one dimension (packDim) can have a different size.
+  // e.g., convert tile<128x64xi8> to tile<128x128xf4E2M1FN> for packDim = 1.
+  // Add permute ops if necessary as reshape expects logically row-major input.
+  Value convertI8ToF4Tile(Value i8Value, triton::ScaleDotElemType elemType,
+                          ConversionPatternRewriter &rewriter, Location loc,
+                          int packDim) const {
+    if (!isF4Type(elemType))
+      return i8Value;
+    auto i8TileType = dyn_cast<cuda_tile::TileType>(i8Value.getType());
+    if (!i8TileType)
+      return i8Value;
+
+    // Check if the element type is i8, which indicates packed fp4 values.
+    if (!i8TileType.getElementType().isInteger(8))
+      return i8Value;
+    assert(packDim >= 0 && packDim < static_cast<int>(i8TileType.getRank()) &&
+           "packDim must be within the range of i8Shape");
+
+    // Permute the tile before and after the reshape ops,
+    // if the packDim is not the last dimension.
+    int tileRank = i8TileType.getRank();
+    bool isLastDimPacked = (packDim == tileRank - 1);
+    if (!isLastDimPacked) {
+      i8Value = permuteLastTwoDims(i8Value, rewriter, loc);
+      // update packDim and i8TileType after permute.
+      packDim = tileRank - 1;
+      i8TileType = dyn_cast<cuda_tile::TileType>(i8Value.getType());
+    }
+
+    // Reshape the tile to 1D for unpacking.
+    int tileSizeInBytes = i8TileType.getNumElements();
+    Type i8ElemType = i8TileType.getElementType();
+    auto reshapeType = cuda_tile::TileType::get({tileSizeInBytes}, i8ElemType);
+    auto i8Reshape =
+        cuda_tile::ReshapeOp::create(rewriter, loc, reshapeType, i8Value);
+
+    auto ctx = rewriter.getContext();
+    Type f4ElemType;
+    if (elemType == triton::ScaleDotElemType::E2M1)
+      f4ElemType = Float4E2M1FNType::get(ctx);
+    else
+      return i8Value;
+
+    // Unpack the i8 tile to f4 tile.
+    int f4TileSize = tileSizeInBytes * 2;
+    auto unpackType = cuda_tile::TileType::get({f4TileSize}, f4ElemType);
+    auto f4Unpack =
+        cuda_tile::UnpackOp::create(rewriter, loc, unpackType, i8Reshape);
+
+    // Reshape the tile back to ND shape after unpacking.
+    auto i8Shape = i8TileType.getShape();
+    SmallVector<int64_t> f4FinalShape(i8Shape.begin(), i8Shape.end());
+    f4FinalShape[packDim] *= 2;
+    auto f4TileType = cuda_tile::TileType::get(f4FinalShape, f4ElemType);
+    Value f4Reshape =
+        cuda_tile::ReshapeOp::create(rewriter, loc, f4TileType, f4Unpack)
+            .getResult();
+
+    if (!isLastDimPacked)
+      f4Reshape = permuteLastTwoDims(f4Reshape, rewriter, loc);
+    return f4Reshape;
+  }
+
+  // Convert Triton scale type to TileIR scale type.
+  Value convertTritonScaleType(Value scaleValue,
+                               ConversionPatternRewriter &rewriter,
+                               Location loc) const {
+    auto scaleTileType = dyn_cast<cuda_tile::TileType>(scaleValue.getType());
+    if (!scaleTileType)
+      return scaleValue;
+
+    // If element type is i8, convert it to f8e8m0 tile.
+    if (scaleTileType.getElementType().isInteger(8)) {
+      auto ctx = rewriter.getContext();
+      Type f8e8m0ElemType = Float8E8M0FNUType::get(ctx);
+      Type f8e8m0TileType =
+          cuda_tile::TileType::get(scaleTileType.getShape(), f8e8m0ElemType);
+
+      // Convert i8 tile scale to f8e8m0 tile using bitcast.
+      return cuda_tile::BitcastOp::create(rewriter, loc, f8e8m0TileType,
+                                          scaleValue);
+    }
+    // Otherwise, return the original scale.
+    return scaleValue;
+  }
+
+  // Check if the scale is TileType with the given rank.
+  bool checkScaleTileType(Value scale, int rank) const {
+    auto scaleTileType = dyn_cast<cuda_tile::TileType>(scale.getType());
+    if (!scaleTileType)
+      return false;
+    int scaleRank = scaleTileType.getRank();
+    return scaleRank == rank;
+  }
+
+  // Both sfa and sfb are provided, convert to MmaFScaledOp.
+  void convertToMmaFScaled(triton::DotScaledOp op, OpAdaptor adaptor,
+                           ConversionPatternRewriter &rewriter,
+                           SmallVector<Type> &retTypes) const {
+    auto loc = op.getLoc();
+    auto aElemType = op.getAElemType();
+    auto bElemType = op.getBElemType();
+
+    Value sfa = adaptor.getAScale();
+    Value sfb = adaptor.getBScale();
+    auto sfaTileType = dyn_cast<cuda_tile::TileType>(sfa.getType());
+    auto sfbTileType = dyn_cast<cuda_tile::TileType>(sfb.getType());
+    assert(sfaTileType && sfbTileType &&
+           "scale operands sfa and sfb must be TileType");
+
+    int sfaRank = sfaTileType.getRank();
+    int sfbRank = sfbTileType.getRank();
+    assert(sfaRank >= 2 && sfbRank >= 2 &&
+           "scale operands sfa and sfb must be at least 2D");
+
+    Value a = adaptor.getA();
+    Value b = adaptor.getB();
+    Value c = adaptor.getC();
+    auto aType = dyn_cast<cuda_tile::TileType>(a.getType());
+    auto bType = dyn_cast<cuda_tile::TileType>(b.getType());
+    int aRank = aType.getRank();
+    int bRank = bType.getRank();
+
+    bool lhsKPack = op.getLhsKPack();
+    bool rhsKPack = op.getRhsKPack();
+    // Note: lhsKPack and rhsKPack can be different for mixed precision (e.g., fp8 x fp4).
+    // For fp8, k_pack must be true. For fp4, k_pack can be true or false.
+
+    // Convert i8 tile to f4 tile if element type is f4,
+    // with a double size of packing dimension in result tile.
+    if (isF4Type(aElemType)) {
+      int lhsPackDim = lhsKPack ? aRank - 1 : aRank - 2;
+      a = convertI8ToF4Tile(a, aElemType, rewriter, loc, lhsPackDim);
+    }
+
+    if (isF4Type(bElemType)) {
+      int rhsPackDim = rhsKPack ? bRank - 2 : bRank - 1;
+      b = convertI8ToF4Tile(b, bElemType, rewriter, loc, rhsPackDim);
+    }
+
+    // Convert scale type from i8 to f8e8m0 if they are i8 tile.
+    // TTIR does not define f8e8m0 type natively and uses i8 type instead,
+    // but TileIR dialect exposes a f8e8m0 type.
+    //
+    // Supported scale factor types:
+    // ┌─────────────┬────────────────────────┬──────────────────────────┐
+    // │ dtype       │ TTIR scale factor type │ TileIR scale factor type │
+    // ├─────────────┼────────────────────────┼──────────────────────────┤
+    // │ mxfp8/mxfp4 │ i8                     │ f8e8m0                   │
+    // │ nvfp4       │ f8e4m3                 │ f8e4m3                   │
+    // └─────────────┴────────────────────────┴──────────────────────────┘
+    sfa = convertTritonScaleType(sfa, rewriter, loc);
+    sfb = convertTritonScaleType(sfb, rewriter, loc);
+
+    // Transpose the last 2 dimensions of sfb.
+    // TTIR converts sfb in shape of [..., N, K//x], but TileIR wants K in dim[-2].
+    sfb = permuteLastTwoDims(sfb, rewriter, loc);
+
+    rewriter.replaceOpWithNewOp<cuda_tile::MmaFScaledOp>(
+        op, retTypes[0], a, b, c, sfa, sfb);
+  }
+
+  LogicalResult
+  matchAndRewrite(triton::DotScaledOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto converter = this->getTypeConverter();
+    SmallVector<Type> retTypes;
+    if (failed(converter->convertTypes(op->getResultTypes(), retTypes)))
+      return rewriter.notifyMatchFailure(
+          op, "typeConversion for DotScaledOp failed");
+
+    Value a = adaptor.getA();
+    Value b = adaptor.getB();
+    auto aType = dyn_cast<cuda_tile::TileType>(a.getType());
+    auto bType = dyn_cast<cuda_tile::TileType>(b.getType());
+    if (!aType || !bType)
+      return rewriter.notifyMatchFailure(
+          op, "operands a and b must be TileType");
+
+    int aRank = aType.getRank();
+    int bRank = bType.getRank();
+    if (aRank < 2 || bRank < 2)
+      return rewriter.notifyMatchFailure(
+          op, "operands a and b must be at least 2D");
+
+    auto aElemType = op.getAElemType();
+    auto bElemType = op.getBElemType();
+    if (!checkInputElemType(aType.getElementType(), aElemType))
+      return rewriter.notifyMatchFailure(
+          op, "aElemType is not aligned with input element type");
+    if (!checkInputElemType(bType.getElementType(), bElemType))
+      return rewriter.notifyMatchFailure(
+          op, "bElemType is not aligned with input element type");
+
+    Value sfa = adaptor.getAScale();
+    Value sfb = adaptor.getBScale();
+    if (sfa && !checkScaleTileType(sfa, aRank))
+      return rewriter.notifyMatchFailure(
+          op, "sfa must be TileType with rank equal to aRank");
+    if (sfb && !checkScaleTileType(sfb, bRank))
+      return rewriter.notifyMatchFailure(
+          op, "sfb must be TileType with rank equal to bRank");
+
+    if (!sfa || !sfb)
+      return rewriter.notifyMatchFailure(
+          op, "public native scaled MMA requires both scale operands");
+    if (aElemType != bElemType)
+      return rewriter.notifyMatchFailure(
+          op, "public native scaled MMA requires matching operand element types");
+    if (!isF4Type(aElemType) && !isF8Type(aElemType))
+      return rewriter.notifyMatchFailure(
+          op, "public native scaled MMA requires FP4 or FP8 operands");
+    convertToMmaFScaled(op, adaptor, rewriter, retTypes);
+
+    return success();
+  }
+};
+
 class ConvertTransOp : public OpConversionPattern<triton::TransOp> {
 public:
   using OpConversionPattern<triton::TransOp>::OpConversionPattern;
@@ -2683,6 +2960,7 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
     patterns.add<ConvertDescriptorLoadOp, ConvertDescriptorStoreOp,
                  ConvertDescriptorGatherOp, ConvertDescriptorScatterOp>(
         typeConverter, context, numStagesMap, computeCapability, numStages);
+  patterns.add<ConvertDotScaledOp>(typeConverter, context);
   patterns.add<ConvertMakeTensorDescOp>(context);
   // clang-format on
 }
