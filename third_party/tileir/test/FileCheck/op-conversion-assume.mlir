@@ -27,9 +27,9 @@ module @kernel{
     %c8_i32 = arith.constant 8 : i32
     %c1_i64 = arith.constant 1 : i64
     %0 = arith.extsi %arg6 : i32 to i64
-    %1 = tt.make_tensor_descriptor %arg0, [%arg3, %arg5], [%0, %c1_i64] : <f16>, <tensor<64x64xf16>>
+    %1 = tt.make_tensor_descriptor %arg0, [%arg3, %arg5], [%0, %c1_i64] : <f16>, <64x64xf16>
     %2 = arith.extsi %arg7 : i32 to i64
-    %3 = tt.make_tensor_descriptor %arg1, [%arg4, %arg5], [%2, %c1_i64] : <f16>, <tensor<64x64xf16>>
+    %3 = tt.make_tensor_descriptor %arg1, [%arg4, %arg5], [%2, %c1_i64] : <f16>, <64x64xf16>
     %4 = tt.get_program_id x : i32
     %5 = arith.addi %arg3, %c63_i32 : i32
     %6 = arith.divsi %5, %c64_i32 : i32

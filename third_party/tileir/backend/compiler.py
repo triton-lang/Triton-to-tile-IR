@@ -179,7 +179,8 @@ class TileIRBackend(BaseBackend):
         if "enable_fp_fusion" not in args:
             args["enable_fp_fusion"] = os.getenv("TRITON_DEFAULT_FP_FUSION", "1") == "1"
 
-        args["max_num_imprecise_acc_default"] = 2**30 if capability == 90 else 0
+        if "max_num_imprecise_acc_default" not in args:
+            args["max_num_imprecise_acc_default"] = 2**30 if capability == 90 else 0
         return TileIROptions(**args)
 
     def pack_metadata(self, metadata):
@@ -313,8 +314,8 @@ class TileIRBackend(BaseBackend):
             opt.occupancy,
             metadata["num_stages"],
         )
-        tileir.passes.add_auto_gen_memtoken(pm, opt.enable_autogen_alias_mem_token)
         passes.common.add_inliner(pm)
+        tileir.passes.add_auto_gen_memtoken(pm, opt.enable_autogen_alias_mem_token)
         if opt.enable_fp_fusion:
             tileir.passes.add_fma_fusion(pm)
         tileir.passes.add_strip_debuginfo(pm)

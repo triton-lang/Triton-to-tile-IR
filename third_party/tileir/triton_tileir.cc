@@ -93,10 +93,12 @@ void init_triton_to_cudatile_passes(py::module &&m) {
   m.def("add_assume_to_tileir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::createRewriteAssumeWithCudaTilePass());
   });
-  m.def("add_auto_gen_memtoken", [](mlir::PassManager &pm,
-                                    bool enable_autogen_alias_mem_token
-    ) {
-    pm.addPass(mlir::triton::createAutoGenMemoryTokenPass(enable_autogen_alias_mem_token));
+  m.def("add_auto_gen_memtoken",
+        [](mlir::PassManager &pm, bool enable_autogen_alias_mem_token) {
+    auto &mpm = pm.nest<cuda_tile::ModuleOp>();
+    auto &epm = mpm.nest<cuda_tile::EntryOp>();
+    epm.addPass(mlir::triton::createAutoGenMemoryTokenPass(
+        enable_autogen_alias_mem_token));
   });
 }
 

@@ -16,7 +16,9 @@ add_triton_library(TritonTileIRTransforms
   MLIRSCFDialect
   MLIRFuncDialect
   MLIRUBDialect
+  MLIRGPUDialect
   TritonIR
+  TritonTileIRAnalysis
   Utils
   ${CUDA_TILE_INSTALL_DIR}/lib/libCudaTileDialect.a
 )

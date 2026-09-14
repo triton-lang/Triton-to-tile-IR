@@ -339,13 +339,16 @@ void createTargetOp(ConversionPatternRewriter &rewriter, triton::FuncOp op,
         auto numCTAAttr =
             rewriter.getNamedAttr("num_cta_in_cga",
                                   rewriter.getI32IntegerAttr(numCTAInCGA));
+        auto numWorkerWarpsAttr = rewriter.getNamedAttr(
+            stringifyHintKey(cuda_tile::HintKey::NumWorkerWarpsPerCTA),
+            rewriter.getI32IntegerAttr(simtNumWarpsInCTA));
         auto occupancyAttr =
             rewriter.getNamedAttr("occupancy",
                                   rewriter.getI32IntegerAttr(occupancy));
         auto hintEntry = rewriter.getNamedAttr(
             (archPrefix + llvm::Twine(computeCapability)).str(),
             DictionaryAttr::get(ctx,
-                                {numCTAAttr, occupancyAttr}));
+                                {numCTAAttr, numWorkerWarpsAttr, occupancyAttr}));
     cuda_tile::OptimizationHintsAttr optHint =
         cuda_tile::OptimizationHintsAttr::get(
             ctx, DictionaryAttr::get(ctx, {hintEntry}));
@@ -722,12 +725,13 @@ public:
   const DenseMap<Operation *, int> &numStagesMap;
   int computeCapability;
   std::optional<int> numStages;
-  ConvertDescriptorLoadOp(TypeConverter &typeConverter, MLIRContext *context,
+  ConvertDescriptorLoadOp(TypeConverter &typeConverter,
+                          MLIRContext *context,
                           DenseMap<Operation *, int> &numStagesMap,
                           int computeCapability, std::optional<int> numStages)
       : OpConversionPattern<triton::DescriptorLoadOp>(typeConverter, context),
-        numStagesMap(numStagesMap), computeCapability(computeCapability),
-        numStages(numStages) {}
+        numStagesMap(numStagesMap),
+        computeCapability(computeCapability), numStages(numStages) {}
 
   LogicalResult
   matchAndRewrite(triton::DescriptorLoadOp op, OpAdaptor adaptor,
@@ -735,6 +739,10 @@ public:
 
     auto ctx = rewriter.getContext();
     auto view = adaptor.getDesc();
+    // Bypass framework-inserted unrealized_conversion_cast so we read the
+    // padding_value produced by ConvertMakeTensorDescOp (which reflects the
+    // triton-level padding option) rather than the type-converter default.
+    view = traceUnrealizedConversionCast(view);
 
     auto optHint = mlir::triton::utils::convertNumStagesToOptHint(
         op, ctx, numStagesMap, computeCapability, numStages);
@@ -745,7 +753,7 @@ public:
     SmallVector<int64_t> viewShapeVec;
     Type viewTy = view.getType();
 
-    // Handle PartitionViewType
+    // Handle both PartitionViewType and StridedViewType
     if (auto partTy = dyn_cast<cuda_tile::PartitionViewType>(viewTy)) {
       // For PartitionViewType, we need to divide indices by tile size
       auto tileSizes = partTy.getTileShape();
@@ -753,19 +761,44 @@ public:
         Value indicesWithBlockSize = originalIndices[i];
         cuda_tile::TileType constType =
             cuda_tile::TileType::get({}, rewriter.getI32Type());
-        auto tileSizeAttr =
-            DenseIntElementsAttr::get(constType, {tileSizes[i]});
-        Value tileSizeOp = cuda_tile::ConstantOp::create(
-            rewriter, op.getLoc(), constType, tileSizeAttr);
-        indices.push_back(cuda_tile::DivIOp::create(
-            rewriter, op.getLoc(), indicesWithBlockSize, tileSizeOp,
+        auto tileSizeAttr = DenseIntElementsAttr::get(constType, {tileSizes[i]});
+        Value tileSizeOp = cuda_tile::ConstantOp::create(rewriter,
+            op.getLoc(), constType, tileSizeAttr);
+        indices.push_back(cuda_tile::DivIOp::create(rewriter,
+            op.getLoc(), indicesWithBlockSize, tileSizeOp,
             cuda_tile::Signedness::Signed));
       }
       for (size_t i = 0; i < tileSizes.size(); i++)
         viewShapeVec.push_back(tileSizes[i]);
+    } else if (auto stridedTy = dyn_cast<cuda_tile::StridedViewType>(viewTy)) {
+      // For StridedViewType with traversal stride = 1, use indices directly
+      // Add assume div_by for TMA alignment requirement on leading dimension.
+      // TMA requires 16-byte alignment, convert to element count.
+      // Note: tl.make_tensor_descriptor enforces strides[-1] == 1 (row-major),
+      // so leading dim is always the last dim.
+      // See: triton/python/triton/language/semantic.py::make_tensor_descriptor()
+      auto elemTy = op.getResult().getType().getElementType();
+      unsigned elemBytes = elemTy.getIntOrFloatBitWidth() / 8;
+      unsigned alignElements = kTMAAlignment / elemBytes;
+      for (size_t i = 0; i < originalIndices.size(); i++) {
+        Value idx = originalIndices[i];
+        // TMA requires the leading dimension coordinate (last dim for
+        // row-major) to be 16-byte aligned (alignElements in element count)
+        if (i == originalIndices.size() - 1) {
+          idx = cuda_tile::AssumeOp::create(rewriter, op.getLoc(), idx,
+                    cuda_tile::DivByAttr::get(ctx, alignElements, std::nullopt,
+                                              std::nullopt))
+                    .getResult();
+        }
+        indices.push_back(idx);
+      }
+      auto viewTileFromStridedView =
+          cast<cuda_tile::TileType>(stridedTy.getViewTileType());
+      viewShapeVec.assign(viewTileFromStridedView.getShape().begin(),
+                          viewTileFromStridedView.getShape().end());
     } else {
       return rewriter.notifyMatchFailure(
-          op.getLoc(), "expect a partition view type");
+          op.getLoc(), "expect a partition view type or strided view type");
     }
 
     auto tileShape = op.getResult().getType().getShape();
@@ -774,16 +807,15 @@ public:
 
     auto memOrder = cuda_tile::MemoryOrderingSemanticsAttr::get(
         ctx, cuda_tile::MemoryOrderingSemantics::WEAK);
-    auto LoadViewOp = cuda_tile::LoadViewTkoOp::create(
-        rewriter, op.getLoc(), viewTileTy, cuda_tile::TokenType::get(ctx),
+    auto LoadViewOp = cuda_tile::LoadViewTkoOp::create(rewriter, op.getLoc(), viewTileTy, cuda_tile::TokenType::get(ctx),
         /*memory_ordering_semantics=*/memOrder,
         /*scope=*/nullptr, view, indices, /*token=*/nullptr,
         optHint.value_or(nullptr));
 
     if (viewShapeVec.size() != tileShape.size()) {
       auto tileTy = cuda_tile::TileType::get(ctx, tileShape, elemTy);
-      auto reshapeOp = cuda_tile::ReshapeOp::create(
-          rewriter, op.getLoc(), tileTy, LoadViewOp.getTile());
+      auto reshapeOp = cuda_tile::ReshapeOp::create(rewriter,
+          op.getLoc(), tileTy, LoadViewOp.getTile());
       rewriter.replaceOp(op, reshapeOp.getResult());
       return success();
     }
@@ -801,24 +833,29 @@ public:
   const DenseMap<Operation *, int> &numStagesMap;
   int computeCapability;
   std::optional<int> numStages;
-  ConvertDescriptorStoreOp(TypeConverter &typeConverter, MLIRContext *context,
+  ConvertDescriptorStoreOp(TypeConverter &typeConverter,
+                           MLIRContext *context,
                            DenseMap<Operation *, int> &numStagesMap,
                            int computeCapability, std::optional<int> numStages)
       : OpConversionPattern<triton::DescriptorStoreOp>(typeConverter, context),
-        numStagesMap(numStagesMap), computeCapability(computeCapability),
-        numStages(numStages) {}
+        numStagesMap(numStagesMap),
+        computeCapability(computeCapability), numStages(numStages) {}
 
   LogicalResult
   matchAndRewrite(triton::DescriptorStoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto ctx = rewriter.getContext();
     auto view = adaptor.getDesc();
+    // Bypass framework-inserted unrealized_conversion_cast so we read the
+    // padding_value produced by ConvertMakeTensorDescOp (which reflects the
+    // triton-level padding option) rather than the type-converter default.
+    view = traceUnrealizedConversionCast(view);
 
     auto originalIndices = adaptor.getIndices();
     SmallVector<Value> indices;
     Type viewTy = view.getType();
 
-    // Handle PartitionViewType
+    // Handle both PartitionViewType and StridedViewType
     if (auto partTy = dyn_cast<cuda_tile::PartitionViewType>(viewTy)) {
       // For PartitionViewType, we need to divide indices by tile size
       auto tileSizes = partTy.getTileShape();
@@ -828,23 +865,44 @@ public:
         cuda_tile::TileType constType =
             cuda_tile::TileType::get({}, rewriter.getI32Type());
         auto tileSizeAttr = DenseIntElementsAttr::get(constType, {tileSize});
-        Value tileSizeOp = cuda_tile::ConstantOp::create(
-            rewriter, op.getLoc(), constType, tileSizeAttr);
-        indices.push_back(cuda_tile::DivIOp::create(
-            rewriter, op.getLoc(), idxWithBlockSize, tileSizeOp,
-            cuda_tile::Signedness::Signed));
+        Value tileSizeOp = cuda_tile::ConstantOp::create(rewriter,
+            op.getLoc(), constType, tileSizeAttr);
+        indices.push_back(cuda_tile::DivIOp::create(rewriter,
+            op.getLoc(), idxWithBlockSize, tileSizeOp, cuda_tile::Signedness::Signed));
+      }
+    } else if (dyn_cast<cuda_tile::StridedViewType>(viewTy)) {
+      // For StridedViewType with traversal stride = 1, use indices directly
+      // Add assume div_by for TMA alignment requirement on leading dimension.
+      // TMA requires 16-byte alignment, convert to element count.
+      // Note: tl.make_tensor_descriptor enforces strides[-1] == 1 (row-major),
+      // so leading dim is always the last dim.
+      // See: triton/python/triton/language/semantic.py::make_tensor_descriptor()
+      auto srcTileType = cast<cuda_tile::TileType>(adaptor.getSrc().getType());
+      auto elemTy = srcTileType.getElementType();
+      unsigned elemBytes = elemTy.getIntOrFloatBitWidth() / 8;
+      unsigned alignElements = kTMAAlignment / elemBytes;
+      for (size_t i = 0; i < originalIndices.size(); i++) {
+        Value idx = originalIndices[i];
+        // TMA requires the leading dimension coordinate (last dim for
+        // row-major) to be 16-byte aligned (alignElements in element count)
+        if (i == originalIndices.size() - 1) {
+          idx = cuda_tile::AssumeOp::create(rewriter, op.getLoc(), idx,
+                    cuda_tile::DivByAttr::get(ctx, alignElements, std::nullopt,
+                                              std::nullopt))
+                    .getResult();
+        }
+        indices.push_back(idx);
       }
     } else {
       return rewriter.notifyMatchFailure(
-          op.getLoc(), "expect a partition view type");
+          op.getLoc(), "expect a partition view type or strided view type");
     }
 
     auto optHint = mlir::triton::utils::convertNumStagesToOptHint(
         op, ctx, numStagesMap, computeCapability, numStages);
 
     auto src = adaptor.getSrc();
-    auto StoreViewOp = cuda_tile::StoreViewTkoOp::create(
-        rewriter, op.getLoc(), cuda_tile::TokenType::get(ctx),
+    auto StoreViewOp = cuda_tile::StoreViewTkoOp::create(rewriter, op.getLoc(), cuda_tile::TokenType::get(ctx),
         cuda_tile::MemoryOrderingSemantics::WEAK, /*scope=*/nullptr, src, view,
         indices, /*token=*/nullptr, optHint.value_or(nullptr));
 
@@ -2015,10 +2073,9 @@ public:
     };
 
     SmallVector<Value> wrappedDynShapes;
-    // It is safe to assume that shapes are in the range [0, 2^32 - 1] which is
-    // the TMA hardware limit for shape. This ensures that if users explicitly
-    // want to use TMA for this operation, the shape parameters will satisfy TMA
-    // descriptor encoding requirements.
+    // It is safe to assume that shapes are in the range [0, 2^32 - 1] which is the TMA hardware
+    // limit for shape. This ensures that if users explicitly want to use TMA
+    // for this operation, the shape parameters will satisfy TMA descriptor encoding requirements.
     for (auto v : op.getShape())
       wrappedDynShapes.push_back(
           wrapIntoScalarTile(rewriter, v, /*attachAlignment=*/0, kMaxShape));
@@ -2040,12 +2097,11 @@ public:
             (constValOpt.value() % align_byte != 0)) {
           op.emitWarning("the stride is expected to be divisible by 16-bytes, "
                          "may result in error");
-          // It is safe to assume that shapes are in the range [0, 2^40 - 1]
-          // which is the TMA hardware limit for stride. This ensures that if
-          // users explicitly want to use TMA for this operation, the stride
-          // parameters will satisfy TMA descriptor encoding requirements.
-          wrappedDynStrides.push_back(wrapIntoScalarTile(
-              rewriter, stride, /*attachAlignment=*/0, kMaxStride));
+          // It is safe to assume that shapes are in the range [0, 2^40 - 1] which is the TMA hardware
+          // limit for stride. This ensures that if users explicitly want to use TMA
+          // for this operation, the stride parameters will satisfy TMA descriptor encoding requirements.
+          wrappedDynStrides.push_back(
+              wrapIntoScalarTile(rewriter, stride, /*attachAlignment=*/0, kMaxStride));
         } else
           wrappedDynStrides.push_back(wrapIntoScalarTile(
               rewriter, stride, /*attachAlignment=*/align_byte, kMaxStride));
@@ -2057,39 +2113,50 @@ public:
 
     auto tileIRPtrType = cuda_tile::PointerType::get(elemTy);
     auto ptrTypeWrapper = cuda_tile::TileType::get(ctx, {}, tileIRPtrType);
-    auto ptrOp = UnrealizedConversionCastOp::create(
-                     rewriter, loc, ptrTypeWrapper, op.getBase())
+    auto ptrOp = UnrealizedConversionCastOp::create(rewriter, loc, ptrTypeWrapper,
+                                                         op.getBase())
                      .getResult(0);
     // Pointer is required to be divisible by 16.
-    auto ptrWithDivBy = cuda_tile::AssumeOp::create(
-                            rewriter, loc, ptrOp,
-                            cuda_tile::DivByAttr::get(
-                                ctx, kTMAAlignment, std::nullopt, std::nullopt))
-                            .getResult();
+    auto ptrWithDivBy =
+        cuda_tile::AssumeOp::create(rewriter,
+                loc, ptrOp,
+                cuda_tile::DivByAttr::get(ctx, kTMAAlignment, std::nullopt,
+                                          std::nullopt))
+            .getResult();
 
-    auto makeTensorViewOp = cuda_tile::MakeTensorViewOp::create(
-        rewriter, loc, tensorViewTy, ptrWithDivBy, wrappedDynShapes,
-        wrappedDynStrides);
+    auto makeTensorViewOp = cuda_tile::MakeTensorViewOp::create(rewriter,
+        loc, tensorViewTy, ptrWithDivBy, wrappedDynShapes, wrappedDynStrides);
 
     SmallVector<int32_t> dimMap(rank);
     std::iota(dimMap.begin(), dimMap.end(), 0);
 
     auto descType = cast<triton::TensorDescType>(op.getResult().getType());
-    auto tileShape = descType.getShape();
+    auto tileShape = descType.getBlockType().getShape();
     SmallVector<int32_t> arrayOfi32Shape;
+    SmallVector<int32_t> traversalStrides;
     for (auto i64Shape : tileShape) {
       arrayOfi32Shape.push_back(static_cast<int32_t>(i64Shape));
+      traversalStrides.push_back(1);  // Set traversal stride to 1
     }
 
-        auto tilePartViewTy = cuda_tile::PartitionViewType::get(
-            ctx, rewriter.getDenseI32ArrayAttr(arrayOfi32Shape), tensorViewTy,
-            dimMap,
-            cuda_tile::PaddingValueAttr::get(ctx, cuda_tile::PaddingValue::zero));
+    cuda_tile::PaddingValue paddingValue;
+    switch (op.getPadding()) {
+    case triton::PaddingOption::PAD_ZERO:
+      paddingValue = cuda_tile::PaddingValue::zero;
+      break;
+    case triton::PaddingOption::PAD_NAN:
+      paddingValue = cuda_tile::PaddingValue::nan;
+      break;
+    }
 
-        auto partViewOp = cuda_tile::MakePartitionViewOp::create(
-            rewriter, loc, tilePartViewTy, makeTensorViewOp);
+    auto tileStridedViewTy = cuda_tile::StridedViewType::get(
+        ctx, rewriter.getDenseI32ArrayAttr(arrayOfi32Shape),
+        rewriter.getDenseI32ArrayAttr(traversalStrides), tensorViewTy, dimMap,
+        cuda_tile::PaddingValueAttr::get(ctx, paddingValue));
 
-        rewriter.replaceOp(op, partViewOp);
+    auto stridedViewOp = cuda_tile::MakeStridedViewOp::create(rewriter, loc, tileStridedViewTy, makeTensorViewOp);
+
+    rewriter.replaceOp(op, stridedViewOp);
     return success();
   }
 };
@@ -2277,8 +2344,11 @@ class ConvertDotOp : public OpConversionPattern<triton::DotOp> {
           op, adaptor.getA(), adaptor.getB(), adaptor.getC(),
           cuda_tile::Signedness::Signed, cuda_tile::Signedness::Signed);
     } else if (opElType.isFloat()) {
-      rewriter.replaceOpWithNewOp<cuda_tile::MmaFOp>(
+      bool fastAcc = op.getMaxNumImpreciseAcc() > 0;
+      auto mma = rewriter.replaceOpWithNewOp<cuda_tile::MmaFOp>(
           op, adaptor.getA(), adaptor.getB(), adaptor.getC());
+      if (fastAcc)
+        mma.setFastAccAttr(rewriter.getUnitAttr());
     } else {
       return rewriter.notifyMatchFailure(op,
                                          "unsupported operand types of mma op");
@@ -2834,6 +2904,53 @@ public:
   }
 };
 
+static constexpr llvm::StringLiteral kGdcWaitHelperAsm =
+    "griddepcontrol.wait; // dummy $0";
+static constexpr llvm::StringLiteral kGdcLaunchDependentsHelperAsm =
+    "griddepcontrol.launch_dependents; // dummy $0";
+
+// Keep the frontend aligned with upstream Triton: GDC first appears as Triton
+// inline asm rather than backend-specific ops. Recognize the GDC inline asm
+// form that can be losslessly reconstructed as native cuda_tile GDC ops so
+// AutoGenMemoryToken can reconstruct token ordering later.
+// TODO: emit cuda_tile ops directly from tt.extra.cuda
+bool isCanonicalizableGdcInlineAsmOp(triton::ElementwiseInlineAsmOp op,
+                                     llvm::StringLiteral asmString) {
+  if (op.getAsmString() != asmString || !op.getArgs().empty() ||
+      op.getNumResults() != 1 || op.getConstraints() != "=r" ||
+      op.getPackedElement() != 1 || op.getPure() ||
+      !op->getResult(0).use_empty())
+    return false;
+
+  auto resultTy = dyn_cast<IntegerType>(op->getResult(0).getType());
+  return resultTy && resultTy.isSignlessInteger(32);
+}
+
+/// Recognize GDC inline asm patterns and convert to native TKO ops.
+/// GDC operations participate in the AutoGenMemoryToken token chain.
+class ConvertGdcInlineAsmToNativeOp
+    : public OpConversionPattern<triton::ElementwiseInlineAsmOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::ElementwiseInlineAsmOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto tokenTy = cuda_tile::TokenType::get(rewriter.getContext());
+
+    if (isCanonicalizableGdcInlineAsmOp(op, kGdcWaitHelperAsm)) {
+      rewriter.replaceOpWithNewOp<cuda_tile::GdcWaitTkoOp>(
+          op, tokenTy, /*token=*/Value());
+      return success();
+    }
+    if (isCanonicalizableGdcInlineAsmOp(op, kGdcLaunchDependentsHelperAsm)) {
+      rewriter.replaceOpWithNewOp<cuda_tile::GdcLaunchDependentsTkoOp>(
+          op, tokenTy, /*token=*/Value());
+      return success();
+    }
+    return failure(); // Not the supported upstream GDC helper form.
+  }
+};
+
 void populateTTirToCudaTileConversionPatternsAndLegality(
     TypeConverter &typeConverter, RewritePatternSet &patterns,
     ConversionTarget &target, bool approx, bool flushToZero,
@@ -2954,6 +3071,8 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
     ConvertWhileOp,
     ConvertYieldOp
 >(typeConverter, context);
+
+  patterns.add<ConvertGdcInlineAsmToNativeOp>(typeConverter, context, /*benefit=*/2);
 
   patterns.add<ConvertLoadOp, ConvertStoreOp>(typeConverter, context, numStagesMap, computeCapability, numStages);
 
@@ -3214,25 +3333,28 @@ static void convertTmaDescriptorOps(Operation *op, TypeConverter &converter) {
 
           auto tileShape = descBlock.getShape();
           SmallVector<int32_t> arrayOfi32Shape;
+          SmallVector<int32_t> traversalStrides;
           for (auto i64Shape : tileShape) {
             arrayOfi32Shape.push_back(i64Shape);
+            traversalStrides.push_back(1);  // Set traversal stride to 1
           }
 
           SmallVector<int32_t> dimMap(rank);
           std::iota(dimMap.begin(), dimMap.end(), 0);
 
-              auto tilePartViewTy = cuda_tile::PartitionViewType::get(
-                  ctx, rewriter.getDenseI32ArrayAttr(arrayOfi32Shape),
-                  tensorViewTy, dimMap,
-                  cuda_tile::PaddingValueAttr::get(ctx,
-                                                   cuda_tile::PaddingValue::zero));
+          auto tileStridedViewTy = cuda_tile::StridedViewType::get(
+              ctx, rewriter.getDenseI32ArrayAttr(arrayOfi32Shape),
+              rewriter.getDenseI32ArrayAttr(traversalStrides), tensorViewTy,
+              dimMap,
+              cuda_tile::PaddingValueAttr::get(ctx,
+                                               cuda_tile::PaddingValue::zero));
 
-              auto partViewOp = cuda_tile::MakePartitionViewOp::create(
-                  rewriter, loc, tilePartViewTy, makeTensorViewOp);
+          auto stridedViewOp =
+              cuda_tile::MakeStridedViewOp::create(rewriter,
+                  loc, tileStridedViewTy, makeTensorViewOp);
 
-              auto castBackToTensorDescriptorOp =
-                  UnrealizedConversionCastOp::create(rewriter, loc, tensorDescType,
-                                                     partViewOp.getResult());
+          auto castBackToTensorDescriptorOp = UnrealizedConversionCastOp::create(rewriter,
+              loc, tensorDescType, stridedViewOp.getResult());
 
           rewriter.replaceAllUsesWith(
               tensorDesc, castBackToTensorDescriptorOp.getResult(0));

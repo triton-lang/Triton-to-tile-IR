@@ -119,6 +119,7 @@ endif()
 add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(tools/triton-cuda-tile-opt)
+add_subdirectory(test)
 
 if(TRITON_BUILD_PYTHON_MODULE AND HAVE_CUDA_TILE_INSTALL)
   add_triton_plugin(TritonTileIR ${CMAKE_CURRENT_SOURCE_DIR}/triton_tileir.cc LINK_LIBS TritonToTileIR TritonTileIRTransforms)
