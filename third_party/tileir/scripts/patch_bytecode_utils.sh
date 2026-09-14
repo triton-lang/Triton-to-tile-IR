@@ -40,6 +40,19 @@ CUDATILE_CPP_PATH="${REPO_ROOT}/lib/Dialect/CudaTile/IR/CudaTile.cpp"
 
 echo "[patch] repo_root=${REPO_ROOT}"
 
+# The released 13.4 dialect references an MLIR float type absent from public
+# LLVM (including cuda-tile's own pin). Triton has no frontend type for it.
+# Omit only that unsupported type; retain bytecode tags for all supported types.
+if ! grep -q 'Float8E5M3FNUType' "${LLVM_SYSPATH}/include/mlir/IR/BuiltinTypes.h.inc"; then
+  dtype_patch="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cuda_tile_13_4_public_llvm.patch"
+  if git -C "${REPO_ROOT}" apply --reverse --check "${dtype_patch}" 2>/dev/null; then
+    echo "[patch] Public LLVM dtype compatibility already applied"
+  else
+    git -C "${REPO_ROOT}" apply --check "${dtype_patch}"
+    git -C "${REPO_ROOT}" apply "${dtype_patch}"
+  fi
+fi
+
 # 1) Patch BytecodeGenUtilities.cpp for LLVM api changes:
 # Replace "getArgToOperandOrAttribute" with "getArgToOperandAttrOrProp"
 # and "OperandOrAttribute" with "OperandAttrOrProp".
