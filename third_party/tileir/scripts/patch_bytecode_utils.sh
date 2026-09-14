@@ -76,9 +76,8 @@ echo "[patch] Global rename: DenseIntOrFPElementsAttr → DenseTypedElementsAttr
 find "${REPO_ROOT}" -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.td" \) \
   -exec sed -i 's/DenseIntOrFPElementsAttr/DenseTypedElementsAttr/g' {} +
 
-# DenseElementsAttr<i1> raw layout differs across the LLVM versions used by
-# Triton and the bundled tileiras. Patch only the copied cuda-tile source tree.
-python3 "$(dirname "${BASH_SOURCE[0]}")/patch_cuda_tile_i1_bytecode_compat.py" "${REPO_ROOT}"
+# CUDA Tile 13.4 provides canonical i1 bytecode encoding and decoding.
+# Keep that upstream implementation intact.
 
 # 5) Patch BytecodeReader.cpp for LLVM api changes:
 # - Triton 3.7's LLVM uses the 2-argument isValidRawBuffer overload.
