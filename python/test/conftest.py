@@ -118,12 +118,16 @@ def pytest_runtest_makereport(item, call):
         return
     stages = _TILEIR_STAGE_TESTS.get(item.originalname, set())
     error = call.excinfo.value if call.excinfo is not None else None
-    if type(error) is not KeyError or len(error.args) != 1 or error.args[0] not in stages:
+    if type(error) is not KeyError or len(error.args) != 1:
+        return
+    stage = next((name for name in stages
+                  if error.args[0] in (name, f"Unknown key: '{name}'")), None)
+    if stage is None:
         return
     report = outcome.get_result()
     if not report.failed:
         return
-    reason = f"CTK 13.4 TileIR does not expose the {error.args[0]} inspection stage"
+    reason = f"CTK 13.4 TileIR does not expose the {stage} inspection stage"
     report.outcome = "skipped"
     report.wasxfail = reason
     report.longrepr = (str(item.path), item.location[1], reason)
