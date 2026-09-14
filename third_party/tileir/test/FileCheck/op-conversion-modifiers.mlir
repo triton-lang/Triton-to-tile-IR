@@ -14,4 +14,4 @@ module {
 // APPROX: exp {{.*}} rounding<approx>
 // FULL-LABEL: entry @exp_precision
 // FULL-SAME: num_worker_warps_per_cta = 4
-// FULL: exp {{.*}} rounding<full>
+// FULL: exp %{{[^ ]+}} : tile<f32>
