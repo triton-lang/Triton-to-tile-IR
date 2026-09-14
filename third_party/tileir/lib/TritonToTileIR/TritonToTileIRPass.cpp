@@ -474,6 +474,246 @@ public:
   }
 };
 
+static Value traceUnrealizedConversionCast(Value value) {
+  Value current = value;
+  // Follow the chain of unrealized_conversion_cast operations
+  while (auto castOp = current.getDefiningOp<UnrealizedConversionCastOp>()) {
+    if (castOp.getInputs().size() == 1) {
+      current = castOp.getInputs()[0];
+    } else {
+      break;
+    }
+  }
+  return current;
+}
+
+class ConvertDescriptorGatherOp
+    : public OpConversionPattern<triton::DescriptorGatherOp> {
+public:
+  using OpConversionPattern<triton::DescriptorGatherOp>::OpConversionPattern;
+
+  const DenseMap<Operation *, int> &numStagesMap;
+  int computeCapability;
+  std::optional<int> numStages;
+
+  ConvertDescriptorGatherOp(TypeConverter &typeConverter, MLIRContext *context,
+                            DenseMap<Operation *, int> &numStagesMap,
+                            int computeCapability, std::optional<int> numStages)
+      : OpConversionPattern<triton::DescriptorGatherOp>(typeConverter, context),
+        numStagesMap(numStagesMap), computeCapability(computeCapability),
+        numStages(numStages) {}
+
+  LogicalResult
+  matchAndRewrite(triton::DescriptorGatherOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto ctx = op->getContext();
+
+    // 1. Get the descriptor and trace through conversion casts
+    Value view = adaptor.getDesc();
+    view = traceUnrealizedConversionCast(view);
+    Type viewTy = view.getType();
+
+    // 2. Extract the underlying tensor view
+    Value srcTensorView;
+
+    // If view is already a TensorViewType, use it directly
+    if (isa<cuda_tile::TensorViewType>(viewTy)) {
+      srcTensorView = view;
+    }
+    // If view is a PartitionViewType or StridedViewType, extract the tensor view
+    else if (isa<cuda_tile::PartitionViewType, cuda_tile::StridedViewType>(viewTy)) {
+      if (auto *viewOp = view.getDefiningOp()) {
+        srcTensorView = viewOp->getOperand(0);
+        // Trace through unrealized_conversion_cast to get the actual tensor view
+        srcTensorView = traceUnrealizedConversionCast(srcTensorView);
+      } else {
+        return rewriter.notifyMatchFailure(
+            op, "tensor view for DescriptorGatherOp not found");
+      }
+    }
+    else {
+      return rewriter.notifyMatchFailure(
+          op, "expect a tensor view, partition view, or strided view type for DescriptorGatherOp");
+    }
+
+    // Verify we have a valid TensorViewType
+    if (!isa<cuda_tile::TensorViewType>(srcTensorView.getType())) {
+      return rewriter.notifyMatchFailure(
+          op, "srcTensorView is not a TensorViewType after tracing conversions");
+    }
+
+    // 3. Get gather parameters
+    Value xOffsets = adaptor.getXOffsets(); // 1D tile of indices
+    Value yOffset = adaptor.getYOffset();   // scalar offset
+
+    // 4. Get result type information
+    auto reType = op.getResult().getType();
+    auto reTileShape = reType.getShape(); // [BLOCK_X, BLOCK_Y]
+    auto reElemTy = reType.getElementType();
+    auto reTileTy = cuda_tile::TileType::get(ctx, reTileShape, reElemTy);
+
+    // 5. Create GatherScatterView
+    // sparse_dim = 0 (gather along first dimension, which is the row dimension)
+    int64_t sparseDim = 0;
+
+    // Get padding value (default to zero)
+    auto paddingValueAttr =
+        cuda_tile::PaddingValueAttr::get(ctx, cuda_tile::PaddingValue::zero);
+
+    // Convert int64_t shape to int32_t for DenseI32ArrayAttr
+    SmallVector<int32_t> tileShapeI32;
+    for (auto dim : reTileShape)
+      tileShapeI32.push_back(static_cast<int32_t>(dim));
+
+    auto gsViewType = cuda_tile::GatherScatterViewType::get(
+        ctx,
+        /*tile_shape=*/rewriter.getDenseI32ArrayAttr(tileShapeI32),
+        /*tensor_view=*/
+        cast<cuda_tile::TensorViewType>(srcTensorView.getType()),
+        /*sparse_dim=*/sparseDim,
+        /*padding_value=*/paddingValueAttr);
+
+    auto gsViewOp = cuda_tile::MakeGatherScatterViewOp::create(
+        rewriter, loc, gsViewType, srcTensorView);
+
+    // 6. Build coordinates for load_view_tko
+    // For gather: first coord is the 1D index tensor (xOffsets),
+    //             second coord is the scalar offset (yOffset)
+    SmallVector<Value> coords = {xOffsets, yOffset};
+
+    // 7. Get optimization hints
+    auto optHint = mlir::triton::utils::convertNumStagesToOptHint(
+        op, ctx, numStagesMap, computeCapability, numStages);
+
+    // 8. Use load_view_tko to perform the gather load
+    auto memOrder = cuda_tile::MemoryOrderingSemanticsAttr::get(
+        ctx, cuda_tile::MemoryOrderingSemantics::WEAK);
+
+    auto loadOp = cuda_tile::LoadViewTkoOp::create(rewriter, loc, reTileTy, cuda_tile::TokenType::get(ctx),
+        /*memory_ordering_semantics=*/memOrder,
+        /*scope=*/nullptr, gsViewOp.getResult(), coords,
+        /*token=*/nullptr, optHint.value_or(nullptr));
+
+    // 9. Replace the original op with the loaded tile
+    rewriter.replaceOp(op, loadOp.getTile());
+    return success();
+  }
+};
+
+class ConvertDescriptorScatterOp
+    : public OpConversionPattern<triton::DescriptorScatterOp> {
+public:
+  using OpConversionPattern<triton::DescriptorScatterOp>::OpConversionPattern;
+
+  const DenseMap<Operation *, int> &numStagesMap;
+  int computeCapability;
+  std::optional<int> numStages;
+
+  ConvertDescriptorScatterOp(TypeConverter &typeConverter, MLIRContext *context,
+                             DenseMap<Operation *, int> &numStagesMap,
+                             int computeCapability,
+                             std::optional<int> numStages)
+      : OpConversionPattern<triton::DescriptorScatterOp>(typeConverter,
+                                                         context),
+        numStagesMap(numStagesMap), computeCapability(computeCapability),
+        numStages(numStages) {}
+
+  LogicalResult
+  matchAndRewrite(triton::DescriptorScatterOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto ctx = op->getContext();
+
+    // 1. Get the descriptor and trace through conversion casts
+    Value view = adaptor.getDesc();
+    view = traceUnrealizedConversionCast(view);
+    Type viewTy = view.getType();
+
+    // 2. Extract the underlying tensor view
+    Value dstTensorView;
+
+    // If view is already a TensorViewType, use it directly
+    if (isa<cuda_tile::TensorViewType>(viewTy)) {
+      dstTensorView = view;
+    }
+    // If view is a PartitionViewType or StridedViewType, extract the tensor view
+    else if (isa<cuda_tile::PartitionViewType, cuda_tile::StridedViewType>(viewTy)) {
+      if (auto *viewOp = view.getDefiningOp()) {
+        dstTensorView = viewOp->getOperand(0);
+        // Trace through unrealized_conversion_cast to get the actual tensor view
+        dstTensorView = traceUnrealizedConversionCast(dstTensorView);
+      } else {
+        return rewriter.notifyMatchFailure(
+            op, "tensor view for DescriptorScatterOp not found");
+      }
+    }
+    else {
+      return rewriter.notifyMatchFailure(
+          op, "expect a tensor view, partition view, or strided view type for DescriptorScatterOp");
+    }
+
+    // Verify we have a valid TensorViewType
+    if (!isa<cuda_tile::TensorViewType>(dstTensorView.getType())) {
+      return rewriter.notifyMatchFailure(
+          op, "dstTensorView is not a TensorViewType after tracing conversions");
+    }
+
+    // 3. Get scatter parameters
+    Value srcTile = adaptor.getSrc();       // tile to scatter
+    Value xOffsets = adaptor.getXOffsets(); // 1D tile of indices
+    Value yOffset = adaptor.getYOffset();   // scalar offset
+
+    // 4. Get source tile type information
+    auto srcTileType = cast<cuda_tile::TileType>(srcTile.getType());
+    auto srcTileShape = srcTileType.getShape(); // [BLOCK_X, BLOCK_Y]
+    auto srcElemTy = srcTileType.getElementType();
+
+    // 5. Create GatherScatterView
+    // sparse_dim = 0 (scatter along first dimension, which is the row
+    // dimension)
+    int64_t sparseDim = 0;
+
+    // Convert int64_t shape to int32_t for DenseI32ArrayAttr
+    SmallVector<int32_t> tileShapeI32;
+    for (auto dim : srcTileShape)
+      tileShapeI32.push_back(static_cast<int32_t>(dim));
+
+    auto gsViewType = cuda_tile::GatherScatterViewType::get(
+        ctx,
+        /*tile_shape=*/rewriter.getDenseI32ArrayAttr(tileShapeI32),
+        /*tensor_view=*/
+        cast<cuda_tile::TensorViewType>(dstTensorView.getType()),
+        /*sparse_dim=*/sparseDim,
+        /*padding_value=*/nullptr);
+
+    auto gsViewOp = cuda_tile::MakeGatherScatterViewOp::create(
+        rewriter, loc, gsViewType, dstTensorView);
+
+    // 6. Build coordinates for store_view_tko
+    // For scatter: first coord is the 1D index tensor (xOffsets),
+    //              second coord is the scalar offset (yOffset)
+    SmallVector<Value> coords = {xOffsets, yOffset};
+
+    // 7. Get optimization hints
+    auto optHint = mlir::triton::utils::convertNumStagesToOptHint(
+        op, ctx, numStagesMap, computeCapability, numStages);
+
+    // 8. Use store_view_tko to perform the scatter store
+    auto memOrder = cuda_tile::MemoryOrderingSemanticsAttr::get(
+        ctx, cuda_tile::MemoryOrderingSemantics::WEAK);
+
+    auto storeOp = cuda_tile::StoreViewTkoOp::create(rewriter, loc, cuda_tile::TokenType::get(ctx),
+        /*memory_ordering_semantics=*/memOrder,
+        /*scope=*/nullptr, srcTile, gsViewOp.getResult(), coords,
+        /*token=*/nullptr, optHint.value_or(nullptr));
+
+    // 9. Erase the original op
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 class ConvertDescriptorLoadOp
     : public OpConversionPattern<triton::DescriptorLoadOp> {
 public:
@@ -1845,10 +2085,10 @@ public:
             ctx, rewriter.getDenseI32ArrayAttr(arrayOfi32Shape), tensorViewTy,
             dimMap,
             cuda_tile::PaddingValueAttr::get(ctx, cuda_tile::PaddingValue::zero));
-    
+
         auto partViewOp = cuda_tile::MakePartitionViewOp::create(
             rewriter, loc, tilePartViewTy, makeTensorViewOp);
-    
+
         rewriter.replaceOp(op, partViewOp);
     return success();
   }
@@ -2440,7 +2680,8 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
 
   patterns.add<ConvertLoadOp, ConvertStoreOp>(typeConverter, context, numStagesMap, computeCapability, numStages);
 
-    patterns.add<ConvertDescriptorLoadOp, ConvertDescriptorStoreOp>(
+    patterns.add<ConvertDescriptorLoadOp, ConvertDescriptorStoreOp,
+                 ConvertDescriptorGatherOp, ConvertDescriptorScatterOp>(
         typeConverter, context, numStagesMap, computeCapability, numStages);
   patterns.add<ConvertMakeTensorDescOp>(context);
   // clang-format on
@@ -2707,10 +2948,10 @@ static void convertTmaDescriptorOps(Operation *op, TypeConverter &converter) {
                   tensorViewTy, dimMap,
                   cuda_tile::PaddingValueAttr::get(ctx,
                                                    cuda_tile::PaddingValue::zero));
-          
+
               auto partViewOp = cuda_tile::MakePartitionViewOp::create(
                   rewriter, loc, tilePartViewTy, makeTensorViewOp);
-          
+
               auto castBackToTensorDescriptorOp =
                   UnrealizedConversionCastOp::create(rewriter, loc, tensorDescType,
                                                      partViewOp.getResult());
