@@ -64,8 +64,8 @@ module @kernel{
       %34 = arith.muli %32, %c64_i32 : i32
       %35 = scf.for %arg13 = %c0_i32 to %10 step %c1_i32 iter_args(%arg14 = %cst) -> (tensor<64x64xf32>)  : i32 {
         %43 = arith.muli %arg13, %c64_i32 : i32
-        %44 = tt.descriptor_load %1[%33, %43] : !tt.tensordesc<tensor<64x64xf16>> -> tensor<64x64xf16>
-        %45 = tt.descriptor_load %3[%34, %43] : !tt.tensordesc<tensor<64x64xf16>> -> tensor<64x64xf16>
+        %44 = tt.descriptor_load %1[%33, %43] : !tt.tensordesc<64x64xf16> -> tensor<64x64xf16>
+        %45 = tt.descriptor_load %3[%34, %43] : !tt.tensordesc<64x64xf16> -> tensor<64x64xf16>
         %46 = tt.trans %45 {order = array<i32: 1, 0>} : tensor<64x64xf16> -> tensor<64x64xf16>
         %47 = tt.dot %44, %46, %arg14, inputPrecision = tf32 : tensor<64x64xf16> * tensor<64x64xf16> -> tensor<64x64xf32>
         scf.yield %47 : tensor<64x64xf32>

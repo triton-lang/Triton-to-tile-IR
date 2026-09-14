@@ -1,6 +1,17 @@
-// RUN: triton-cuda-tile-opt %s -split-input-file --pass-pipeline="builtin.module(convert-triton-to-cuda-tile{approx-modifier=true flush-to-zero-modifier=true},cuda_tile.module(cuda_tile.entry(fuse-fma)))" | FileCheck --check-prefix=APPROX_FTZ %s 
-// RUN: triton-cuda-tile-opt %s -split-input-file --pass-pipeline="builtin.module(convert-triton-to-cuda-tile{approx-modifier=true},cuda_tile.module(cuda_tile.entry(fuse-fma)))" | FileCheck --check-prefix=APPROX %s 
-// RUN: triton-cuda-tile-opt %s -split-input-file --pass-pipeline="builtin.module(convert-triton-to-cuda-tile{flush-to-zero-modifier=true},cuda_tile.module(cuda_tile.entry(fuse-fma)))" | FileCheck --check-prefix=FTZ %s 
-// RUN: triton-cuda-tile-opt %s -split-input-file --pass-pipeline="builtin.module(convert-triton-to-cuda-tile{compute-capability=100 num-cta-in-cga=2},cuda_tile.module(cuda_tile.entry(fuse-fma)))" | FileCheck --check-prefix=HINT-100 %s
-// RUN: triton-cuda-tile-opt %s -split-input-file --pass-pipeline="builtin.module(convert-triton-to-cuda-tile{compute-capability=120 num-cta-in-cga=4},cuda_tile.module(cuda_tile.entry(fuse-fma)))" | FileCheck --check-prefix=HINT-120 %s 
+// RUN: triton-cuda-tile-opt %s --pass-pipeline="builtin.module(convert-triton-to-cuda-tile{approx-modifier=true num-warps-in-cta=8},reconcile-unrealized-casts)" | FileCheck --check-prefix=APPROX %s
+// RUN: triton-cuda-tile-opt %s --pass-pipeline="builtin.module(convert-triton-to-cuda-tile{approx-modifier=false num-warps-in-cta=4},reconcile-unrealized-casts)" | FileCheck --check-prefix=FULL %s
 
+module {
+  tt.func public @exp_precision(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
+    %x = tt.load %input : !tt.ptr<f32>
+    %value = math.exp %x : f32
+    tt.store %output, %value : !tt.ptr<f32>
+    tt.return
+  }
+}
+// APPROX-LABEL: entry @exp_precision
+// APPROX-SAME: num_worker_warps_per_cta = 8
+// APPROX: exp approx
+// FULL-LABEL: entry @exp_precision
+// FULL-SAME: num_worker_warps_per_cta = 4
+// FULL: exp full

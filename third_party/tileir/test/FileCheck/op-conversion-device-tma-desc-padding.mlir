@@ -16,7 +16,7 @@ module {
     %c1_i64 = arith.constant 1 : i64
     %0 = arith.extsi %N : i32 to i64
     %1 = tt.make_tensor_descriptor %in_ptr, [%M, %N], [%0, %c1_i64] {padding = 1 : i32} : <f32>, <32x32xf32>
-    %2 = tt.descriptor_load %1[%c0_i32, %c0_i32] : !tt.tensordesc<tensor<32x32xf32>> -> tensor<32x32xf32>
+    %2 = tt.descriptor_load %1[%c0_i32, %c0_i32] : !tt.tensordesc<32x32xf32> -> tensor<32x32xf32>
     tt.return
   }
 }
@@ -37,7 +37,7 @@ module {
     %c1_i64 = arith.constant 1 : i64
     %0 = arith.extsi %N : i32 to i64
     %1 = tt.make_tensor_descriptor %in_ptr, [%M, %N], [%0, %c1_i64] {padding = 2 : i32} : <f32>, <32x32xf32>
-    %2 = tt.descriptor_load %1[%c0_i32, %c0_i32] : !tt.tensordesc<tensor<32x32xf32>> -> tensor<32x32xf32>
+    %2 = tt.descriptor_load %1[%c0_i32, %c0_i32] : !tt.tensordesc<32x32xf32> -> tensor<32x32xf32>
     tt.return
   }
 }
