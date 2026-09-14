@@ -32,7 +32,7 @@ class TileIREnvConf:
 
         # Bundled binary downloaded at build time into the self-contained
         # tileir CUDA root (backends/nvidia/tileir_cuda/bin/tileiras), alongside
-        # the bundled 13.3 ptxas + libnvvm/libdevice.
+        # the bundled 13.4 ptxas + libnvvm/libdevice.
         bundled_path = os.path.join(
             os.path.dirname(triton.__file__),
             "backends",
@@ -62,7 +62,7 @@ class TileIREnvConf:
         # location (tileiras always lives in <CUDA_HOME>/bin/tileiras): take
         # dirname(dirname(tileiras)). We deliberately do NOT read the system
         # CUDA_HOME env var, so a stale/older system CUDA (e.g. 13.2) can never
-        # shadow the bundled 13.3 toolchain. Resolution therefore follows
+        # shadow the bundled 13.4 toolchain. Resolution therefore follows
         # get_tileiras_path():
         #   TRITON_TILEIRAS_PATH set -> dirname(TRITON_TILEIRAS_PATH)
         #   bundled                 -> backends/nvidia/tileir_cuda

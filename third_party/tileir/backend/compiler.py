@@ -91,6 +91,7 @@ class TileIROptions:
     debug: bool = False
     sanitize_overflow: bool = True
     extern_libs: dict = None
+    ir_override: Optional[str] = None
     # maxnreg in tileir backend is just for compatibility with other backend
     # tileir use occupancy to control the register usage.
     maxnreg: Optional[int] = None
@@ -221,7 +222,7 @@ class TileIRBackend(BaseBackend):
         # Scoped CUDA_HOME for the tileiras subprocess only (NOT global os.environ):
         # tileiras locates ptxas + libnvvm + libdevice under $CUDA_HOME for SM100 codegen.
         # Derived from the bundled tileiras location (tileir_cuda) so a stale system
-        # CUDA can never shadow the matching 13.3 toolchain.
+        # CUDA can never shadow the matching 13.4 toolchain.
         tileiras_env = {**os.environ, "CUDA_HOME": TileIREnvConf.get_tileir_cuda_home()}
 
         # Use temp file for cubin output to avoid race conditions.

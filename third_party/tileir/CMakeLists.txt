@@ -24,6 +24,7 @@ else()
   # Keep the cloned cuda-tile repo under the build tree (avoid polluting source tree).
   set(CUDA_TILE_SOURCE_DIR ${CMAKE_CURRENT_BINARY_DIR}/tileir_src)
 
+  set(CUDA_TILE_COMMIT 7e8e2e68fa219716103824c01f7303367cf7df8d)
   if(NOT EXISTS ${CUDA_TILE_SOURCE_DIR}/.git)
     execute_process(
       COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}
@@ -35,7 +36,6 @@ else()
 
     # Clone then fetch the pinned commit (--depth 1 alone only gets default branch tip;
     # we need this exact commit for patch compatibility).
-    set(CUDA_TILE_COMMIT 2e5ccba66fb3afdba34b26cf358418283027c248)
     execute_process(
       COMMAND bash -c "git clone --depth 1 https://github.com/NVIDIA/cuda-tile tileir_src && cd tileir_src && git fetch --depth 1 origin ${CUDA_TILE_COMMIT} && git checkout FETCH_HEAD"
       WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
@@ -43,16 +43,27 @@ else()
     )
     # Track specific tag to avoid breaking change conflict with patch
     execute_process(
-      COMMAND bash -c "git fetch --tags && git checkout v13.3.0"
+      COMMAND bash -c "git fetch --tags && git checkout v13.4.0"
       WORKING_DIRECTORY ${CUDA_TILE_SOURCE_DIR}
       RESULT_VARIABLE CUDA_TILE_CHECKOUT_RESULT
     )
     if(NOT CUDA_TILE_CHECKOUT_RESULT EQUAL 0)
-      message(FATAL_ERROR "Failed to checkout v13.3.0 in ${CUDA_TILE_SOURCE_DIR}")
+      message(FATAL_ERROR "Failed to checkout v13.4.0 in ${CUDA_TILE_SOURCE_DIR}")
     endif()
     if(NOT CUDA_TILE_GIT_CLONE_RESULT EQUAL 0)
       message(FATAL_ERROR "Failed to clone https://github.com/NVIDIA/cuda-tile into ${CUDA_TILE_SOURCE_DIR}")
     endif()
+  endif()
+
+  execute_process(
+    COMMAND git rev-parse HEAD
+    WORKING_DIRECTORY ${CUDA_TILE_SOURCE_DIR}
+    OUTPUT_VARIABLE CUDA_TILE_ACTUAL_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE CUDA_TILE_REV_RESULT
+  )
+  if(NOT CUDA_TILE_REV_RESULT EQUAL 0 OR NOT CUDA_TILE_ACTUAL_COMMIT STREQUAL CUDA_TILE_COMMIT)
+    message(FATAL_ERROR "cuda-tile checkout must be ${CUDA_TILE_COMMIT}; found ${CUDA_TILE_ACTUAL_COMMIT}. Use a fresh build directory for a toolchain upgrade.")
   endif()
 
   # Patch cuda-tile sources for LLVM API changes before building.

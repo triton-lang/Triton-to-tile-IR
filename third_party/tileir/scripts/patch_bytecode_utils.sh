@@ -70,7 +70,7 @@ if [[ -f "${CUDATILE_CPP_PATH}" ]]; then
 fi
 
 # 4) Triton 3.7's LLVM renamed DenseIntOrFPElementsAttr to
-# DenseTypedElementsAttr. Keep TileIR 13.3 pinned and bridge the copied build
+# DenseTypedElementsAttr. Keep TileIR 13.4 pinned and bridge the copied build
 # source instead of changing the released TileIR sources.
 echo "[patch] Global rename: DenseIntOrFPElementsAttr → DenseTypedElementsAttr"
 find "${REPO_ROOT}" -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.td" \) \
