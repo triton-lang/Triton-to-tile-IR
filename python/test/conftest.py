@@ -113,7 +113,12 @@ _TILEIR_STAGE_TESTS = {('test_tensor_descriptor.py', 'test_make_tensor_descripto
  ('test_warp_specialization.py', 'test_warp_specialize_tma_matmul'): {'ttgir'},
  ('test_warp_specialization.py', 'test_warp_specialize_tma_matmul_persistent'): {'ttgir'}}
 
-_TILEIR_134_UNSUPPORTED = {('test_block_pointer.py', 'test_block_copy'): 'block pointer make_tensor_ptr/advance lowering is '
+_TILEIR_134_UNSUPPORTED = {
+ ('test_core.py', 'test_gather'): 'generic tt.gather has no public lowering; descriptor gather is a distinct operation',
+ ('test_tensor_descriptor.py', 'test_make_tensor_descriptor_loop_carried'): 'public cuda_tile.if cannot return tile views used by conditional descriptor replacement',
+ ('test_tensor_descriptor.py', 'test_tensor_descriptor_batched_gemm_2d_tma'): 'public cuda_tile.if cannot return tile views used by conditional descriptor replacement',
+ ('test_tensor_descriptor.py', 'test_mxfp8_mxfp4_matmul_tma'): 'this kernel uses mixed FP8/FP4 operands; native scaled MMA requires matching types',
+('test_block_pointer.py', 'test_block_copy'): 'block pointer make_tensor_ptr/advance lowering is '
                                                'unavailable',
  ('test_block_pointer.py', 'test_block_ptr_matmul_no_scf'): 'block pointer make_tensor_ptr/advance '
                                                             'lowering is unavailable',
