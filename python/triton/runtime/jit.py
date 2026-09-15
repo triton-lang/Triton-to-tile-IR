@@ -371,22 +371,8 @@ class KernelInterface(Generic[T]):
     enable_tile = os.environ.get("ENABLE_TILE", "0") == "1"
 
     def tileir_run(self, *args, grid, warmup, **kwargs):
-        try:
-            driver.set_active(GlobalTileIRDriver)
-            ret = self.run(grid=grid, warmup=False, *args, **kwargs)
-        except RuntimeError:
-            # Fallback TileIR -> native driver on RuntimeError; off unless TRITON_TILEIR_RUNTIME_FALLBACK=1.
-            tileir_runtime_fallback = os.environ.get("TRITON_TILEIR_RUNTIME_FALLBACK", "0") == "1"
-            if not tileir_runtime_fallback:
-                raise
-            os.environ["ENABLE_TILE"] = "0"
-            driver.set_active(GlobalNvidiaDriver)
-            try:
-                ret = self.run(grid=grid, warmup=False, *args, **kwargs)
-            finally:
-                os.environ["ENABLE_TILE"] = "1"
-                driver.set_active(GlobalTileIRDriver)
-        return ret
+        driver.set_active(GlobalTileIRDriver)
+        return self.run(*args, grid=grid, warmup=warmup, **kwargs)
 
     def warmup(self, *args, grid, **kwargs):
         return self.run(grid=grid, warmup=True, *map(MockTensor.wrap_dtype, args), **kwargs)
@@ -753,6 +739,30 @@ class JITFunction(JITCallable, KernelInterface[T]):
         return options, signature, constexprs, attrs
 
     def run(self, *args, grid, warmup, **kwargs):
+        if os.environ.get("ENABLE_TILE", "0") != "1" and not self.enable_tile:
+            return self.run_internal(*args, grid=grid, warmup=warmup, **kwargs)
+
+        driver.set_active(GlobalTileIRDriver)
+        try:
+            return self.run_internal(*args, grid=grid, warmup=warmup, **kwargs)
+        except RuntimeError:
+            if os.environ.get("TRITON_TILEIR_RUNTIME_FALLBACK", "0") != "1":
+                raise
+            previous_enable_tile = os.environ.get("ENABLE_TILE")
+            os.environ["ENABLE_TILE"] = "0"
+            driver.set_active(GlobalNvidiaDriver)
+            try:
+                fallback_kwargs = dict(kwargs)
+                fallback_kwargs.pop("occupancy", None)
+                return self.run_internal(*args, grid=grid, warmup=warmup, **fallback_kwargs)
+            finally:
+                if previous_enable_tile is None:
+                    os.environ.pop("ENABLE_TILE", None)
+                else:
+                    os.environ["ENABLE_TILE"] = previous_enable_tile
+                driver.set_active(GlobalTileIRDriver)
+
+    def run_internal(self, *args, grid, warmup, **kwargs):
         kwargs["debug"] = kwargs.get("debug", self.debug) or knobs.runtime.debug
         kwargs["instrumentation_mode"] = knobs.compilation.instrumentation_mode
 
