@@ -313,3 +313,83 @@ module {
     tt.return
   }
 }
+
+// -----
+// This i32 is a pair of half bit patterns, not an integer conversion result.
+module {
+  tt.func public @asm_fp4_upcast_pair(%input: i8, %out: !tt.ptr<i32>) {
+    %x = tt.splat %input : i8 -> tensor<2x4xi8>
+    %r = tt.elementwise_inline_asm "{ .reg .b8 in_8; .reg .f16x2 out; cvt.u8.u32 in_8, $1; cvt.rn.f16x2.e2m1x2 out, in_8; mov.b32 $0, out; }" {constraints = "=r,r", packed_element = 1 : i32, pure = true} %x : tensor<2x4xi8> -> tensor<2x4xi32>
+    %p = tt.splat %out : !tt.ptr<i32> -> tensor<2x4x!tt.ptr<i32>>
+    tt.store %p, %r : tensor<2x4x!tt.ptr<i32>>
+    tt.return
+  }
+}
+// ASM-LABEL: entry @asm_fp4_upcast_pair
+// ASM: %[[BYTES:.*]] = reshape {{.*}} : tile<2x4xi8> -> tile<8xi8>
+// ASM: %[[F4:.*]] = unpack %[[BYTES]] : tile<8xi8> -> tile<16xf4E2M1FN>
+// ASM: %[[HALVES:.*]] = ftof %[[F4]] : tile<16xf4E2M1FN> -> tile<16xf16>
+// ASM: %[[HALF_BYTES:.*]] = pack %[[HALVES]] : tile<16xf16> -> tile<32xi8>
+// ASM: %[[WORDS:.*]] = unpack %[[HALF_BYTES]] : tile<32xi8> -> tile<8xi32>
+// ASM: reshape %[[WORDS]] : tile<8xi32> -> tile<2x4xi32>
+// ASM-NOT: elementwise_inline_asm
+
+// -----
+module {
+  tt.func public @reject_fp4_upcast_impure(%input: i8, %out: !tt.ptr<i32>) {
+    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
+    %r = tt.elementwise_inline_asm "{ .reg .b8 in_8; .reg .f16x2 out; cvt.u8.u32 in_8, $1; cvt.rn.f16x2.e2m1x2 out, in_8; mov.b32 $0, out; }" {constraints = "=r,r", packed_element = 1 : i32, pure = false} %input : i8 -> i32
+    tt.store %out, %r : !tt.ptr<i32>
+    tt.return
+  }
+}
+
+// -----
+module {
+  tt.func public @reject_fp4_upcast_pack_two(%input: i8, %out: !tt.ptr<i32>) {
+    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
+    %r = tt.elementwise_inline_asm "{ .reg .b8 in_8; .reg .f16x2 out; cvt.u8.u32 in_8, $1; cvt.rn.f16x2.e2m1x2 out, in_8; mov.b32 $0, out; }" {constraints = "=r,r", packed_element = 2 : i32, pure = true} %input : i8 -> i32
+    tt.store %out, %r : !tt.ptr<i32>
+    tt.return
+  }
+}
+
+// -----
+module {
+  tt.func public @reject_fp4_upcast_wide_input(%input: i32, %out: !tt.ptr<i32>) {
+    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
+    %r = tt.elementwise_inline_asm "{ .reg .b8 in_8; .reg .f16x2 out; cvt.u8.u32 in_8, $1; cvt.rn.f16x2.e2m1x2 out, in_8; mov.b32 $0, out; }" {constraints = "=r,r", packed_element = 1 : i32, pure = true} %input : i32 -> i32
+    tt.store %out, %r : !tt.ptr<i32>
+    tt.return
+  }
+}
+
+// -----
+module {
+  tt.func public @reject_fp4_upcast_float_result(%input: i8, %out: !tt.ptr<f32>) {
+    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
+    %r = tt.elementwise_inline_asm "{ .reg .b8 in_8; .reg .f16x2 out; cvt.u8.u32 in_8, $1; cvt.rn.f16x2.e2m1x2 out, in_8; mov.b32 $0, out; }" {constraints = "=r,r", packed_element = 1 : i32, pure = true} %input : i8 -> f32
+    tt.store %out, %r : !tt.ptr<f32>
+    tt.return
+  }
+}
+
+// -----
+module {
+  tt.func public @reject_fp4_upcast_constraints(%input: i8, %out: !tt.ptr<i32>) {
+    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
+    %r = tt.elementwise_inline_asm "{ .reg .b8 in_8; .reg .f16x2 out; cvt.u8.u32 in_8, $1; cvt.rn.f16x2.e2m1x2 out, in_8; mov.b32 $0, out; }" {constraints = "=r,r,~{memory}", packed_element = 1 : i32, pure = true} %input : i8 -> i32
+    tt.store %out, %r : !tt.ptr<i32>
+    tt.return
+  }
+}
+
+// -----
+module {
+  tt.func public @reject_fp4_upcast_relu(%input: i8, %out: !tt.ptr<i32>) {
+    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
+    %r = tt.elementwise_inline_asm "{ .reg .b8 in_8; .reg .f16x2 out; cvt.u8.u32 in_8, $1; cvt.rn.relu.f16x2.e2m1x2 out, in_8; mov.b32 $0, out; }" {constraints = "=r,r", packed_element = 1 : i32, pure = true} %input : i8 -> i32
+    tt.store %out, %r : !tt.ptr<i32>
+    tt.return
+  }
+}

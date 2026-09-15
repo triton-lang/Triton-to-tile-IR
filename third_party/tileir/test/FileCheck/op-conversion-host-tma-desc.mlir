@@ -150,11 +150,11 @@ module {
 // CHECK-NOT: ftof
 // CHECK: make_gather_scatter_view {{.*}}padding_value = zero
 // CHECK: load_view_tko {{.*}}gather_scatter_view
-// CHECK: ftof {{.*}} : tile<4x16xf32> -> tile<4x16xtf32>
-// CHECK: ftof {{.*}} : tile<4x16xtf32> -> tile<4x16xf32>
+// CHECK: ftof {{.*}} : tile<8x16xf32> -> tile<8x16xtf32>
+// CHECK: ftof {{.*}} : tile<8x16xtf32> -> tile<8x16xf32>
 // CHECK: andi
 // CHECK: cmpi
-// CHECK: select {{.*}} : tile<4x16xi1>, tile<4x16xi32>
+// CHECK: select {{.*}} : tile<8x16xi1>, tile<8x16xi32>
 // CHECK-NOT: ftof
 // CHECK: store_view_tko
 // CHECK-NOT: ftof
@@ -194,11 +194,11 @@ module {
 // CHECK-NOT: ftof
 // CHECK: make_gather_scatter_view {{.*}}padding_value = nan
 // CHECK: load_view_tko {{.*}}gather_scatter_view
-// CHECK: ftof {{.*}} : tile<4x16xf32> -> tile<4x16xtf32>
-// CHECK: ftof {{.*}} : tile<4x16xtf32> -> tile<4x16xf32>
+// CHECK: ftof {{.*}} : tile<8x16xf32> -> tile<8x16xtf32>
+// CHECK: ftof {{.*}} : tile<8x16xtf32> -> tile<8x16xf32>
 // CHECK: andi
 // CHECK: cmpi
-// CHECK: select {{.*}} : tile<4x16xi1>, tile<4x16xi32>
+// CHECK: select {{.*}} : tile<8x16xi1>, tile<8x16xi32>
 // CHECK-NOT: ftof
 // CHECK: store_view_tko
 // CHECK-NOT: ftof

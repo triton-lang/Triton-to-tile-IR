@@ -3219,6 +3219,62 @@ class ConvertKnownNumericInlineAsmToNativeOp
   }
 };
 
+// Match only the packed FP4-to-half conversion used by triton_kernels. The
+// caller subsequently extracts the low/high halfwords from this i32 result.
+class ConvertPackedFp4UpcastInlineAsmToNativeOp
+    : public OpConversionPattern<triton::ElementwiseInlineAsmOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::ElementwiseInlineAsmOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!op.getPure() || op.getPackedElement() != 1 ||
+        op.getNumResults() != 1 || adaptor.getArgs().size() != 1 ||
+        normalizeNativeInlineAsm(op.getConstraints()) != "=r,r" ||
+        normalizeNativeInlineAsm(op.getAsmString()) !=
+            "{.reg .b8 in_8;.reg .f16x2 out;cvt.u8.u32 in_8,$1;"
+            "cvt.rn.f16x2.e2m1x2 out,in_8;mov.b32 $0,out;}")
+      return failure();
+
+    auto resultTy = dyn_cast_or_null<cuda_tile::TileType>(
+        getTypeConverter()->convertType(op->getResult(0).getType()));
+    Value input = adaptor.getArgs()[0];
+    auto inputTy = dyn_cast<cuda_tile::TileType>(input.getType());
+    if (!resultTy || !resultTy.getElementType().isSignlessInteger(32) ||
+        !inputTy || !inputTy.getElementType().isSignlessInteger(8) ||
+        inputTy.getShape() != resultTy.getShape())
+      return failure();
+    int64_t count = resultTy.getNumElements();
+    if (count <= 0 || count > std::numeric_limits<int64_t>::max() / 4)
+      return failure();
+
+    auto loc = op.getLoc();
+    auto byteTy = cuda_tile::TileType::get({count}, rewriter.getI8Type());
+    Value bytes = cuda_tile::ReshapeOp::create(rewriter, loc, byteTy, input);
+    auto f4Ty = cuda_tile::TileType::get(
+        {2 * count}, Float4E2M1FNType::get(rewriter.getContext()));
+    // Native unpack orders each pair [low nibble, high nibble]. All FP4
+    // values, including both signed zeros, are exactly representable in f16.
+    Value f4 = cuda_tile::UnpackOp::create(rewriter, loc, f4Ty, bytes);
+    auto halfTy = cuda_tile::TileType::get({2 * count}, rewriter.getF16Type());
+    auto rn = cuda_tile::RoundingModeAttr::get(
+        rewriter.getContext(), cuda_tile::RoundingMode::NEAREST_EVEN);
+    Value halves = cuda_tile::FToFOp::create(rewriter, loc, halfTy, f4, rn);
+
+    // Pack accepts only an i8 result; unpack then reinterprets each adjacent
+    // pair of halfwords as i32. It preserves low/high ordering and every bit,
+    // matching cvt.f16x2 followed by mov.b32, without a numerical int cast.
+    auto halfBytesTy =
+        cuda_tile::TileType::get({4 * count}, rewriter.getI8Type());
+    Value halfBytes =
+        cuda_tile::PackOp::create(rewriter, loc, halfBytesTy, halves);
+    auto wordTy = cuda_tile::TileType::get({count}, rewriter.getI32Type());
+    Value words = cuda_tile::UnpackOp::create(rewriter, loc, wordTy, halfBytes);
+    rewriter.replaceOpWithNewOp<cuda_tile::ReshapeOp>(op, resultTy, words);
+    return success();
+  }
+};
+
 static constexpr llvm::StringLiteral kGdcWaitHelperAsm =
     "griddepcontrol.wait; // dummy $0";
 static constexpr llvm::StringLiteral kGdcLaunchDependentsHelperAsm =
@@ -3388,6 +3444,8 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
 >(typeConverter, context);
 
   patterns.add<ConvertGdcInlineAsmToNativeOp>(typeConverter, context, /*benefit=*/2);
+  patterns.add<ConvertPackedFp4UpcastInlineAsmToNativeOp>(
+      typeConverter, context, /*benefit=*/2);
   patterns.add<ConvertKnownNumericInlineAsmToNativeOp>(typeConverter, context,
                                                        /*benefit=*/2);
 
