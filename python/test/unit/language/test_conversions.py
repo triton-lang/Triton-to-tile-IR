@@ -7,7 +7,7 @@ import pytest
 import triton
 import triton.language as tl
 
-from triton._internal_testing import is_cuda, is_hip, is_hip_cdna2, is_hip_cdna3, is_hip_cdna4, is_hip_rdna3, is_hip_rdna4, is_tileir
+from triton._internal_testing import is_cuda, is_hip, is_hip_cdna2, is_hip_cdna3, is_hip_cdna4, is_hip_rdna3, is_hip_rdna4
 
 FP8_DTYPES = ('float8e5', 'float8e4b15', 'float8e4nv', 'float8e4b8', 'float8e5b16')
 
@@ -297,10 +297,6 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
         if src_dtype in ('float8e4b8', 'float8e5b16') and (is_hip_cdna2() or is_hip_rdna4()):
             pytest.skip(f"{src_dtype} is not supported on AMDGPU CDNA2 and RDNA4")
 
-    if is_tileir():
-        if src_dtype == "float8e4b15":
-            pytest.skip(f"Skip for tileir, tt.elementwise_inline_asm")
-
     # dtype : (exponent_bits, mantissa_bits, exponent_bias, max_repr)
     stuff = {
         'float8e4b15': (4, 3, 15, 0x7e),
@@ -355,10 +351,6 @@ def test_typeconvert_downcast(src_dtype, dst_dtype, rounding, max_repr, device):
             pytest.skip(f"{dst_dtype} is not supported on AMDGPU RDNA3")
         if dst_dtype in ('float8e4b8', 'float8e5b16') and (is_hip_cdna2() or is_hip_rdna4()):
             pytest.skip(f"{dst_dtype} is not supported on AMDGPU CDNA2 and RDNA4")
-
-    if is_tileir():
-        if rounding == "rtz":
-            pytest.skip(f"{rounding} rounding mode is not supported on tileir")
 
     # dtype : (exponent_bits, mantissa_bits, exponent_bias)
     stuff = {

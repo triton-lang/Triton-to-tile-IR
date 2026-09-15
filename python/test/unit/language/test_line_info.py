@@ -7,7 +7,7 @@ import torch
 
 import triton
 import triton.language as tl
-from triton._internal_testing import is_hopper_or_newer, is_interpreter, is_tileir
+from triton._internal_testing import is_hopper_or_newer, is_interpreter
 from triton._filecheck import run_filecheck
 
 
@@ -254,7 +254,7 @@ def test_line_info_ir_source(monkeypatch, status, tmp_path, fresh_triton_cache):
     else:
         assert check_file_lines(file_lines, "/path/test.py", 8, should_contain=True)
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, line info")
+
 def test_use_name_loc_as_prefix(fresh_triton_cache):
 
     @triton.jit
@@ -462,7 +462,6 @@ def test_use_name_loc_as_prefix(fresh_triton_cache):
     run_filecheck("placeholder", h.asm["ttir"], check_template)
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tt.map_elementwise")
 def test_map_elementwise_has_lineinfo():
 
     @triton.jit

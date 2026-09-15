@@ -3,11 +3,8 @@ import triton.language as tl
 from triton.backends.compiler import GPUTarget
 import re
 from triton.compiler import ASTSource
-from triton._internal_testing import is_tileir
-import pytest
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, ptx")
 def test_compile_only_sm100() -> None:
 
     @triton.jit
@@ -21,9 +18,9 @@ def test_compile_only_sm100() -> None:
     ptx = k.asm["ptx"]
     assert ".target sm_100a" in ptx
     assert ".address_size 64" in ptx
+    assert k.asm["cubin"] != b""
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, ttgir")
 def test_compile_only_dot() -> None:
 
     @triton.jit
@@ -79,7 +76,6 @@ def test_compile_only_dot() -> None:
     assert k.asm["cubin"] != b""
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, ttgir")
 def test_compile_only_k_loop() -> None:
 
     @triton.jit
@@ -125,7 +121,6 @@ def test_compile_only_k_loop() -> None:
     assert k.asm["cubin"] != b""
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, dot_scaled")
 def test_compile_only_dot_mxfp() -> None:
 
     @triton.jit
@@ -207,7 +202,7 @@ def test_fp8_compiles_for_multiple_architectures_hip():
     triton.compile(src, target=GPUTarget("hip", "gfx950", 64))
     triton.compile(src, target=GPUTarget("hip", "gfx942", 64))
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, only supports sm100")
+
 def test_fp8_compiles_for_multiple_architectures_cuda():
     """
     Validate FP8 compilation succeeds for architectures with different

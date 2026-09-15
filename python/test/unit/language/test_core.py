@@ -26,7 +26,6 @@ from triton._internal_testing import (
     dtypes,
     dtypes_with_bfloat16,
     is_cuda,
-    is_tileir,
     is_interpreter,
     is_hopper,
     is_hip,
@@ -932,7 +931,6 @@ def test_math_op(dtype_x, expr, x, device):
 
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype", [dtype for dtype in ["float32", "float64"]])
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir")
 def test_math_erf_op(dtype, device):
     check_type_supported(dtype, device)
     SIZE = 128
@@ -1176,7 +1174,6 @@ def make_ptr_str(name, shape):
                                              for s in ['None, :', ':, None', 'None, :, :', ':, :, None']
                                              for d in ['int32', 'uint32', 'uint16']])
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir")
 def test_index1d(expr, dtype_str, num_ctas, device):
     rank_x = expr.count(':')
     rank_y = expr.count(',') + 1
@@ -1289,7 +1286,6 @@ def noinline_multi_values_fn(x, y, Z):
 
 @pytest.mark.interpreter
 @pytest.mark.parametrize("mode", ["simple", "call_graph", "shared", "dynamic", "multi_values"])
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir")
 def test_noinline(mode, device):
 
     @triton.jit
@@ -1347,9 +1343,6 @@ def test_noinline(mode, device):
                                    for mode in ['all_neg', 'all_pos', 'min_neg', 'max_pos']
                                    for sem in [None, 'acquire', 'release', 'acq_rel', 'relaxed']]))
 def test_atomic_rmw(op, dtype_x_str, mode, sem, device):
-    # [Diff] skip for bf16 on tileir
-    if is_tileir() and dtype_x_str == 'bfloat16':
-        pytest.skip("Skip for tileir")
     check_type_supported(dtype_x_str, device)
     if is_interpreter():
         if dtype_x_str == 'float16' or dtype_x_str == 'bfloat16':
@@ -1410,9 +1403,6 @@ def test_atomic_rmw(op, dtype_x_str, mode, sem, device):
     if not is_cuda():
         return
 
-    # [Diff] skip asm check for tileir
-    if is_tileir():
-        return
     # atom.add.bf16 is unsupported prior to Hopper so instead we generate an
     # atom.cas add loop on Ampere and prior
     if dst_type == 'bfloat16' and torch.cuda.get_device_capability()[0] < 9:
@@ -1448,8 +1438,6 @@ def test_atomic_rmw_predicate(num_ctas, device):
                           for dtype_x_str in ['bfloat16', 'float16', 'float32', 'uint64', 'int64', 'float64']
                           for check_return_val in ([True, False] if is_hip() else [True])])
 def test_tensor_atomic_rmw(shape, axis, num_ctas, dtype_x_str, check_return_val, device):
-    if is_tileir() and dtype_x_str == 'bfloat16':
-        pytest.skip("Skip for tileir")
     check_type_supported(dtype_x_str, device)
     shape0, shape1 = shape
     # triton kernel
@@ -1529,8 +1517,6 @@ def test_tensor_atomic_rmw(shape, axis, num_ctas, dtype_x_str, check_return_val,
                                                          for num_ctas in num_ctas_list
                                                          for dtype_x_str in ['bfloat16', 'float16', 'float32']])
 def test_tensor_atomic_add_non_exclusive_offset(size, num_ctas, dtype_x_str, device):
-    if is_tileir():
-        pytest.skip("Skip for tileir")
     check_type_supported(dtype_x_str, device)
 
     @triton.jit
@@ -1555,8 +1541,6 @@ def test_tensor_atomic_add_non_exclusive_offset(size, num_ctas, dtype_x_str, dev
                                                          for num_ctas in num_ctas_list
                                                          for dtype_x_str in ['bfloat16', 'float16', 'float32']])
 def test_tensor_atomic_add_shift_1(size, num_ctas, dtype_x_str, device):
-    if is_tileir() and dtype_x_str == 'bfloat16':
-        pytest.skip("Skip for tileir, atomic_rmw bf16 not supported for now")
     check_type_supported(dtype_x_str, device)
 
     @triton.jit
@@ -1590,8 +1574,6 @@ def test_tensor_atomic_add_shift_1(size, num_ctas, dtype_x_str, device):
                           for num_ctas in num_ctas_list
                           for dtype_x_str in ['bfloat16', 'float16', 'float32']])
 def test_tensor_atomic_add_access_patterns(shape, idx_order, mask_step, num_ctas, dtype_x_str, device):
-    if is_tileir() and dtype_x_str == 'bfloat16':
-        pytest.skip("Skip for tileir")
     check_type_supported(dtype_x_str, device)
     if is_interpreter():
         pytest.skip("not supported in the interpreter")
@@ -1664,8 +1646,6 @@ def test_tensor_atomic_rmw_block(num_ctas, device):
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
 @pytest.mark.parametrize("dtype_str", ["int32", "int64"])
 def test_atomic_cas(sem, num_ctas, dtype_str, device):
-    if is_tileir():
-        pytest.skip("Skip for tileirm unsplatOp not supported")
     if is_hip_cdna2():
         pytest.skip("Disabled due to being flaky on CDNA2")
     # 1. make sure that atomic_cas changes the original value (Lock)
@@ -1718,9 +1698,6 @@ def test_atomic_cas(sem, num_ctas, dtype_str, device):
 @pytest.mark.parametrize("size", [4, 128, 512, 1024])
 @pytest.mark.parametrize("dtype_str", ['bfloat16', 'float16', 'float32', 'uint64', 'int64', 'float64'])
 def test_tensor_atomic_cas(sem, size, dtype_str, num_ctas, device):
-    if is_tileir():
-        if dtype_str == 'bfloat16' or dtype_str == 'float16' or sem in ['acquire', 'release', 'acq_rel', 'relaxed']:
-            pytest.skip("Skip for tileir")
     check_type_supported(dtype_str, device)
     if is_hip_cdna2():
         pytest.skip("Disabled due to being flaky on CDNA2")
@@ -1826,8 +1803,6 @@ def test_atomic_unsupported_type(dtype_str, device):
 @pytest.mark.parametrize("size", [1, 4, 16])
 @pytest.mark.parametrize("op", ["add", "cas"])
 def test_tensor_atomic_use_result(dtype_str, size, op, device):
-    if is_tileir() and dtype_str == 'float16':
-        pytest.skip("Skip for tileir")
 
     @triton.jit
     def kernel(index_ptr, out_ptr, size: tl.constexpr, op: tl.constexpr):
@@ -2220,7 +2195,6 @@ def test_split(device):
 
 
 @pytest.mark.interpreter
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, unsplatOp not supported for now")
 def test_split_to_scalar(device):
 
     @triton.jit
@@ -2807,7 +2781,6 @@ def test_scan2d(op, dtype_str, shape, axis, reverse, num_warps, device):
 # ---------------
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir,tt.histogram not supported for now")
 @pytest.mark.interpreter
 @pytest.mark.parametrize("M, N", [[2048, 2], [1024, 8], [1024, 128], [256, 512], [32, 512], [8, 512], [8, 2]])
 def test_histogram(M, N, device):
@@ -2858,7 +2831,6 @@ def test_histogram_silent_data_corruption(device):
 # ------------------------
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tt.histogram not supported for now")
 @pytest.mark.interpreter
 @pytest.mark.parametrize("M, N", [[2048, 2], [1024, 8], [1024, 128], [256, 512], [32, 512], [8, 512], [8, 2]])
 def test_histogram_mask(M, N, device):
@@ -2907,7 +2879,6 @@ def test_scan_1d(M, N, device):
 @pytest.mark.parametrize("BLOCK_N", [32, 64, 128])
 @pytest.mark.parametrize("N", [512, 1024, 2048])
 @pytest.mark.parametrize("num_pid_n", [2, 4])
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tileir does not have ttgir")
 def test_optimize_thread_locality(op, BLOCK_N, N, num_pid_n, device):
 
     @triton.jit
@@ -2953,7 +2924,6 @@ def test_optimize_thread_locality(op, BLOCK_N, N, num_pid_n, device):
     np.testing.assert_allclose(y_tri, y_ref, rtol=0.01, atol=1e-3)
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tileir does not have ttgir")
 def test_no_rematerialization_op():
 
     if torch.version.hip:
@@ -3099,8 +3069,7 @@ def test_permute(dtype_str, shape, perm, num_ctas, device):
     np.testing.assert_allclose(to_numpy(z_tri), z_ref)
     np.testing.assert_allclose(to_numpy(z_tri_contiguous), z_ref)
 
-    # [Diff] skip asm check for tileir
-    if not is_cuda() or is_tileir():
+    if not is_cuda():
         return
 
     # parse ptx to make sure ld/st are vectorized
@@ -3533,10 +3502,6 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
     if not (is_cuda() or is_hip_cdna() or is_hip_gfx1250()):
         return
 
-    # [Diff] skip asm check for tileir
-    if is_tileir():
-        return
-
     if is_hip_cdna() or is_hip_gfx1250():
         amdgcn = pgm.asm['amdgcn']
 
@@ -3623,8 +3588,7 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
                           for mxfp_type in ["e2m1", "e4m3", "e5m2"]
                           for normal_type in ["e4m3", "e5m2", "bf16", "fp16"]
                           for mma in (mma_nonk_sizes if is_hip() else [16])
-                          for kpack in ([1, 2] if (is_hip() and not is_hip_cdna4()) else [1])])
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tileir not support scaledot for now")
+                          for kpack in ([1, 2] if (is_hip() and not (is_hip_cdna4() or is_hip_gfx1250())) else [1])])
 def test_scaled_dot(M, N, K, col_a, col_b, rhs_scale, mxfp_type, normal_type, num_warps, mma, kpack, device):
     is_SM120 = False
     if is_cuda():
@@ -3879,7 +3843,7 @@ def test_scaled_dot(M, N, K, col_a, col_b, rhs_scale, mxfp_type, normal_type, nu
     torch.testing.assert_close(z, z_ref, atol=atol, rtol=rtol)
 
     # make sure ld/st are vectorized
-    if is_cuda() and not is_tileir():
+    if is_cuda():
         ptx = pgm.asm['ptx']
         if (max(M, N) * K) // (num_warps * 32) >= 4:
             assert 'ld.global.v4' in ptx
@@ -4031,7 +3995,6 @@ def test_dot3d(B, num_warps, M, N, K, BLOCK_M, BLOCK_N, in_dtype_str, out_dtype_
 
 
 @pytest.mark.parametrize('in_dtype', ['float32'])
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tileir does not have ttgir")
 def test_dot_mulbroadcasted(in_dtype, device):
     if is_cuda():
         capability = torch.cuda.get_device_capability()
@@ -4082,7 +4045,6 @@ def test_dot_mulbroadcasted(in_dtype, device):
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_str", int_dtypes + uint_dtypes + float_dtypes + ['bfloat16'])
 @pytest.mark.parametrize("shape", [(), (1, ), (128, )])
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir")
 def test_full(dtype_str, shape, device):
     if dtype_str in uint_dtypes and not hasattr(torch, dtype_str):
         # PyTorch only has unsigned 8, but not 16, 32, or 64
@@ -4146,7 +4108,6 @@ def pass_const(a, b, choose_b):
 @pytest.mark.parametrize("choose_const", [True, False])
 @pytest.mark.parametrize("constexpr", [True, False])
 @pytest.mark.parametrize("mode", ["direct", "call", "ternary", "if"])
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir")
 def test_const(device, choose_const, constexpr, mode):
 
     @triton.jit(do_not_specialize=["choose_const"])
@@ -4404,7 +4365,7 @@ def test_load_cache_modifier(cache, device):
         if cache == '.cv':
             assert cv_cache_modifier_str in load_line
 
-    if is_cuda() and not is_tileir():
+    if is_cuda():
         ptx = pgm.asm['ptx']
         all_modifiers = ['.ca', '.cg', '.cs', '.cv']
         for modifier in all_modifiers:
@@ -4430,7 +4391,7 @@ def test_vectorization(N, num_ctas, device):
 
     pgm = _kernel[(1, )](dst, src, N=N, BLOCK_SIZE=block_size)
 
-    if not is_cuda() or is_tileir():
+    if not is_cuda():
         return
 
     ptx = pgm.asm["ptx"]
@@ -4458,7 +4419,7 @@ def test_vectorization_hints(has_hints, device):
         tl.store(dst + offsets, x, mask=offsets < N)
 
     pgm = _kernel[(1, )](dst, src, off, N=1024, BLOCK_SIZE=src.shape[0], HINT=has_hints)
-    if not is_cuda() or is_tileir():
+    if not is_cuda():
         return
 
     ptx = pgm.asm["ptx"]
@@ -4469,7 +4430,6 @@ def test_vectorization_hints(has_hints, device):
 
 
 @pytest.mark.interpreter
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tileir does not have ttgir")
 def test_assume(device):
 
     @triton.jit
@@ -4532,7 +4492,7 @@ def test_store_cache_modifier(cache, device):
             assert cs_cache_modifier_str not in store_line
             assert wt_cache_modifier_str in store_line
 
-    if is_cuda() and not is_tileir():
+    if is_cuda():
         ptx = pgm.asm['ptx']
         all_modifiers = ['.wb', '.cg', '.cs', '.wt']
         for modifier in all_modifiers:
@@ -4556,7 +4516,7 @@ def test_store_eviction_policy(eviction_policy, device):
 
     pgm = _kernel[(1, )](dst, src, POLICY=eviction_policy)
 
-    if not is_cuda() or is_tileir():
+    if not is_cuda():
         return
     ptx = pgm.asm['ptx']
     if eviction_policy == '':
@@ -4807,7 +4767,6 @@ def test_tma_store_block_shape_err(device):
     assert "Descriptor block shape must have at least 16 bytes" in str(e.value.__cause__)
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir")
 def test_trans_reshape(device, with_allocator):
 
     @triton.jit
@@ -4873,8 +4832,6 @@ def vecmul_kernel(ptr, n_elements, rep, type: tl.constexpr):
 @pytest.mark.parametrize("type", ["inline", "noinline"])
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
 def test_call(type, num_ctas, device):
-    if is_tileir():
-        pytest.skip("Skip for tileir, tileir not support noinline in 13.1 release")
 
     @triton.jit
     def kernel(ptr, n_elements, num1, num2, type: tl.constexpr):
@@ -4967,7 +4924,6 @@ def test_num_warps_pow2(device):
 # -----------------------
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, inline_asm not supported for now")
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
 def test_inline_asm(num_ctas, device):
     if not is_cuda():
@@ -4997,7 +4953,6 @@ def test_inline_asm(num_ctas, device):
 
 
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, inline_asm_packed not supported for now")
 def test_inline_asm_packed(num_ctas, device):
     if not is_cuda():
         pytest.skip("test_inline_asm is only supported in CUDA")
@@ -5024,7 +4979,6 @@ def test_inline_asm_packed(num_ctas, device):
     np.testing.assert_equal(y_ref, to_numpy(y_tri))
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, inline_asm_with_pointers not supported for now")
 @pytest.mark.parametrize('num_ctas', num_ctas_list)
 def test_inline_asm_with_pointers(num_ctas, device):
     if not is_cuda():
@@ -5051,7 +5005,6 @@ def test_inline_asm_with_pointers(num_ctas, device):
     np.testing.assert_equal(y_ref, to_numpy(y_tri))
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, inline_asm")
 def test_inline_asm_multiple_outputs(device):
     if not is_cuda():
         pytest.skip('test_inline_asm is only supported in CUDA')
@@ -5098,7 +5051,6 @@ def test_inline_asm_multiple_outputs(device):
     np.testing.assert_equal(D_ref, to_numpy(D_tri))
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, inline_asm_packed_multiple_outputs not supported for now")
 def test_inline_asm_packed_multiple_outputs(device):
     if not is_cuda():
         pytest.skip('test_inline_asm is only supported in CUDA')
@@ -5445,9 +5397,6 @@ def test_if_call(call_type, device):
 
         tl.store(Out, o)
 
-
-    if is_tileir() and call_type == "jit_if":
-        pytest.skip("Skip for tileir, tileir will inline all call for now")
     out = to_triton(np.zeros((1, ), dtype=np.int32), device=device)
     kernel[(1, )](out, call_type)
     assert to_numpy(out)[0] == 1
@@ -5457,7 +5406,6 @@ def test_if_call(call_type, device):
 @pytest.mark.parametrize("_cond1", [True, False])
 @pytest.mark.parametrize("_cond2", [True, False])
 @pytest.mark.parametrize("_cond3", [True, False])
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, cf.cond_br")
 def test_nested_if_else_return(_cond1, _cond2, _cond3, device):
 
     @triton.jit
@@ -5541,7 +5489,6 @@ def test_nested_while(device):
     assert data[0] == 40
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, cf.cond_br not supported for now")
 def test_constexpr_if_return(device):
     # Reproducer for #4883, return statement in an if with a constexpr causes
     # errors when combined with non-trivial control flow graphs
@@ -5615,7 +5562,6 @@ def return_poison(x):
         return x
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tileir does not have llir")
 def test_poison_return(device):
 
     @triton.jit
@@ -5657,7 +5603,6 @@ def test_num_threads(device):
     assert torch.sum(out) == num_threads
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tt.elementwise_inline_asm not supported for now")
 def test_globaltimer(device):
     check_cuda_or_hip(device)
     if is_hip():
@@ -5691,7 +5636,6 @@ def test_globaltimer(device):
             assert h.asm["amdgcn"].count("s_memrealtime") == 2
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tt.elementwise_inline_asm not supported for now")
 def test_smid(device):
     check_cuda_or_hip(device)
 
@@ -5890,7 +5834,7 @@ def test_enable_fp_fusion(enable_fp_fusion, default_override, device, fresh_knob
     else:
         h = mul_add.warmup(data, grid=(1, ), enable_fp_fusion=enable_fp_fusion)
 
-    if not is_cuda() or is_tileir():
+    if not is_cuda():
         return
     found_fma = re.search(r'(mad|fma)\.r[nzmp]\.(ftz\.)?f32', h.asm["ptx"]) is not None
     assert found_fma == enable_fp_fusion
@@ -5903,7 +5847,6 @@ def test_enable_fp_fusion(enable_fp_fusion, default_override, device, fresh_knob
 
 @pytest.mark.skipif(not is_cuda(), reason="Requires CUDA")
 @pytest.mark.parametrize("enable_reflect_ftz", [False, True])
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, reflect_ftz is not supported for now")
 def test_enable_reflect_ftz(enable_reflect_ftz, device, fresh_knobs):
 
     @triton.jit
@@ -5925,7 +5868,6 @@ def test_enable_reflect_ftz(enable_reflect_ftz, device, fresh_knobs):
 
 @pytest.mark.parametrize("arch", ["sm70", "sm80", "sm90", "gfx942", "gfx950", "gfx1200"])
 @pytest.mark.parametrize("env_var_override", [False, True])
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tileir does not have ttgir")
 def test_override_arch(arch, env_var_override, device, fresh_knobs):
     if arch.startswith("sm") and not is_cuda():
         pytest.skip(f"{arch} arch only for CUDA")
@@ -5966,7 +5908,7 @@ def test_override_arch(arch, env_var_override, device, fresh_knobs):
 
 
 def test_num_ctas_pre_sm90(device, fresh_knobs):
-    if (not is_cuda() or is_tileir()) and not is_hip():
+    if not is_cuda() and not is_hip():
         pytest.skip("Only supported on CUDA and HIP")
 
     @triton.jit
@@ -6139,7 +6081,7 @@ def test_tl_range_num_stages(device):
         torch.testing.assert_close(ref_out, c, rtol=1e-2, atol=1e-1)
     else:
         torch.testing.assert_close(ref_out, c, rtol=1e-3, atol=1e-3)
-        if device in ['cuda'] and not is_tileir():
+        if device in ['cuda']:
             capability = torch.cuda.get_device_capability()
             if capability[0] >= 8:
                 ptx = pgm.asm['ptx']
@@ -6147,7 +6089,6 @@ def test_tl_range_num_stages(device):
                 assert 'cp.async.wait_group \t6' in ptx
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tileir does not have ttgir")
 def test_tl_range_fuse(device):
 
     @triton.jit
@@ -6173,7 +6114,6 @@ def test_tl_range_fuse(device):
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tileir does not have ttgir")
 def test_tl_range_fuse_dependent(device):
 
     @triton.jit
@@ -6214,7 +6154,6 @@ def test_tl_range_fuse_dependent(device):
     torch.testing.assert_close(out_j, ref_j, atol=0, rtol=0)
 
 
-@pytest.mark.skipif(is_tileir(), reason="tileir need num_stages and loop_unroll_factor for other reasons")
 def test_tl_range_option_none():
 
     @triton.jit
@@ -6227,7 +6166,6 @@ def test_tl_range_option_none():
     assert "loop_unroll_factor" not in compiled_kernel.asm["ttir"]
 
 
-@pytest.mark.skipif(is_tileir(), reason="tileir does not have llir")
 def test_disable_licm():
 
     @triton.jit
@@ -6271,7 +6209,7 @@ def maxnreg_noinline2(X):
 
 @pytest.mark.interpreter
 def test_maxnreg(device):
-    if not is_cuda() or is_tileir():
+    if not is_cuda():
         pytest.skip('maxnreg only works on CUDA')
 
     # triton kernel
@@ -6353,7 +6291,6 @@ def test_num_programs(device):
 # -----------------------
 
 
-@pytest.mark.skipif(is_tileir(), reason="tileir has it's own loop unrolling mechanism")
 def test_unroll_attr(device):
 
     @triton.jit
@@ -6385,7 +6322,6 @@ def sanitize_add(a, b):
     return a + b
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tileir not support reduce with side effect")
 def test_side_effectful_reduction(device):
     if device != "cuda":
         pytest.skip()
@@ -6407,7 +6343,6 @@ def test_side_effectful_reduction(device):
 
 
 @pytest.mark.parametrize("reduce_dim", [0, 1])
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tileir not support reduce with side effect")
 def test_side_effectful_reduction_2d(device, reduce_dim):
     if device != "cuda":
         pytest.skip()
@@ -6445,7 +6380,6 @@ def test_dtype(device):
     kernel[(1, )](X)
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tileir not support reduce with side effect")
 def test_side_effectful_scan(device):
     if device != "cuda":
         pytest.skip()
@@ -6536,7 +6470,6 @@ def gather_test_kernel_1d(src_ptr, idx_ptr, out_ptr, axis: tl.constexpr, src_dim
     ([128, 64], [256, 64], 0),
     ([128, 64], [128, 128], 1),
 ])
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tt.gather")
 def test_gather(src_shape, indices_shape, axis, device):
     if (is_hip_cdna2() or is_hip_cdna3() or is_hip_rdna3()
             or is_hip_rdna4()) and src_shape == [128, 64] and indices_shape == [256, 64]:
@@ -6769,7 +6702,6 @@ def test_short_circuiting(device):
 
 @pytest.mark.interpreter
 @pytest.mark.filterwarnings("ignore:If conditional called with multidimensional Tensor*")
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, tt.unsplat")
 def test_unsplat(device):
 
     @triton.jit
