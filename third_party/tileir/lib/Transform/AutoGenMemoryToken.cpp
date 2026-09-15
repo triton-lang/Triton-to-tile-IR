@@ -1093,6 +1093,8 @@ class AutoGenMemoryTokenPass
             [&](auto o) { return updateMemOpWithToken(o, inputTok, rewriter); })
         .Case<cuda_tile::AtomicCASTkoOp>(
             [&](auto o) { return updateMemOpWithToken(o, inputTok, rewriter); })
+        .Case<cuda_tile::AtomicRedViewTkoOp>(
+            [&](auto o) { return updateMemOpWithToken(o, inputTok, rewriter); })
         .Default(Value());
   }
 

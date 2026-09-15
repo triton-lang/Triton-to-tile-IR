@@ -122,3 +122,28 @@ module {
 // CHECK:       store_ptr_tko weak %[[A]],
 // CHECK:       %{{.+}}, %[[LB:.+]] = load_ptr_tko weak %[[B]] : tile<ptr<f32>> -> tile<f32>, token
 // CHECK:       store_ptr_tko weak %[[B]], {{.*}} token{{ ?}}={{ ?}}%[[LB]]
+
+
+// -----
+
+// Same backing pointer through a view: atomic reduction must wait for the prior
+// store, and the following load must wait for the atomic reduction.
+module {
+  cuda_tile.module @m {
+    entry @descriptor_atomic_token_order(%ptr: tile<ptr<i32>>) {
+      %value = constant <i32: 1> : tile<i32>
+      %s = store_ptr_tko weak %ptr, %value : tile<ptr<i32>>, tile<i32> -> token
+      %tv = make_tensor_view %ptr, shape=[8], strides=[1] : tensor_view<8xi32, strides=[1]>
+      %view = make_strided_view %tv : strided_view<tile=(8), traversal_strides=[1], tensor_view<8xi32, strides=[1]>>
+      %zero = constant <i32: 0> : tile<i32>
+      %tile = constant <i32: 1> : tile<8xi32>
+      %a = atomic_red_view_tko relaxed device %view[%zero], add, %tile : tile<8xi32>, strided_view<tile=(8), traversal_strides=[1], tensor_view<8xi32, strides=[1]>>, tile<i32> -> token
+      %v, %l = load_ptr_tko weak %ptr : tile<ptr<i32>> -> tile<i32>, token
+      return
+    }
+  }
+}
+// CHECK-LABEL: @descriptor_atomic_token_order
+// CHECK: %[[STORE:.*]] = store_ptr_tko weak
+// CHECK: %[[ATOMIC:.*]] = atomic_red_view_tko relaxed device {{.*}} token{{ ?}}={{ ?}}%[[STORE]]
+// CHECK: load_ptr_tko weak {{.*}} token{{ ?}}={{ ?}}%[[ATOMIC]]

@@ -957,6 +957,128 @@ public:
   }
 };
 
+// Descriptor reductions do not read a padded tile or return old values. Rebuild
+// just this write consumer's view without load padding, preserving its backing
+// tensor and element coordinates; keep the descriptor's read view unchanged.
+class ConvertDescriptorReduceOp
+    : public OpConversionPattern<triton::DescriptorReduceOp> {
+public:
+  using OpConversionPattern<triton::DescriptorReduceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::DescriptorReduceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto ctx = rewriter.getContext();
+    auto originalElemTy =
+        op.getDesc().getType().getBlockType().getElementType();
+    auto src = adaptor.getSrc();
+    auto srcTy = cast<cuda_tile::TileType>(src.getType());
+    auto elemTy = srcTy.getElementType();
+    bool floating = isa<FloatType>(elemTy);
+    if (floating ? !(elemTy.isF16() || elemTy.isBF16() || elemTy.isF32() ||
+                     elemTy.isF64())
+                 : !(elemTy.isInteger(32) || elemTy.isInteger(64)))
+      return rewriter.notifyMatchFailure(
+          op, "unsupported descriptor reduction type");
+    if (floating && op.getKind() != triton::DescriptorReduceKind::ADD)
+      return rewriter.notifyMatchFailure(
+          op, "public TileIR descriptor floating-point reductions support add "
+              "only");
+
+    bool isUnsigned = originalElemTy.isUnsignedInteger();
+    cuda_tile::AtomicRMWMode mode;
+    switch (op.getKind()) {
+    case triton::DescriptorReduceKind::ADD:
+      mode = floating ? cuda_tile::AtomicRMWMode::ADDF
+                      : cuda_tile::AtomicRMWMode::ADD;
+      break;
+    case triton::DescriptorReduceKind::MIN:
+      mode = isUnsigned ? cuda_tile::AtomicRMWMode::UMIN
+                        : cuda_tile::AtomicRMWMode::MIN;
+      break;
+    case triton::DescriptorReduceKind::MAX:
+      mode = isUnsigned ? cuda_tile::AtomicRMWMode::UMAX
+                        : cuda_tile::AtomicRMWMode::MAX;
+      break;
+    case triton::DescriptorReduceKind::AND:
+      mode = cuda_tile::AtomicRMWMode::AND;
+      break;
+    case triton::DescriptorReduceKind::OR:
+      mode = cuda_tile::AtomicRMWMode::OR;
+      break;
+    case triton::DescriptorReduceKind::XOR:
+      mode = cuda_tile::AtomicRMWMode::XOR;
+      break;
+    default:
+      return rewriter.notifyMatchFailure(
+          op, "unsupported descriptor reduction kind");
+    }
+
+    Value view = traceUnrealizedConversionCast(adaptor.getDesc());
+    Value tensorView;
+    cuda_tile::TensorViewType tensorViewTy;
+    SmallVector<int32_t> dimMap;
+    cuda_tile::TileType viewTileTy;
+    if (auto ty = dyn_cast<cuda_tile::StridedViewType>(view.getType())) {
+      if (llvm::any_of(ty.getTraversalStrides().asArrayRef(),
+                       [](int32_t v) { return v != 1; }))
+        return rewriter.notifyMatchFailure(
+            op, "descriptor traversal strides must be one");
+      auto make = view.getDefiningOp<cuda_tile::MakeStridedViewOp>();
+      if (!make)
+        return rewriter.notifyMatchFailure(
+            op, "descriptor backing tensor view is unavailable");
+      tensorView = make.getTensorView();
+      tensorViewTy = ty.getTensorView();
+      dimMap.assign(ty.getDimMap().begin(), ty.getDimMap().end());
+      viewTileTy = cast<cuda_tile::TileType>(ty.getViewTileType());
+    } else if (auto ty =
+                   dyn_cast<cuda_tile::PartitionViewType>(view.getType())) {
+      auto make = view.getDefiningOp<cuda_tile::MakePartitionViewOp>();
+      if (!make)
+        return rewriter.notifyMatchFailure(
+            op, "descriptor backing tensor view is unavailable");
+      tensorView = make.getTensorView();
+      tensorViewTy = ty.getTensorView();
+      dimMap.assign(ty.getDimMap().begin(), ty.getDimMap().end());
+      viewTileTy = cast<cuda_tile::TileType>(ty.getViewTileType());
+    } else {
+      return rewriter.notifyMatchFailure(
+          op, "expected a strided or partition descriptor view");
+    }
+    if (viewTileTy != srcTy || adaptor.getIndices().size() != srcTy.getRank())
+      return rewriter.notifyMatchFailure(
+          op, "descriptor reduction view/value shape or type mismatch");
+
+    SmallVector<int32_t> tileShape(srcTy.getShape().begin(),
+                                   srcTy.getShape().end());
+    SmallVector<int32_t> traversal(tileShape.size(), 1);
+    // Triton offsets are element coordinates. A unit-traversal strided view
+    // also represents partition-backed descriptors without lossy division by
+    // block size or additional divisibility assumptions.
+    auto writeViewTy = cuda_tile::StridedViewType::get(
+        ctx, rewriter.getDenseI32ArrayAttr(tileShape),
+        rewriter.getDenseI32ArrayAttr(traversal), tensorViewTy, dimMap,
+        /*padding_value=*/nullptr);
+    Value writeView = cuda_tile::MakeStridedViewOp::create(
+        rewriter, loc, writeViewTy, tensorView);
+    SmallVector<Value> indices(adaptor.getIndices());
+    unsigned alignElements =
+        kTMAAlignment / (elemTy.getIntOrFloatBitWidth() / 8);
+    indices.back() = cuda_tile::AssumeOp::create(
+        rewriter, loc, indices.back(),
+        cuda_tile::DivByAttr::get(ctx, alignElements, std::nullopt,
+                                  std::nullopt));
+    cuda_tile::AtomicRedViewTkoOp::create(
+        rewriter, loc, cuda_tile::TokenType::get(ctx),
+        cuda_tile::MemoryOrderingSemantics::RELAXED,
+        cuda_tile::MemoryScope::DEVICE, writeView, indices, mode, src,
+        /*token=*/nullptr);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
 
 /// Convert an expand dims to a reshape by adding a new dimension (1) at a given
 /// position.
@@ -2671,16 +2793,14 @@ class ConvertDotScaledOp : public OpConversionPattern<triton::DotScaledOp> {
     return scaleRank == rank;
   }
 
-  // Both sfa and sfb are provided, convert to MmaFScaledOp.
-  void convertToMmaFScaled(triton::DotScaledOp op, OpAdaptor adaptor,
-                           ConversionPatternRewriter &rewriter,
+  // Both scale values are explicit, including a native unit scale if needed.
+  void convertToMmaFScaled(triton::DotScaledOp op, OpAdaptor adaptor, Value sfa,
+                           Value sfb, ConversionPatternRewriter &rewriter,
                            SmallVector<Type> &retTypes) const {
     auto loc = op.getLoc();
     auto aElemType = op.getAElemType();
     auto bElemType = op.getBElemType();
 
-    Value sfa = adaptor.getAScale();
-    Value sfb = adaptor.getBScale();
     auto sfaTileType = dyn_cast<cuda_tile::TileType>(sfa.getType());
     auto sfbTileType = dyn_cast<cuda_tile::TileType>(sfb.getType());
     assert(sfaTileType && sfbTileType &&
@@ -2779,16 +2899,51 @@ class ConvertDotScaledOp : public OpConversionPattern<triton::DotScaledOp> {
       return rewriter.notifyMatchFailure(
           op, "sfb must be TileType with rank equal to bRank");
 
-    if (!sfa || !sfb)
-      return rewriter.notifyMatchFailure(
-          op, "public native scaled MMA requires both scale operands");
     if (aElemType != bElemType)
       return rewriter.notifyMatchFailure(
           op, "public native scaled MMA requires matching operand element types");
     if (!isF4Type(aElemType) && !isF8Type(aElemType))
       return rewriter.notifyMatchFailure(
           op, "public native scaled MMA requires FP4 or FP8 operands");
-    convertToMmaFScaled(op, adaptor, rewriter, retTypes);
+    if (!sfa || !sfb) {
+      // A missing scale means exactly one, not an input-type conversion.
+      // Only same-format FP8 with an existing E8M0 byte scale is covered.
+      if ((!sfa && !sfb) || !isF8Type(aElemType))
+        return rewriter.notifyMatchFailure(
+            op, "unit scale completion requires exactly one FP8 scale");
+      auto existingScaleType =
+          cast<cuda_tile::TileType>((sfa ? sfa : sfb).getType());
+      if (!existingScaleType.getElementType().isInteger(8))
+        return rewriter.notifyMatchFailure(
+            op, "FP8 unit scale completion requires an E8M0 byte scale");
+      if (aRank != bRank || (aRank != 2 && aRank != 3))
+        return rewriter.notifyMatchFailure(
+            op, "FP8 unit scale completion requires rank 2 or 3");
+      int64_t k = aType.getShape().back();
+      if (k <= 0 || k % 32 != 0 || k != bType.getShape()[bRank - 2])
+        return rewriter.notifyMatchFailure(
+            op,
+            "FP8 unit scale completion requires matching K divisible by 32");
+
+      // Triton scale shapes are [..., M, K/32] and [..., N, K/32].
+      // The existing conversion transposes RHS scales for native mmaf_scaled.
+      SmallVector<int64_t> scaleShape((sfa ? bType : aType).getShape());
+      if (sfa)
+        std::swap(scaleShape[aRank - 2], scaleShape.back());
+      scaleShape.back() /= 32;
+      auto unitType =
+          cuda_tile::TileType::get(scaleShape, rewriter.getI8Type());
+      // E8M0 has bias 127 and no sign/mantissa: byte 0x7f is exactly 2^0.
+      // Bitcast below preserves that encoding; no floating multiply is added.
+      Value unit = cuda_tile::ConstantOp::create(
+          rewriter, op.getLoc(), unitType,
+          DenseIntElementsAttr::get(unitType, ArrayRef<APInt>{APInt(8, 127)}));
+      if (sfa)
+        sfb = unit;
+      else
+        sfa = unit;
+    }
+    convertToMmaFScaled(op, adaptor, sfa, sfb, rewriter, retTypes);
 
     return success();
   }
@@ -2984,6 +3139,109 @@ class ConvertClampFOp : public OpConversionPattern<triton::ClampFOp> {
     rewriter.replaceOpWithNewOp<cuda_tile::MinFOp>(
         op, v, adaptor.getMax(), nanModifier,
         /*flush_to_zero_modifier=*/nullptr);
+    return success();
+  }
+};
+
+class ConvertGatherOp : public OpConversionPattern<triton::GatherOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::GatherOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto sourceType = dyn_cast<cuda_tile::TileType>(adaptor.getSrc().getType());
+    auto indexType =
+        dyn_cast<cuda_tile::TileType>(adaptor.getIndices().getType());
+    auto resultType = dyn_cast_or_null<cuda_tile::TileType>(
+        getTypeConverter()->convertType(op.getResult().getType()));
+    if (!sourceType || !indexType || !resultType)
+      return rewriter.notifyMatchFailure(op, "expected converted tile types");
+
+    unsigned axis = op.getAxis();
+    int64_t axisSize = sourceType.getShape()[axis];
+    if (axisSize <= 0 || axisSize > std::numeric_limits<int32_t>::max())
+      return rewriter.notifyMatchFailure(op,
+                                         "gather axis exceeds i32 indexing");
+
+    Location loc = op.getLoc();
+    auto scalarI32 = cuda_tile::TileType::get({}, rewriter.getI32Type());
+    auto constant = [&](int64_t value) -> Value {
+      return cuda_tile::ConstantOp::create(
+          rewriter, loc, scalarI32,
+          DenseIntElementsAttr::get(scalarI32, {static_cast<int32_t>(value)}));
+    };
+    Value zero = constant(0);
+    SmallVector<int64_t> sliceShape(sourceType.getShape());
+    sliceShape[axis] = 1;
+    auto sliceType =
+        cuda_tile::TileType::get(sliceShape, sourceType.getElementType());
+    SmallVector<Value> offsets(sourceType.getRank(), zero);
+    Value first = cuda_tile::ExtractOp::create(rewriter, loc, sliceType,
+                                               adaptor.getSrc(), offsets);
+    Value initial =
+        cuda_tile::BroadcastOp::create(rewriter, loc, resultType, first);
+    if (axisSize == 1) {
+      rewriter.replaceOp(op, initial);
+      return success();
+    }
+
+    // Compare indices at their original width, extending narrow types first.
+    // Narrowing the induction variable could wrap and select a later slice.
+    Value indices = adaptor.getIndices();
+    unsigned indexWidth =
+        cast<IntegerType>(indexType.getElementType()).getWidth();
+    if (indexWidth < 32) {
+      indexType =
+          cuda_tile::TileType::get(indexType.getShape(), rewriter.getI32Type());
+      indices = cuda_tile::ExtIOp::create(rewriter, loc, indexType, indices,
+                                          cuda_tile::Signedness::Unsigned);
+    }
+    auto indexScalarType =
+        cuda_tile::TileType::get({}, indexType.getElementType());
+    auto indexSingletonType =
+        cuda_tile::TileType::get(SmallVector<int64_t>(sourceType.getRank(), 1),
+                                 indexType.getElementType());
+    Value one = constant(1), end = constant(axisSize);
+
+    // Select whole slices of the computed source tile. No source reload,
+    // arithmetic on source values, or floating-point reduction is required.
+    // A loop keeps the generated code bounded when the gather axis is large.
+    auto loop = cuda_tile::LoopOp::create(rewriter, loc, TypeRange{resultType},
+                                          ValueRange{one, initial});
+    Block *body = rewriter.createBlock(
+        &loop.getRegion(), {}, TypeRange{scalarI32, resultType}, {loc, loc});
+    Value k = body->getArgument(0), accumulated = body->getArgument(1);
+    Value stop = cuda_tile::CmpIOp::create(
+        rewriter, loc, cuda_tile::ComparisonPredicate::EQUAL, k, end,
+        cuda_tile::Signedness::Unsigned);
+    auto ifOp = cuda_tile::IfOp::create(rewriter, loc, TypeRange{}, stop);
+    rewriter.createBlock(&ifOp.getThenRegion());
+    cuda_tile::BreakOp::create(rewriter, loc, ValueRange{accumulated});
+    rewriter.createBlock(&ifOp.getElseRegion());
+    cuda_tile::YieldOp::create(rewriter, loc, ValueRange{});
+    rewriter.setInsertionPointAfter(ifOp);
+
+    Value indexK = k;
+    if (indexWidth > 32)
+      indexK = cuda_tile::ExtIOp::create(rewriter, loc, indexScalarType, k,
+                                         cuda_tile::Signedness::Unsigned);
+    Value shapedK =
+        cuda_tile::ReshapeOp::create(rewriter, loc, indexSingletonType, indexK);
+    Value broadcastK =
+        cuda_tile::BroadcastOp::create(rewriter, loc, indexType, shapedK);
+    Value selected = cuda_tile::CmpIOp::create(
+        rewriter, loc, cuda_tile::ComparisonPredicate::EQUAL, indices,
+        broadcastK, cuda_tile::Signedness::Unsigned);
+    offsets[axis] = k;
+    Value slice = cuda_tile::ExtractOp::create(rewriter, loc, sliceType,
+                                               adaptor.getSrc(), offsets);
+    Value values =
+        cuda_tile::BroadcastOp::create(rewriter, loc, resultType, slice);
+    Value updated = cuda_tile::SelectOp::create(rewriter, loc, selected, values,
+                                                accumulated);
+    Value next = cuda_tile::AddIOp::create(rewriter, loc, k, one);
+    cuda_tile::ContinueOp::create(rewriter, loc, ValueRange{next, updated});
+    rewriter.replaceOp(op, loop.getResult(0));
     return success();
   }
 };
@@ -3417,6 +3675,7 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
     ConvertExternElementwiseOp,
     ConvertForOp,
     ConvertFpToFpOp,
+    ConvertGatherOp,
     ConvertGetNumProgramsOp,
     ConvertGetProgramIdOp,
     ConvertJoinOp,
@@ -3455,6 +3714,7 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
                  ConvertDescriptorGatherOp, ConvertDescriptorScatterOp>(
         typeConverter, context, numStagesMap, computeCapability, numStages);
   patterns.add<ConvertDotScaledOp>(typeConverter, context);
+  patterns.add<ConvertDescriptorReduceOp>(typeConverter, context);
   patterns.add<ConvertMakeTensorDescOp>(context);
   // clang-format on
 }
@@ -3655,7 +3915,8 @@ static LogicalResult convertTmaDescriptorOps(Operation *op,
                         user)) {
                   user->setAttr(kRoundHostDescriptor, rewriter.getUnitAttr());
                 } else if (!isa<triton::DescriptorStoreOp,
-                                triton::DescriptorScatterOp>(user)) {
+                                triton::DescriptorScatterOp,
+                                triton::DescriptorReduceOp>(user)) {
                   user->emitError("cannot forward a rounding host descriptor; "
                                   "inline helpers and capture the descriptor "
                                   "directly in control-flow regions");

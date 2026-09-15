@@ -116,6 +116,23 @@ void init_triton_tileir(py::module &&m) {
     // Register cuda_tile passes to enable nested pass manager parsing
     cuda_tile::registerCudaTilePasses();
   });
+  m.def("has_source_locations", [](mlir::ModuleOp mod) {
+    bool found = false;
+    mod->walk([&](mlir::Operation *op) {
+      op->getLoc()->walk([&](mlir::Location loc) {
+        if (auto fileLoc = llvm::dyn_cast<mlir::FileLineColLoc>(loc)) {
+          llvm::StringRef filename = fileLoc.getFilename().getValue();
+          if (fileLoc.getLine() > 0 && !filename.empty() &&
+              filename != "<unknown>") {
+            found = true;
+            return mlir::WalkResult::interrupt();
+          }
+        }
+        return mlir::WalkResult::advance();
+      });
+    });
+    return found;
+  });
   m.def("only_contain_legal_dialects", [](mlir::ModuleOp mod) {
     bool only_contain_legal_dialects = true;
     mod->walk([&](mlir::Operation *op) {

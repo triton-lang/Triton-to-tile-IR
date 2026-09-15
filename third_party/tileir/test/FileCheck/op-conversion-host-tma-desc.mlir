@@ -235,3 +235,66 @@ module {
 // CHECK: select {{.*}} : tile<1x16xi1>, tile<1x16xi32>
 // CHECK-NOT: ftof
 // CHECK: store_view_tko
+
+
+// -----
+
+// Atomic writes discard only their own view padding. Host read rounding remains
+// on the subsequent load and must not alter the atomic contribution.
+module {
+  tt.func public @host_descriptor_atomic_add(
+      %desc: !tt.tensordesc<8x16xf32> {tileir.padding_nan = 1 : i32, tileir.round_f32_to_tf32 = 1 : i32},
+      %ptr: !tt.ptr<f32>, %m: i32, %n: i32,
+      %sm: i64, %sn: i64) attributes {noinline = false} {
+    %zero = arith.constant 0 : i32
+    %value = arith.constant dense<1.0> : tensor<8x16xf32>
+    tt.descriptor_reduce add, %desc[%zero, %zero], %value : !tt.tensordesc<8x16xf32>, tensor<8x16xf32>
+    %loaded = tt.descriptor_load %desc[%zero, %zero] : !tt.tensordesc<8x16xf32> -> tensor<8x16xf32>
+    tt.descriptor_store %desc[%zero, %zero], %loaded : !tt.tensordesc<8x16xf32>, tensor<8x16xf32>
+    tt.return
+  }
+}
+// CHECK-LABEL: entry @host_descriptor_atomic_add
+// CHECK: make_strided_view {{.*}} padding_value = nan
+// CHECK: %[[WRITE:.*]] = make_strided_view {{.*}} : strided_view<tile=(8x16), traversal_strides=[1,1], tensor_view<
+// CHECK-NOT: ftof
+// CHECK: atomic_red_view_tko relaxed device %[[WRITE]][{{.*}}], addf,
+// CHECK: load_view_tko {{.*}} padding_value = nan
+// CHECK: ftof
+
+// -----
+
+module {
+  tt.func public @device_descriptor_atomic_unsigned(
+      %ptr: !tt.ptr<i32> {tt.divisibility = 16 : i32}, %m: i32, %n: i32)
+      attributes {noinline = false} {
+    %zero = arith.constant 0 : i32
+    %one = arith.constant 1 : i64
+    %stride = arith.extsi %n : i32 to i64
+    %desc = tt.make_tensor_descriptor %ptr, [%m, %n], [%stride, %one] : <i32>, <8x16xui32>
+    %value = arith.constant dense<-1> : tensor<8x16xi32>
+    tt.descriptor_reduce min, %desc[%zero, %zero], %value : !tt.tensordesc<8x16xui32>, tensor<8x16xi32>
+    tt.descriptor_reduce max, %desc[%zero, %zero], %value : !tt.tensordesc<8x16xui32>, tensor<8x16xi32>
+    tt.return
+  }
+}
+// CHECK-LABEL: entry @device_descriptor_atomic_unsigned
+// CHECK: atomic_red_view_tko relaxed device {{.*}}, umin,
+// CHECK: atomic_red_view_tko relaxed device {{.*}}, umax,
+
+// -----
+
+module {
+  tt.func public @host_descriptor_atomic_signed(
+      %desc: !tt.tensordesc<8x16xi32>, %ptr: !tt.ptr<i32>,
+      %m: i32, %n: i32, %sm: i64, %sn: i64) attributes {noinline = false} {
+    %zero = arith.constant 0 : i32
+    %value = arith.constant dense<-1> : tensor<8x16xi32>
+    tt.descriptor_reduce min, %desc[%zero, %zero], %value : !tt.tensordesc<8x16xi32>, tensor<8x16xi32>
+    tt.descriptor_reduce max, %desc[%zero, %zero], %value : !tt.tensordesc<8x16xi32>, tensor<8x16xi32>
+    tt.return
+  }
+}
+// CHECK-LABEL: entry @host_descriptor_atomic_signed
+// CHECK: atomic_red_view_tko relaxed device {{.*}}, min,
+// CHECK: atomic_red_view_tko relaxed device {{.*}}, max,

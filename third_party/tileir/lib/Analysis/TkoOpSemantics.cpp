@@ -16,7 +16,8 @@ EffectKind getEffectKind(Operation *op) {
           [](auto) { return EffectKind::Read; })
       .Case<cuda_tile::StorePtrTkoOp, cuda_tile::StoreViewTkoOp>(
           [](auto) { return EffectKind::Write; })
-      .Case<cuda_tile::AtomicRMWTkoOp, cuda_tile::AtomicCASTkoOp>(
+      .Case<cuda_tile::AtomicRMWTkoOp, cuda_tile::AtomicCASTkoOp,
+            cuda_tile::AtomicRedViewTkoOp>(
           [](auto) { return EffectKind::Atomic; })
       .Default(EffectKind::None);
 }
@@ -56,6 +57,8 @@ bool hasUserToken(Operation *op) {
           [](auto o) { return bool(o.getToken()); })
       .Case<cuda_tile::AtomicCASTkoOp>(
           [](auto o) { return bool(o.getToken()); })
+      .Case<cuda_tile::AtomicRedViewTkoOp>(
+          [](auto o) { return bool(o.getToken()); })
       .Case<cuda_tile::LoadViewTkoOp>([](auto o) { return bool(o.getToken()); })
       .Case<cuda_tile::StoreViewTkoOp>(
           [](auto o) { return bool(o.getToken()); })
@@ -71,6 +74,7 @@ Value getAccessValue(Operation *op) {
       .Case<cuda_tile::StorePtrTkoOp>([](auto o) { return o.getDestination(); })
       .Case<cuda_tile::AtomicRMWTkoOp>([](auto o) { return o.getPointers(); })
       .Case<cuda_tile::AtomicCASTkoOp>([](auto o) { return o.getPointers(); })
+      .Case<cuda_tile::AtomicRedViewTkoOp>([](auto o) { return o.getView(); })
       .Case<cuda_tile::LoadViewTkoOp>([](auto o) { return o.getView(); })
       .Case<cuda_tile::StoreViewTkoOp>([](auto o) { return o.getView(); })
       .Default(Value());

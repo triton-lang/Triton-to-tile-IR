@@ -69,6 +69,21 @@ def with_allocator():
     finally:
         triton.set_allocator(NullAllocator())
 
+
+@pytest.fixture(autouse=True)
+def _tileir_line_info_tools(request, monkeypatch):
+    if _tileir_test_key(request.node)[0] != "unit/language/test_line_info.py" or not _tileir_134_profile():
+        return
+    import os
+    from pathlib import Path
+    from triton import knobs
+    nvdisasm = Path(knobs.nvidia.nvdisasm.path)
+    if not nvdisasm.is_file() or not os.access(nvdisasm, os.X_OK):
+        pytest.fail(f"TileIR line-info tests require executable nvdisasm: {nvdisasm}")
+    # Keep the original tests and assertions; extend only their backend tool lookup.
+    monkeypatch.setattr(request.module, "get_disassembler_command_and_debug_line_format",
+                        lambda: ("cubin", [str(nvdisasm), "-g"], "## File", ","))
+
 # Backend limitations are scoped to the public toolchain and exact upstream
 # test paths. Numerical failures and unexpected diagnostics stay visible.
 _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only_dot'): {'ptx', 'ttgir'},
@@ -134,12 +149,10 @@ _TILEIR_134_UNSUPPORTED = {('unit/instrumentation/test_gpuhello.py', 'test_op'):
                                                                                               'tileiras rejects',
  ('unit/language/test_core.py', 'test_enable_reflect_ftz'): 'enable_reflect_ftz is not a TileIR option; FTZ uses '
                                                             'the backend option',
- ('unit/language/test_core.py', 'test_gather'): 'generic tt.gather has no public lowering; descriptor gather is a '
-                                                'distinct operation',
  ('unit/language/test_core.py', 'test_globaltimer'): 'generic inline assembly is unavailable; only native GDC '
                                                      'helper forms are recognized',
- ('unit/language/test_core.py', 'test_histogram'): 'histogram requires an unavailable dialect operation',
- ('unit/language/test_core.py', 'test_histogram_mask'): 'histogram requires an unavailable dialect operation',
+ ('unit/language/test_core.py', 'test_histogram'): 'histogram lowering is not implemented for the public backend',
+ ('unit/language/test_core.py', 'test_histogram_mask'): 'histogram lowering is not implemented for the public backend',
  ('unit/language/test_core.py', 'test_histogram_silent_data_corruption'): 'generic tt.histogram has no public '
                                                                           'lowering',
  ('unit/language/test_core.py', 'test_inline_asm'): 'generic inline assembly is unavailable; only native GDC '
@@ -162,8 +175,6 @@ _TILEIR_134_UNSUPPORTED = {('unit/instrumentation/test_gpuhello.py', 'test_op'):
                                                            'cluster-launch validation is not its contract',
  ('unit/language/test_core.py', 'test_poison_return'): 'this LLVM poison inspection test requires ub.poison '
                                                        'lowering and LLIR, neither exposed by TileIR',
- ('unit/language/test_core.py', 'test_scaled_dot'): 'this test always omits exactly one operand scale; native '
-                                                    'scaled MMA requires both',
  ('unit/language/test_core.py', 'test_side_effectful_reduction'): 'public reduce regions reject the device assert '
                                                                   'memory effect in the reduction body',
  ('unit/language/test_core.py', 'test_side_effectful_reduction_2d'): 'public reduce regions reject the device '
@@ -193,8 +204,6 @@ _TILEIR_134_UNSUPPORTED = {('unit/instrumentation/test_gpuhello.py', 'test_op'):
                                                                                             'conditional '
                                                                                             'descriptor '
                                                                                             'replacement',
- ('unit/language/test_tensor_descriptor.py', 'test_tensor_descriptor_reduce'): 'descriptor atomic reduce requires '
-                                                                               'an unavailable dialect operation',
  ('unit/language/test_warp_specialization.py', 'test_warp_specialize_basic_ir'): 'input is handwritten TTGIR, '
                                                                                  'which is not a TileIR input '
                                                                                  'stage',
@@ -274,7 +283,26 @@ def pytest_collection_modifyitems(items):
         key = _tileir_test_key(item)
         params = item.callspec.params if hasattr(item, "callspec") else {}
         reason = _TILEIR_134_UNSUPPORTED.get(key)
-        if key == ("unit/language/test_core.py", "test_tensor_atomic_cas") and params.get("dtype_str") in {"float16", "bfloat16"}:
+        if key == ("unit/language/test_core.py", "test_scaled_dot"):
+            known_params = (
+                set(params) == {"M", "N", "K", "col_a", "col_b", "rhs_scale",
+                                "mxfp_type", "normal_type", "num_warps", "mma", "kpack"}
+                and all(type(params[name]) is int for name in
+                        ("M", "N", "K", "num_warps", "mma", "kpack"))
+                and params["M"] in {32, 64, 128} and params["N"] in {32, 64, 128}
+                and params["K"] in {64, 128}
+                and (params["num_warps"], params["mma"], params["kpack"]) == (4, 16, 1)
+                and all(type(params[name]) is bool for name in ("col_a", "col_b", "rhs_scale"))
+                and type(params["mxfp_type"]) is str and type(params["normal_type"]) is str
+                and params["mxfp_type"] in {"e2m1", "e4m3", "e5m2"}
+                and params["normal_type"] in {"e4m3", "e5m2", "bf16", "fp16"}
+            )
+            if known_params and not (
+                params["mxfp_type"] == params["normal_type"]
+                and params["mxfp_type"] in {"e4m3", "e5m2"}
+            ):
+                reason = "single-scale native MMA supports matching FP8; FP4 and mixed input types remain unsupported"
+        elif key == ("unit/language/test_core.py", "test_tensor_atomic_cas") and params.get("dtype_str") in {"float16", "bfloat16"}:
             reason = "public atomic CAS accepts 32/64-bit elements, not 16-bit elements"
         elif (key == ("unit/language/test_core.py", "test_tensor_atomic_use_result")
               and params.get("dtype_str") == "float16" and params.get("op") == "cas"):
@@ -287,9 +315,16 @@ def pytest_collection_modifyitems(items):
             reason = "public13.4 f32-to-f8E5M2 conversion supports nearest-even, not round-toward-zero"
         elif key == ("unit/test_link.py", "test_link_extern_libs") and params.get("use_libdevice"):
             reason = "libdevice.sqrt maps to a native TileIR op; this test requires an LLVM linker callback"
-        elif (key == ("unit/cuda/test_tma_descriptor.py", "test_ragged_tma")
-              and str(params.get("dtype")) in {"bfloat16", "float16", "float32", "int32"}):
-            reason = "these dtype cases invoke descriptor atomic add, which has no public lowering"
+        elif (key == ("unit/language/test_tensor_descriptor.py", "test_tensor_descriptor_reduce")
+              and set(params) == {"kind", "dtype_str", "descriptor", "num_ctas", "M_BLOCK", "N_BLOCK"}
+              and all(type(params.get(k)) is int for k in ("num_ctas", "M_BLOCK", "N_BLOCK"))
+              and params.get("kind") in {"min", "max"}
+              and params.get("dtype_str") in {"float16", "bfloat16"}
+              and params.get("descriptor") in {"host", "device"}
+              and params.get("num_ctas") in {1, 2}
+              and (params.get("M_BLOCK"), params.get("N_BLOCK"))
+              in {(2, 16), (8, 16), (8, 32), (8, 128), (512, 32), (1, 1024)}):
+            reason = "public13.4 descriptor atomic view reductions support floating-point add, not min/max"
         elif key == ("unit/language/test_matmul.py", "test_mxfp8_mxfp4_matmul"):
             if params["A_DATA_TYPE"] != params["B_DATA_TYPE"] or not (
                 params["WITH_A_SCALE"] and params["WITH_B_SCALE"]
@@ -306,6 +341,18 @@ def pytest_collection_modifyitems(items):
             "device_print_uint", "device_print_uint_cast", "device_print_2d_tensor",
         }:
             reason = "device print formatting differs from the NVIDIA pid/idx and precision contract"
+        line_reason = None
+        if key == ("unit/language/test_line_info.py", "test_line_info"):
+            if params.get("func") == "call_noinline":
+                line_reason = "public backend inlines device helpers; separate callee source-line coverage is not preserved"
+            elif params.get("func") == "autotune":
+                line_reason = "public13.4 compiler omits the optimized loop-header line while preserving load/store lines"
+        elif key == ("unit/language/test_line_info.py", "test_line_info_ir_source") and params.get("status") == "":
+            line_reason = "public13.4 cubin omits the original TTIR load source line retained in input TileIR"
+        if line_reason:
+            # Re-execute these compile-only diagnostics so new compiler support is visible.
+            item.add_marker(pytest.mark.xfail(strict=True, raises=AssertionError,
+                                               reason=f"CTK 13.4 TileIR: {line_reason}"))
         if reason:
             item.add_marker(pytest.mark.xfail(run=False, strict=True, reason=f"CTK 13.4 TileIR: {reason}"))
 

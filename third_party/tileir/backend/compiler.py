@@ -240,7 +240,7 @@ class TileIRBackend(BaseBackend):
             f"--gpu-name=sm_{capability}",
             f"--opt-level={opt.opt_level}",
         ]
-        if not opt.disable_line_info:
+        if metadata["tileir_line_info"]:
             tileiras_cmd.append("--lineinfo")
         # Save bytecode to cache
         bytecode = tileir.write_bytecode(mod)
@@ -349,11 +349,18 @@ class TileIRBackend(BaseBackend):
         tileir.passes.add_auto_gen_memtoken(pm, opt.enable_autogen_alias_mem_token)
         if opt.enable_fp_fusion:
             tileir.passes.add_fma_fusion(pm)
-        if opt.disable_line_info:
-            tileir.passes.add_strip_debuginfo(pm)
-        else:
-            tileir.passes.add_synthesize_debug_info_scopes(pm)
         pm.run(mod, "make_tileir")
+        # Unknown source locations must not become fabricated <unknown>:1 lines.
+        metadata["tileir_line_info"] = (
+            not opt.disable_line_info and tileir.has_source_locations(mod)
+        )
+        debug_pm = ir.pass_manager(mod.context)
+        debug_pm.enable_debug()
+        if metadata["tileir_line_info"]:
+            tileir.passes.add_synthesize_debug_info_scopes(debug_pm)
+        else:
+            tileir.passes.add_strip_debuginfo(debug_pm)
+        debug_pm.run(mod, "make_tileir_debug")
         if not tileir.only_contain_legal_dialects(mod):
             raise RuntimeError(
                 "Triton ttir to tileir ir failed. Some ttir ops cannot be converted to tileir."
@@ -363,6 +370,7 @@ class TileIRBackend(BaseBackend):
         match = re.findall(pattern, mod.__str__())
         if len(match) != 1:
             raise RuntimeError("Kernel Name matching fail")
+        metadata["name"] = match[0]
         return mod
 
     @staticmethod
