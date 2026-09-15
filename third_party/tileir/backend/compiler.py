@@ -1,3 +1,4 @@
+from triton import knobs
 from triton.runtime.errors import OutOfResources, TileirasError
 from triton.backends.tileir.errors import HitFallback
 from triton.runtime.cache import get_cache_manager
@@ -89,6 +90,7 @@ class TileIROptions:
     cluster_dims: tuple = (1, 1, 1)
     instrumentation_mode: str = ""
     debug: bool = False
+    disable_line_info: bool = False
     sanitize_overflow: bool = True
     extern_libs: dict = None
     ir_override: Optional[str] = None
@@ -185,6 +187,7 @@ class TileIRBackend(BaseBackend):
 
         if "max_num_imprecise_acc_default" not in args:
             args["max_num_imprecise_acc_default"] = 2**30 if capability == 90 else 0
+        args.setdefault("disable_line_info", knobs.compilation.disable_line_info)
         return TileIROptions(**args)
 
     @staticmethod
@@ -237,6 +240,8 @@ class TileIRBackend(BaseBackend):
             f"--gpu-name=sm_{capability}",
             f"--opt-level={opt.opt_level}",
         ]
+        if not opt.disable_line_info:
+            tileiras_cmd.append("--lineinfo")
         # Save bytecode to cache
         bytecode = tileir.write_bytecode(mod)
         bytecode_cache_name = f"{name}.bytecode"
@@ -344,7 +349,10 @@ class TileIRBackend(BaseBackend):
         tileir.passes.add_auto_gen_memtoken(pm, opt.enable_autogen_alias_mem_token)
         if opt.enable_fp_fusion:
             tileir.passes.add_fma_fusion(pm)
-        tileir.passes.add_strip_debuginfo(pm)
+        if opt.disable_line_info:
+            tileir.passes.add_strip_debuginfo(pm)
+        else:
+            tileir.passes.add_synthesize_debug_info_scopes(pm)
         pm.run(mod, "make_tileir")
         if not tileir.only_contain_legal_dialects(mod):
             raise RuntimeError(

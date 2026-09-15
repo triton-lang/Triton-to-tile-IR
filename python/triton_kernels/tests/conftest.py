@@ -58,3 +58,54 @@ def pytest_configure(config):
         import torch
         gpu_id = int(worker_id[2:])  # map gw0 → 0, gw1 → 1, ...
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id % torch.cuda.device_count())
+
+def _tileir_134_profile():
+    import os
+    import re
+    from pathlib import Path
+    if (os.getenv("ENABLE_TILE") != "1" or os.getenv("TRITON_INTERPRET") == "1"
+            or os.getenv("TRITON_DEFAULT_BACKEND") not in (None, "", "tileir")):
+        return False
+    compatibility = Path(__file__).resolve().parents[3] / ".triton-tileir-compat.toml"
+    return compatibility.is_file() and re.search(
+        r'^tileir_version\s*=\s*"13\.4\.[0-9]+"', compatibility.read_text(), re.MULTILINE
+    ) is not None
+
+
+def pytest_collection_modifyitems(items):
+    from pathlib import Path
+    if not _tileir_134_profile():
+        return
+    path = Path(__file__).resolve().parent / "test_matmul.py"
+    # The FP8 cases supply a unit LHS scale; BF16 cases omit it. Both kernel
+    # variants call dot_scaled for these pairs without value swizzling.
+    unsupported_pairs = {
+        ("bfloat16", "mxfloat4_e2m1"),
+        ("bfloat16", "mxfloat8_e4m3fn"),
+        ("float8_e5m2", "mxfloat4_e2m1"),
+        ("float8_e5m2", "mxfloat8_e4m3fn"),
+        ("mxfloat8_e4m3fn", "mxfloat4_e2m1"),
+    }
+    for item in items:
+        if item.path.resolve() != path or item.originalname != "test_op":
+            continue
+        params = item.callspec.params if hasattr(item, "callspec") else {}
+        pair = (params.get("act_dtype_str"), params.get("weight_dtype_str"))
+        if pair not in unsupported_pairs:
+            continue
+        if (params.get("mode") not in ("plain", "batched", "ragged")
+                or type(params.get("is_persistent")) is not bool
+                or not all(type(params.get(dim)) is int and params[dim] > 0 for dim in ("m", "n", "k"))):
+            continue
+        if type(params.get("b_hbm_swizzling")) is not bool:
+            continue
+        if params["b_hbm_swizzling"]:
+            # The existing layout selector picks Blackwell value layout on
+            # SM100. Hopper's BF16 decode + ordinary dot must remain runnable.
+            target = item.module.triton.runtime.driver.active.get_current_target()
+            if target.backend != "tileir" or target.arch != 100:
+                continue
+        item.add_marker(pytest.mark.xfail(
+            run=False, strict=True,
+            reason="CTK 13.4 TileIR: native scaled MMA requires matching FP4/FP8 types and both scales",
+        ))
