@@ -76,7 +76,8 @@ def pytest_collection_modifyitems(items):
     from pathlib import Path
     if not _tileir_134_profile():
         return
-    path = Path(__file__).resolve().parent / "test_matmul.py"
+    root = Path(__file__).resolve().parent
+    path = root / "test_matmul.py"
     # The FP8 cases supply a unit LHS scale; BF16 cases omit it. Both kernel
     # variants call dot_scaled for these pairs without value swizzling.
     unsupported_pairs = {
@@ -87,9 +88,24 @@ def pytest_collection_modifyitems(items):
         ("mxfloat8_e4m3fn", "mxfloat4_e2m1"),
     }
     for item in items:
+        params = item.callspec.params if hasattr(item, "callspec") else {}
+        reason = None
+        if (item.path.resolve() == root / "test_matmul_details/test_opt_flags_nvidia.py"
+                and item.originalname in ("test_matmul_blackwell_scale_small_n",
+                                          "test_matmul_blackwell_shuffled_mxfp4_weight")
+                and not params):
+            reason = "CTK 13.4 TileIR: native scaled MMA requires matching FP4/FP8 types and both scales"
+        elif (item.path.resolve() == root / "test_tensor_details/test_layout_hopper.py"
+              and item.originalname == "test_upcast_mxfp4_to_bf16"
+              and set(params) == {"mx_axis", "num_warps"}
+              and type(params["mx_axis"]) is int and params["mx_axis"] in (0, 1)
+              and type(params["num_warps"]) is int and params["num_warps"] in (4, 8)):
+            reason = "CTK 13.4 TileIR: Hopper MXFP4 unpacking requires unsupported packed BF16 inline assembly"
+        if reason:
+            item.add_marker(pytest.mark.xfail(run=False, strict=True, reason=reason))
+            continue
         if item.path.resolve() != path or item.originalname != "test_op":
             continue
-        params = item.callspec.params if hasattr(item, "callspec") else {}
         pair = (params.get("act_dtype_str"), params.get("weight_dtype_str"))
         if pair not in unsupported_pairs:
             continue

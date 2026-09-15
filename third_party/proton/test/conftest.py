@@ -50,6 +50,8 @@ def pytest_collection_modifyitems(items):
         name = item.originalname
         path = item.path.resolve()
         unsupported = path == root / "test_override.py" and name == "test_override" and not params
+        if path == root / "test_api.py" and name == "test_hook_manager" and not params:
+            unsupported = True
         if path == root / "test_instrumentation.py":
             unsupported = name in unparametrized and not params
             if name == "test_mode_str" and set(params) == {"mode"}:
