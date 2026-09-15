@@ -16,7 +16,7 @@ from typing import Callable, Generic, Iterable, Optional, ParamSpec, TypeVar, ov
 from triton.backends import BaseBackend
 from types import ModuleType
 from .. import knobs
-from .driver import driver
+from .driver import driver, _create_driver, _is_tileir_enabled
 from . import _async_compile
 from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dict, is_namedtuple
 
@@ -24,7 +24,7 @@ from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dic
 import os
 from .cache import get_cache_key
 from ..runtime.driver import driver
-from triton.backends.tileir.driver import GlobalTileIRDriver
+from triton.backends.tileir.driver import get_tileir_driver
 from triton.backends.nvidia.driver import GlobalNvidiaDriver
 
 from triton._C.libtriton import get_cache_invalidating_env_vars, native_specialize_impl, ir
@@ -371,7 +371,6 @@ class KernelInterface(Generic[T]):
     enable_tile = os.environ.get("ENABLE_TILE", "0") == "1"
 
     def tileir_run(self, *args, grid, warmup, **kwargs):
-        driver.set_active(GlobalTileIRDriver)
         return self.run(*args, grid=grid, warmup=warmup, **kwargs)
 
     def warmup(self, *args, grid, **kwargs):
@@ -386,8 +385,6 @@ class KernelInterface(Generic[T]):
         Hence JITFunction.__getitem__ returns a callable proxy that
         memorizes the grid.
         """
-        if os.environ.get("ENABLE_TILE", "0") == "1" or self.enable_tile:
-            return lambda *args, **kwargs: self.tileir_run(grid=grid, warmup=False, *args, **kwargs)
         return lambda *args, **kwargs: self.run(grid=grid, warmup=False, *args, **kwargs)
         # return cast(T, functools.partial(cast(Callable, self.run), grid=grid))
 
@@ -739,17 +736,24 @@ class JITFunction(JITCallable, KernelInterface[T]):
         return options, signature, constexprs, attrs
 
     def run(self, *args, grid, warmup, **kwargs):
-        if os.environ.get("ENABLE_TILE", "0") != "1" and not self.enable_tile:
+        # Bracket launches, direct run and warmup use the same backend policy.
+        # A process may explicitly switch backend after another kernel ran.
+        if os.environ.get("TRITON_DEFAULT_BACKEND"):
+            driver.set_active(_create_driver())
+        if not _is_tileir_enabled(self.enable_tile):
             return self.run_internal(*args, grid=grid, warmup=warmup, **kwargs)
 
-        driver.set_active(GlobalTileIRDriver)
+        tileir_driver = get_tileir_driver()
+        driver.set_active(tileir_driver)
         try:
             return self.run_internal(*args, grid=grid, warmup=warmup, **kwargs)
         except RuntimeError:
             if os.environ.get("TRITON_TILEIR_RUNTIME_FALLBACK", "0") != "1":
                 raise
             previous_enable_tile = os.environ.get("ENABLE_TILE")
+            previous_backend = os.environ.get("TRITON_DEFAULT_BACKEND")
             os.environ["ENABLE_TILE"] = "0"
+            os.environ["TRITON_DEFAULT_BACKEND"] = "nvidia"
             driver.set_active(GlobalNvidiaDriver)
             try:
                 fallback_kwargs = dict(kwargs)
@@ -760,7 +764,11 @@ class JITFunction(JITCallable, KernelInterface[T]):
                     os.environ.pop("ENABLE_TILE", None)
                 else:
                     os.environ["ENABLE_TILE"] = previous_enable_tile
-                driver.set_active(GlobalTileIRDriver)
+                if previous_backend is None:
+                    os.environ.pop("TRITON_DEFAULT_BACKEND", None)
+                else:
+                    os.environ["TRITON_DEFAULT_BACKEND"] = previous_backend
+                driver.set_active(tileir_driver)
 
     def run_internal(self, *args, grid, warmup, **kwargs):
         kwargs["debug"] = kwargs.get("debug", self.debug) or knobs.runtime.debug

@@ -8,10 +8,6 @@ import numbers
 from triton.runtime import driver
 
 
-import os
-def is_tileir():
-    return os.environ.get("ENABLE_TILE", "0") == "1"
-
 from .._C.libtriton import ir
 from . import core as tl
 
@@ -1783,7 +1779,7 @@ class TritonSemantic(Generic[TensorTy]):
         # TileIR lowers gpu.barrier directly and does not run the TTG lowering
         # that handles ttg.barrier. Keep this backend bridge until TileIR gains
         # native ttg.barrier support.
-        if is_tileir():
+        if self.builder.options.backend_name == "tileir":
             return self.tensor(self.builder.create_gpu_barrier(), tl.void)
         return self.tensor(self.builder.create_barrier(), tl.void)
 

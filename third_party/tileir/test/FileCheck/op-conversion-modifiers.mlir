@@ -1,5 +1,5 @@
-// RUN: triton-cuda-tile-opt %s --pass-pipeline="builtin.module(convert-triton-to-cuda-tile{approx-modifier=true num-warps-in-cta=8},reconcile-unrealized-casts)" | FileCheck --check-prefix=APPROX %s
-// RUN: triton-cuda-tile-opt %s --pass-pipeline="builtin.module(convert-triton-to-cuda-tile{approx-modifier=false num-warps-in-cta=4},reconcile-unrealized-casts)" | FileCheck --check-prefix=FULL %s
+// RUN: triton-cuda-tile-opt %s -split-input-file -verify-diagnostics --pass-pipeline="builtin.module(convert-triton-to-cuda-tile{approx-modifier=true flush-to-zero-modifier=true num-warps-in-cta=8},reconcile-unrealized-casts)" | FileCheck --check-prefixes=APPROX,NATIVE,ASM %s
+// RUN: triton-cuda-tile-opt %s -split-input-file -verify-diagnostics --pass-pipeline="builtin.module(convert-triton-to-cuda-tile{approx-modifier=false flush-to-zero-modifier=false num-warps-in-cta=4},reconcile-unrealized-casts)" | FileCheck --check-prefixes=FULL,NATIVE,ASM %s
 
 module {
   tt.func public @exp_precision(%input: !tt.ptr<f32>, %output: !tt.ptr<f32>) {
@@ -15,3 +15,301 @@ module {
 // FULL-LABEL: entry @exp_precision
 // FULL-SAME: num_worker_warps_per_cta = 4
 // FULL: exp %{{[^ ]+}} : tile<f32>
+
+// -----
+
+module {
+  tt.func public @native_libdevice_f32(%a: !tt.ptr<f32>, %b: !tt.ptr<f32>, %c: !tt.ptr<f32>, %out: !tt.ptr<f32>) {
+    %x = tt.load %a : !tt.ptr<f32>
+    %y = tt.load %b : !tt.ptr<f32>
+    %z = tt.load %c : !tt.ptr<f32>
+    %v0 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_atan2f"} : (f32, f32) -> f32
+    tt.store %out, %v0 : !tt.ptr<f32>
+    %v1 = tt.extern_elementwise %x {libname = "", libpath = "", pure = true, symbol = "__nv_coshf"} : (f32) -> f32
+    tt.store %out, %v1 : !tt.ptr<f32>
+    %v2 = tt.extern_elementwise %x {libname = "", libpath = "", pure = true, symbol = "__nv_sinhf"} : (f32) -> f32
+    tt.store %out, %v2 : !tt.ptr<f32>
+    %v3 = tt.extern_elementwise %x {libname = "", libpath = "", pure = true, symbol = "__nv_fabsf"} : (f32) -> f32
+    tt.store %out, %v3 : !tt.ptr<f32>
+    %v4 = tt.extern_elementwise %x {libname = "", libpath = "", pure = true, symbol = "__nv_logf"} : (f32) -> f32
+    tt.store %out, %v4 : !tt.ptr<f32>
+    %v5 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_fmodf"} : (f32, f32) -> f32
+    tt.store %out, %v5 : !tt.ptr<f32>
+    %v6 = tt.extern_elementwise %x, %y, %z {libname = "", libpath = "", pure = true, symbol = "__nv_fmaf"} : (f32, f32, f32) -> f32
+    tt.store %out, %v6 : !tt.ptr<f32>
+    %v7 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_fdiv_rn"} : (f32, f32) -> f32
+    tt.store %out, %v7 : !tt.ptr<f32>
+    %v8 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_fdiv_rz"} : (f32, f32) -> f32
+    tt.store %out, %v8 : !tt.ptr<f32>
+    %v9 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_fdiv_rd"} : (f32, f32) -> f32
+    tt.store %out, %v9 : !tt.ptr<f32>
+    %v10 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_fdiv_ru"} : (f32, f32) -> f32
+    tt.store %out, %v10 : !tt.ptr<f32>
+    %v11 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_fadd_rz"} : (f32, f32) -> f32
+    tt.store %out, %v11 : !tt.ptr<f32>
+    %v12 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_fsub_rd"} : (f32, f32) -> f32
+    tt.store %out, %v12 : !tt.ptr<f32>
+    %v13 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_fmul_ru"} : (f32, f32) -> f32
+    tt.store %out, %v13 : !tt.ptr<f32>
+    %v14 = tt.extern_elementwise %x {libname = "", libpath = "", pure = true, symbol = "__nv_fsqrt_rz"} : (f32) -> f32
+    tt.store %out, %v14 : !tt.ptr<f32>
+    %v15 = tt.extern_elementwise %x {libname = "", libpath = "", pure = true, symbol = "__nv_frcp_rn"} : (f32) -> f32
+    tt.store %out, %v15 : !tt.ptr<f32>
+    %bits = tt.extern_elementwise %x {libname = "", libpath = "", pure = true, symbol = "__nv_float_as_int"} : (f32) -> i32
+    %back = tt.extern_elementwise %bits {libname = "", libpath = "", pure = true, symbol = "__nv_int_as_float"} : (i32) -> f32
+    tt.store %out, %back : !tt.ptr<f32>
+    tt.return
+  }
+}
+// NATIVE-LABEL: entry @native_libdevice_f32
+// NATIVE: atan2 {{.*}}: tile<f32>
+// NATIVE: cosh {{.*}}: tile<f32>
+// NATIVE: sinh {{.*}}: tile<f32>
+// NATIVE: absf {{.*}}: tile<f32>
+// NATIVE: log {{.*}}: tile<f32>
+// NATIVE: remf {{.*}}: tile<f32>
+// NATIVE: fma {{.*}}: tile<f32>
+// NATIVE: divf {{.*}}: tile<f32>
+// NATIVE: divf {{.*}}rounding<zero> : tile<f32>
+// NATIVE: divf {{.*}}rounding<negative_inf> : tile<f32>
+// NATIVE: divf {{.*}}rounding<positive_inf> : tile<f32>
+// NATIVE: addf {{.*}}rounding<zero> : tile<f32>
+// NATIVE: subf {{.*}}rounding<negative_inf> : tile<f32>
+// NATIVE: mulf {{.*}}rounding<positive_inf> : tile<f32>
+// NATIVE: sqrt {{.*}}rounding<zero> : tile<f32>
+// NATIVE: divf {{.*}}: tile<f32>
+// NATIVE: bitcast {{.*}} : tile<f32> -> tile<i32>
+// NATIVE: bitcast {{.*}} : tile<i32> -> tile<f32>
+
+// -----
+
+module {
+  tt.func public @native_libdevice_f64(%a: !tt.ptr<f64>, %b: !tt.ptr<f64>, %c: !tt.ptr<f64>, %out: !tt.ptr<f64>) {
+    %x = tt.load %a : !tt.ptr<f64>
+    %y = tt.load %b : !tt.ptr<f64>
+    %z = tt.load %c : !tt.ptr<f64>
+    %v0 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_atan2"} : (f64, f64) -> f64
+    tt.store %out, %v0 : !tt.ptr<f64>
+    %v1 = tt.extern_elementwise %x {libname = "", libpath = "", pure = true, symbol = "__nv_cosh"} : (f64) -> f64
+    tt.store %out, %v1 : !tt.ptr<f64>
+    %v2 = tt.extern_elementwise %x {libname = "", libpath = "", pure = true, symbol = "__nv_sinh"} : (f64) -> f64
+    tt.store %out, %v2 : !tt.ptr<f64>
+    %v3 = tt.extern_elementwise %x {libname = "", libpath = "", pure = true, symbol = "__nv_fabs"} : (f64) -> f64
+    tt.store %out, %v3 : !tt.ptr<f64>
+    %v4 = tt.extern_elementwise %x {libname = "", libpath = "", pure = true, symbol = "__nv_log"} : (f64) -> f64
+    tt.store %out, %v4 : !tt.ptr<f64>
+    %v5 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_fmod"} : (f64, f64) -> f64
+    tt.store %out, %v5 : !tt.ptr<f64>
+    %v6 = tt.extern_elementwise %x, %y, %z {libname = "", libpath = "", pure = true, symbol = "__nv_fma"} : (f64, f64, f64) -> f64
+    tt.store %out, %v6 : !tt.ptr<f64>
+    %v7 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_ddiv_rn"} : (f64, f64) -> f64
+    tt.store %out, %v7 : !tt.ptr<f64>
+    %v8 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_ddiv_rz"} : (f64, f64) -> f64
+    tt.store %out, %v8 : !tt.ptr<f64>
+    %v9 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_ddiv_rd"} : (f64, f64) -> f64
+    tt.store %out, %v9 : !tt.ptr<f64>
+    %v10 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_ddiv_ru"} : (f64, f64) -> f64
+    tt.store %out, %v10 : !tt.ptr<f64>
+    %v11 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_dadd_rz"} : (f64, f64) -> f64
+    tt.store %out, %v11 : !tt.ptr<f64>
+    %v12 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_dsub_rd"} : (f64, f64) -> f64
+    tt.store %out, %v12 : !tt.ptr<f64>
+    %v13 = tt.extern_elementwise %x, %y {libname = "", libpath = "", pure = true, symbol = "__nv_dmul_ru"} : (f64, f64) -> f64
+    tt.store %out, %v13 : !tt.ptr<f64>
+    %v14 = tt.extern_elementwise %x {libname = "", libpath = "", pure = true, symbol = "__nv_dsqrt_rz"} : (f64) -> f64
+    tt.store %out, %v14 : !tt.ptr<f64>
+    %v15 = tt.extern_elementwise %x {libname = "", libpath = "", pure = true, symbol = "__nv_drcp_rn"} : (f64) -> f64
+    tt.store %out, %v15 : !tt.ptr<f64>
+    %bits = tt.extern_elementwise %x {libname = "", libpath = "", pure = true, symbol = "__nv_double_as_longlong"} : (f64) -> i64
+    %back = tt.extern_elementwise %bits {libname = "", libpath = "", pure = true, symbol = "__nv_longlong_as_double"} : (i64) -> f64
+    tt.store %out, %back : !tt.ptr<f64>
+    tt.return
+  }
+}
+// NATIVE-LABEL: entry @native_libdevice_f64
+// NATIVE: atan2 {{.*}}: tile<f64>
+// NATIVE: cosh {{.*}}: tile<f64>
+// NATIVE: sinh {{.*}}: tile<f64>
+// NATIVE: absf {{.*}}: tile<f64>
+// NATIVE: log {{.*}}: tile<f64>
+// NATIVE: remf {{.*}}: tile<f64>
+// NATIVE: fma {{.*}}: tile<f64>
+// NATIVE: divf {{.*}}: tile<f64>
+// NATIVE: divf {{.*}}rounding<zero> : tile<f64>
+// NATIVE: divf {{.*}}rounding<negative_inf> : tile<f64>
+// NATIVE: divf {{.*}}rounding<positive_inf> : tile<f64>
+// NATIVE: addf {{.*}}rounding<zero> : tile<f64>
+// NATIVE: subf {{.*}}rounding<negative_inf> : tile<f64>
+// NATIVE: mulf {{.*}}rounding<positive_inf> : tile<f64>
+// NATIVE: sqrt {{.*}}rounding<zero> : tile<f64>
+// NATIVE: divf {{.*}}: tile<f64>
+// NATIVE: bitcast {{.*}} : tile<f64> -> tile<i64>
+// NATIVE: bitcast {{.*}} : tile<i64> -> tile<f64>
+
+// -----
+// Native forms must ignore general approximation/FTZ pass options. Tensor
+// packing also checks the PTX operand-to-nibble ordering across rows.
+module {
+  tt.func public @asm_fp4_pack(%hi: f32, %lo: f32, %out: !tt.ptr<i8>) {
+    %h = tt.splat %hi : f32 -> tensor<2x4xf32>
+    %l = tt.splat %lo : f32 -> tensor<2x4xf32>
+    %r = tt.elementwise_inline_asm "\0A { .reg .b8 r;\0A cvt.rn.satfinite.e2m1x2.f32 r, $1, $2; mov.b32 $0, {r, r, r, r}; }\0A" {constraints = "=r,f,f", packed_element = 1 : i32, pure = true} %h, %l : tensor<2x4xf32>, tensor<2x4xf32> -> tensor<2x4xi8>
+    %p = tt.splat %out : !tt.ptr<i8> -> tensor<2x4x!tt.ptr<i8>>
+    tt.store %p, %r : tensor<2x4x!tt.ptr<i8>>
+    tt.return
+  }
+}
+// ASM-LABEL: entry @asm_fp4_pack
+// ASM: %[[HI:.*]] = broadcast {{.*}} -> tile<2x4xf32>
+// ASM: %[[LO:.*]] = broadcast {{.*}} -> tile<2x4xf32>
+// ASM: %[[L:.*]] = reshape %[[LO]] : tile<2x4xf32> -> tile<8x1xf32>
+// ASM: %[[H:.*]] = reshape %[[HI]] : tile<2x4xf32> -> tile<8x1xf32>
+// ASM: %[[PAIR:.*]] = cat %[[L]], %[[H]] dim = 1
+// ASM: %[[FLAT:.*]] = reshape %[[PAIR]] : tile<8x2xf32> -> tile<16xf32>
+// ASM: %[[F4:.*]] = ftof %[[FLAT]] : tile<16xf32> -> tile<16xf4E2M1FN>
+// ASM: %[[BYTES:.*]] = pack %[[F4]] : tile<16xf4E2M1FN> -> tile<8xi8>
+// ASM: reshape %[[BYTES]] : tile<8xi8> -> tile<2x4xi8>
+// ASM-NOT: elementwise_inline_asm
+
+// -----
+module {
+  tt.func public @asm_exp2_ftz(%x: f32, %out: !tt.ptr<f32>) {
+    %r = tt.elementwise_inline_asm "ex2.approx.ftz.f32 $0, $1;" {constraints = "=r, r", packed_element = 1 : i32, pure = true} %x : f32 -> f32
+    tt.store %out, %r : !tt.ptr<f32>
+    tt.return
+  }
+}
+// ASM-LABEL: entry @asm_exp2_ftz
+// ASM: exp2 %{{[^ ]+}} flush_to_zero : tile<f32>
+// ASM-NOT: elementwise_inline_asm
+
+// -----
+module {
+  tt.func public @asm_tf32_rn(%x: f32, %out: !tt.ptr<f32>) {
+    %r = tt.elementwise_inline_asm "cvt.rn.tf32.f32 $0, $1;" {constraints = "=r, r", packed_element = 1 : i32, pure = true} %x : f32 -> f32
+    tt.store %out, %r : !tt.ptr<f32>
+    tt.return
+  }
+}
+// ASM-LABEL: entry @asm_tf32_rn
+// ASM: %[[TF32:.*]] = ftof %{{[^ ]+}} : tile<f32> -> tile<tf32>
+// ASM: ftof %[[TF32]] : tile<tf32> -> tile<f32>
+// ASM-NOT: elementwise_inline_asm
+
+// -----
+module {
+  tt.func public @asm_max_nan_xorsign_abs(%a: f32, %b: f32, %out: !tt.ptr<f32>) {
+    %r = tt.elementwise_inline_asm "{\0A max.NaN.xorsign.abs.f32 $0, $1, $2;\0A }" {constraints = "=r,r,r", packed_element = 1 : i32, pure = true} %a, %b : f32, f32 -> f32
+    tt.store %out, %r : !tt.ptr<f32>
+    tt.return
+  }
+}
+// ASM-LABEL: entry @asm_max_nan_xorsign_abs
+// ASM: xori
+// ASM: %[[MAG:.*]] = maxf {{.*}} propagate_nan : tile<f32>
+// ASM: %[[MB:.*]] = bitcast %[[MAG]] : tile<f32> -> tile<i32>
+// ASM: cmpi {{.*}} unsigned
+// ASM: %[[SIGNED:.*]] = ori %[[MB]],
+// ASM: select {{.*}}%[[MB]], %[[SIGNED]]
+// ASM-NOT: flush_to_zero
+// ASM-NOT: elementwise_inline_asm
+
+// -----
+module {
+  tt.func public @reject_exp2_without_ftz(%a0: f32, %out: !tt.ptr<f32>) {
+    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
+    %r = tt.elementwise_inline_asm "ex2.approx.f32 $0, $1;" {constraints = "=r,r", packed_element = 1 : i32, pure = true} %a0 : f32 -> f32
+    tt.store %out, %r : !tt.ptr<f32>
+    tt.return
+  }
+}
+
+// -----
+module {
+  tt.func public @reject_exp2_wrong_constraint(%a0: f32, %out: !tt.ptr<f32>) {
+    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
+    %r = tt.elementwise_inline_asm "ex2.approx.ftz.f32 $0, $1;" {constraints = "=f,f", packed_element = 1 : i32, pure = true} %a0 : f32 -> f32
+    tt.store %out, %r : !tt.ptr<f32>
+    tt.return
+  }
+}
+
+// -----
+module {
+  tt.func public @reject_exp2_wrong_type(%a0: f16, %out: !tt.ptr<f16>) {
+    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
+    %r = tt.elementwise_inline_asm "ex2.approx.ftz.f32 $0, $1;" {constraints = "=r,r", packed_element = 1 : i32, pure = true} %a0 : f16 -> f16
+    tt.store %out, %r : !tt.ptr<f16>
+    tt.return
+  }
+}
+
+// -----
+module {
+  tt.func public @reject_exp2_impure(%a0: f32, %out: !tt.ptr<f32>) {
+    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
+    %r = tt.elementwise_inline_asm "ex2.approx.ftz.f32 $0, $1;" {constraints = "=r,r", packed_element = 1 : i32, pure = false} %a0 : f32 -> f32
+    tt.store %out, %r : !tt.ptr<f32>
+    tt.return
+  }
+}
+
+// -----
+module {
+  tt.func public @reject_exp2_pack_two(%a0: f32, %out: !tt.ptr<f32>) {
+    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
+    %r = tt.elementwise_inline_asm "ex2.approx.ftz.f32 $0, $1;" {constraints = "=r,r", packed_element = 2 : i32, pure = true} %a0 : f32 -> f32
+    tt.store %out, %r : !tt.ptr<f32>
+    tt.return
+  }
+}
+
+// -----
+module {
+  tt.func public @reject_exp2_extra_instruction(%a0: f32, %out: !tt.ptr<f32>) {
+    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
+    %r = tt.elementwise_inline_asm "ex2.approx.ftz.f32 $0, $1; neg.f32 $0, $0;" {constraints = "=r,r", packed_element = 1 : i32, pure = true} %a0 : f32 -> f32
+    tt.store %out, %r : !tt.ptr<f32>
+    tt.return
+  }
+}
+
+// -----
+module {
+  tt.func public @reject_fp4_observable_i32(%a0: f32, %a1: f32, %out: !tt.ptr<i32>) {
+    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
+    %r = tt.elementwise_inline_asm "{ .reg .b8 r; cvt.rn.satfinite.e2m1x2.f32 r, $1, $2; mov.b32 $0, {r, r, r, r}; }" {constraints = "=r,f,f", packed_element = 1 : i32, pure = true} %a0, %a1 : f32, f32 -> i32
+    tt.store %out, %r : !tt.ptr<i32>
+    tt.return
+  }
+}
+
+// -----
+module {
+  tt.func public @reject_fp4_different_low_byte(%a0: f32, %a1: f32, %out: !tt.ptr<i8>) {
+    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
+    %r = tt.elementwise_inline_asm "{ .reg .b8 r; cvt.rn.satfinite.e2m1x2.f32 r, $1, $2; mov.b32 $0, {0, r, r, r}; }" {constraints = "=r,f,f", packed_element = 1 : i32, pure = true} %a0, %a1 : f32, f32 -> i8
+    tt.store %out, %r : !tt.ptr<i8>
+    tt.return
+  }
+}
+
+// -----
+module {
+  tt.func public @reject_tf32_other_rounding(%a0: f32, %out: !tt.ptr<f32>) {
+    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
+    %r = tt.elementwise_inline_asm "cvt.rna.tf32.f32 $0, $1;" {constraints = "=r,r", packed_element = 1 : i32, pure = true} %a0 : f32 -> f32
+    tt.store %out, %r : !tt.ptr<f32>
+    tt.return
+  }
+}
+
+// -----
+module {
+  tt.func public @reject_max_without_nan(%a0: f32, %a1: f32, %out: !tt.ptr<f32>) {
+    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
+    %r = tt.elementwise_inline_asm "{max.xorsign.abs.f32 $0, $1, $2;}" {constraints = "=r,r,r", packed_element = 1 : i32, pure = true} %a0, %a1 : f32, f32 -> f32
+    tt.store %out, %r : !tt.ptr<f32>
+    tt.return
+  }
+}

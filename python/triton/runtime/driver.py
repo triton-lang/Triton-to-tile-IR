@@ -1,30 +1,54 @@
 from __future__ import annotations
 
 import os
+import functools
 
 from ..backends import backends, DriverBase
 
 
-def _create_driver() -> DriverBase:
-    # If tile is explicitly enabled, force TileIRDriver
-    if os.environ.get("ENABLE_TILE", "0") == "1":
-        from ..backends.tileir.driver import TileIRDriver
-        return TileIRDriver()
+def _is_tileir_enabled(default=False):
+    selected = os.environ.get("TRITON_DEFAULT_BACKEND")
+    if selected:
+        return selected == "tileir"
+    return os.environ.get("ENABLE_TILE", "0") == "1" or default
 
-    # Otherwise, auto-select from active drivers
-    selected = os.environ.get("TRITON_DEFAULT_BACKEND", None)
+
+@functools.lru_cache()
+def _get_backend_driver(name):
+    if name == "tileir":
+        from ..backends.tileir.driver import get_tileir_driver
+        return get_tileir_driver()
+    return backends[name].driver()
+
+
+def _get_driver_for_target(target):
+    matches = [name for name, backend in backends.items() if backend.compiler.supports_target(target)]
+    if len(matches) != 1:
+        raise RuntimeError(f"Expected one driver for target {target}, got {matches}")
+    # Respect an already selected compatible driver (including its stream
+    # integration), without initializing a different environment-selected one.
+    active = driver._active
+    if active is not None and isinstance(active, backends[matches[0]].driver):
+        return active
+    return _get_backend_driver(matches[0])
+
+
+def _create_driver() -> DriverBase:
+    selected = os.environ.get("TRITON_DEFAULT_BACKEND")
     if selected:
         if selected not in backends:
             raise RuntimeError(f"Unknown backend device '{selected}'. Available backends: {list(backends.keys())}")
-        driver = backends[selected].driver
-        if not driver.is_active():
+        if not backends[selected].driver.is_active():
             raise RuntimeError(f"Backend device '{selected}' is not active.")
-        return driver()
-    else:
-        active_drivers = [x.driver for x in backends.values() if x.driver.is_active()]
-        if len(active_drivers) != 1:
-            raise RuntimeError(f"{len(active_drivers)} active drivers ({active_drivers}). There should only be one.")
-        return active_drivers[0]()
+        return _get_backend_driver(selected)
+
+    if _is_tileir_enabled():
+        return _get_backend_driver("tileir")
+
+    active = [name for name, backend in backends.items() if backend.driver.is_active()]
+    if len(active) != 1:
+        raise RuntimeError(f"{len(active)} active drivers ({active}). There should only be one.")
+    return _get_backend_driver(active[0])
 
 
 class DriverConfig:

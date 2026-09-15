@@ -114,6 +114,10 @@ class TileIROptions:
         return TileIREnvConf.enable_approx()
 
     def __post_init__(self):
+        # Match the immutable option representation exposed by other backends.
+        # This only normalizes metadata/cache inputs; it does not link libraries.
+        extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
+        object.__setattr__(self, "extern_libs", tuple(extern_libs.items()))
         assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, (
             "num_warps must be a power of 2"
         )
@@ -186,13 +190,19 @@ class TileIRBackend(BaseBackend):
     @staticmethod
     def get_tensor_descriptor_specialization(arg):
         # A host descriptor is reconstructed as a native view in the compiler.
-        # Its padding must affect the cache key as well as the view attribute.
-        return "tileir_padding_nan" if arg.padding == "nan" else None
+        # Both properties must affect the cache key and the native lowering.
+        attrs = []
+        if arg.padding == "nan":
+            attrs.append("padding_nan")
+        if arg.round_f32_to_tf32:
+            attrs.append("round_f32_to_tf32")
+        return "tileir_" + "+".join(attrs) if attrs else None
 
     @staticmethod
     def parse_attr(desc):
-        if desc == "tileir_padding_nan":
-            return [["tileir.padding_nan", 1]]
+        if desc in ("tileir_padding_nan", "tileir_round_f32_to_tf32",
+                    "tileir_padding_nan+round_f32_to_tf32"):
+            return [["tileir." + name, 1] for name in desc[len("tileir_"):].split("+")]
         return BaseBackend.parse_attr(desc)
 
     def pack_metadata(self, metadata):
@@ -312,6 +322,10 @@ class TileIRBackend(BaseBackend):
         pm.enable_debug()
         # Inherit LiftControlflowToSCF from upstream to adapt to `ControlFlow` within `triton.func`
         tileir.passes.add_lift_tt_cf_to_scf(pm)
+        # Control-flow lifting may create helper calls inside SCF regions.
+        # Inline and simplify them before converting Triton operations.
+        passes.common.add_inliner(pm)
+        passes.common.add_canonicalizer(pm)
         # The root IR for ttir is builtin moduleOp and all
         # cuda-tile ir must under tileir_moduleOp.
         # So, we will insert an tileir moduleOp directly at the beginning of TritonToCudaTile pass.

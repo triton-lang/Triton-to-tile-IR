@@ -16,6 +16,7 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <string>
 #include <unordered_set>
 
 // MLIR pass TableGen uses per-pass macros (GEN_PASS_DEF_*).
@@ -490,6 +491,45 @@ static Value traceUnrealizedConversionCast(Value value) {
   return current;
 }
 
+// This marker exists only between host descriptor reconstruction and read
+// conversion. The descriptor ABI and every memory view remain f32.
+static constexpr llvm::StringLiteral kRoundHostDescriptor =
+    "tileir.round_f32_to_tf32";
+
+static Value roundHostDescriptorRead(ConversionPatternRewriter &rewriter,
+                                     Operation *read, Value value) {
+  if (!read->hasAttr(kRoundHostDescriptor))
+    return value;
+  auto loc = read->getLoc();
+  auto f32Ty = cast<cuda_tile::TileType>(value.getType());
+  assert(f32Ty.getElementType().isF32());
+  auto tf32Ty = cuda_tile::TileType::get(
+      f32Ty.getShape(), FloatTF32Type::get(rewriter.getContext()));
+  auto rn = cuda_tile::RoundingModeAttr::get(
+      rewriter.getContext(), cuda_tile::RoundingMode::NEAREST_EVEN);
+  Value tf32 = cuda_tile::FToFOp::create(rewriter, loc, tf32Ty, value, rn);
+  Value rounded = cuda_tile::FToFOp::create(rewriter, loc, f32Ty, tf32, rn);
+
+  // OAIT's descriptor contract preserves all NaN/Inf source bits, including
+  // NaN payloads. Native ftof promises the NaN value class, not its payload.
+  // Preserve special values with an integer select; all finite rounding above
+  // is performed by native ftof, with no integer rounding approximation.
+  auto bitsTy =
+      cuda_tile::TileType::get(f32Ty.getShape(), rewriter.getI32Type());
+  Value bits = cuda_tile::BitcastOp::create(rewriter, loc, bitsTy, value);
+  Value expMask = cuda_tile::ConstantOp::create(
+      rewriter, loc, bitsTy, DenseIntElementsAttr::get(bitsTy, {0x7f800000}));
+  Value exponent = cuda_tile::AndIOp::create(rewriter, loc, bits, expMask);
+  Value special = cuda_tile::CmpIOp::create(
+      rewriter, loc, cuda_tile::ComparisonPredicate::EQUAL, exponent, expMask,
+      cuda_tile::Signedness::Unsigned);
+  Value roundedBits =
+      cuda_tile::BitcastOp::create(rewriter, loc, bitsTy, rounded);
+  Value resultBits = cuda_tile::SelectOp::create(rewriter, loc, bitsTy, special,
+                                                 bits, roundedBits);
+  return cuda_tile::BitcastOp::create(rewriter, loc, f32Ty, resultBits);
+}
+
 class ConvertDescriptorGatherOp
     : public OpConversionPattern<triton::DescriptorGatherOp> {
 public:
@@ -560,9 +600,13 @@ public:
     // sparse_dim = 0 (gather along first dimension, which is the row dimension)
     int64_t sparseDim = 0;
 
-    // Get padding value (default to zero)
+    // Preserve the source descriptor's padding for gathered reads as well.
     auto paddingValueAttr =
         cuda_tile::PaddingValueAttr::get(ctx, cuda_tile::PaddingValue::zero);
+    if (auto stridedTy = dyn_cast<cuda_tile::StridedViewType>(viewTy))
+      paddingValueAttr = stridedTy.getPaddingValue();
+    else if (auto partitionTy = dyn_cast<cuda_tile::PartitionViewType>(viewTy))
+      paddingValueAttr = partitionTy.getPaddingValue();
 
     // Convert int64_t shape to int32_t for DenseI32ArrayAttr
     SmallVector<int32_t> tileShapeI32;
@@ -599,7 +643,8 @@ public:
         /*token=*/nullptr, optHint.value_or(nullptr));
 
     // 9. Replace the original op with the loaded tile
-    rewriter.replaceOp(op, loadOp.getTile());
+    rewriter.replaceOp(op,
+                       roundHostDescriptorRead(rewriter, op, loadOp.getTile()));
     return success();
   }
 };
@@ -812,15 +857,16 @@ public:
         /*scope=*/nullptr, view, indices, /*token=*/nullptr,
         optHint.value_or(nullptr));
 
+    Value loaded = roundHostDescriptorRead(rewriter, op, LoadViewOp.getTile());
     if (viewShapeVec.size() != tileShape.size()) {
       auto tileTy = cuda_tile::TileType::get(ctx, tileShape, elemTy);
-      auto reshapeOp = cuda_tile::ReshapeOp::create(rewriter,
-          op.getLoc(), tileTy, LoadViewOp.getTile());
+      auto reshapeOp =
+          cuda_tile::ReshapeOp::create(rewriter, op.getLoc(), tileTy, loaded);
       rewriter.replaceOp(op, reshapeOp.getResult());
       return success();
     }
 
-    rewriter.replaceOp(op, LoadViewOp.getTile());
+    rewriter.replaceOp(op, loaded);
     return success();
   }
 };
@@ -989,6 +1035,72 @@ public:
                     Value b) -> Value {
       return cuda_tile::CmpFOp::create(rewriter, loc, pred, ord, a, b);
     };
+    // libdevice's explicit-rounding arithmetic entry points encode the
+    // IEEE-754 rounding mode in the symbol suffix. Each entry maps bit-exactly
+    // onto the corresponding native op with a rounding_mode attribute; the
+    // f/d name prefix only selects f32/f64, which the operand types already
+    // carry. Unrecognized bases with a rounding suffix (e.g. conversions like
+    // __nv_double2float_rd) fall through to the symbol chain below.
+    std::optional<cuda_tile::RoundingMode> suffixMode;
+    StringRef base = symbol;
+    if (base.consume_front("__nv_")) {
+      // Parse a copy so short or unrecognized names retain their original
+      // symbol when falling through to the external-call lowering.
+      auto [opName, rounding] = base.rsplit('_');
+      base = opName;
+      if (rounding == "rn")
+        suffixMode = cuda_tile::RoundingMode::NEAREST_EVEN;
+      else if (rounding == "rz")
+        suffixMode = cuda_tile::RoundingMode::ZERO;
+      else if (rounding == "rd")
+        suffixMode = cuda_tile::RoundingMode::NEGATIVE_INF;
+      else if (rounding == "ru")
+        suffixMode = cuda_tile::RoundingMode::POSITIVE_INF;
+    }
+    if (suffixMode) {
+      auto rm =
+          cuda_tile::RoundingModeAttr::get(rewriter.getContext(), *suffixMode);
+      auto srcs = adaptor.getSrcs();
+      if (base == "fadd" || base == "dadd") {
+        rewriter.replaceOpWithNewOp<cuda_tile::AddFOp>(
+            op, srcs[0], srcs[1], rm, /*flush_to_zero=*/nullptr);
+        return success();
+      }
+      if (base == "fsub" || base == "dsub") {
+        rewriter.replaceOpWithNewOp<cuda_tile::SubFOp>(
+            op, srcs[0], srcs[1], rm, /*flush_to_zero=*/nullptr);
+        return success();
+      }
+      if (base == "fmul" || base == "dmul") {
+        rewriter.replaceOpWithNewOp<cuda_tile::MulFOp>(
+            op, srcs[0], srcs[1], rm, /*flush_to_zero=*/nullptr);
+        return success();
+      }
+      if (base == "fdiv" || base == "ddiv") {
+        rewriter.replaceOpWithNewOp<cuda_tile::DivFOp>(
+            op, srcs[0], srcs[1], rm, /*flush_to_zero=*/nullptr);
+        return success();
+      }
+      if (base == "fsqrt" || base == "dsqrt") {
+        rewriter.replaceOpWithNewOp<cuda_tile::SqrtOp>(
+            op, srcs[0], rm, /*flush_to_zero=*/nullptr);
+        return success();
+      }
+      if (base == "frcp" || base == "drcp") {
+        // rcp(x) = 1 / x with the requested rounding.
+        Value one = splatFloat(getTileType(srcs[0]), 1.0);
+        rewriter.replaceOpWithNewOp<cuda_tile::DivFOp>(
+            op, one, srcs[0], rm, /*flush_to_zero=*/nullptr);
+        return success();
+      }
+      if (base == "fmaf" || base == "fma") {
+        rewriter.replaceOpWithNewOp<cuda_tile::FmaOp>(
+            op, srcs[0], srcs[1], srcs[2], rm,
+            /*flush_to_zero=*/nullptr);
+        return success();
+      }
+    }
+
     // TODO: other math func support(use extern_eltwise or impl math func)
     if (symbol == "__nv_acosf" || symbol == "__nv_acos") {
       // acos(x) = atan2(sqrt(1 - x^2), x)
@@ -1007,6 +1119,11 @@ public:
       Value one = splatFloat(xType, 1.0);
       // cuda_tile.atan2 uses the conventional atan2(y, x) argument order.
       rewriter.replaceOpWithNewOp<cuda_tile::Atan2Op>(op, x, one);
+      return success();
+    } else if (symbol == "__nv_atan2f" || symbol == "__nv_atan2") {
+      // Both libdevice and cuda_tile use the conventional atan2(y, x) order.
+      rewriter.replaceOpWithNewOp<cuda_tile::Atan2Op>(op, adaptor.getSrcs()[0],
+                                                      adaptor.getSrcs()[1]);
       return success();
     } else if (symbol == "__nv_asinf" || symbol == "__nv_asin") {
       // asin(x) = atan2(x, sqrt(1 - x^2))
@@ -1148,6 +1265,17 @@ public:
           cuda_tile::SelectOp::create(rewriter, loc, resType, cond, one, zero);
       rewriter.replaceOp(op, res);
       return success();
+    } else if (symbol == "__nv_float_as_int" ||
+               symbol == "__nv_float_as_uint" ||
+               symbol == "__nv_int_as_float" ||
+               symbol == "__nv_uint_as_float" ||
+               symbol == "__nv_double_as_longlong" ||
+               symbol == "__nv_longlong_as_double") {
+      // Bit-preserving reinterpretation.
+      auto resType = getTypeConverter()->convertType(op.getResult().getType());
+      rewriter.replaceOpWithNewOp<cuda_tile::BitcastOp>(op, resType,
+                                                        adaptor.getSrcs()[0]);
+      return success();
     } else if (symbol == "__nv_erff" || symbol == "__nv_erf") {
       // High-accuracy approximation (max error ~1.5e-7):
       // https://stackoverflow.com/a/4578056
@@ -1198,9 +1326,32 @@ public:
     } else if (symbol == "__nv_ceil" || symbol == "__nv_ceilf") {
       rewriter.replaceOpWithNewOp<cuda_tile::CeilOp>(op, adaptor.getSrcs()[0]);
       return success();
+    } else if (symbol == "__nv_fabsf" || symbol == "__nv_fabs") {
+      rewriter.replaceOpWithNewOp<cuda_tile::AbsFOp>(op, adaptor.getSrcs()[0]);
+      return success();
+    } else if (symbol == "__nv_abs" || symbol == "__nv_llabs") {
+      rewriter.replaceOpWithNewOp<cuda_tile::AbsIOp>(op, adaptor.getSrcs()[0]);
+      return success();
     } else if (symbol == "__nv_pow" || symbol == "__nv_powf") {
       rewriter.replaceOpWithNewOp<cuda_tile::FPowFOp>(op, adaptor.getSrcs()[0],
                                                     adaptor.getSrcs()[1]);
+      return success();
+    } else if (symbol == "__nv_fmod" || symbol == "__nv_fmodf") {
+      rewriter.replaceOpWithNewOp<cuda_tile::RemFOp>(op, adaptor.getSrcs()[0],
+                                                     adaptor.getSrcs()[1]);
+      return success();
+    } else if (symbol == "__nv_fmaf" || symbol == "__nv_fma") {
+      rewriter.replaceOpWithNewOp<cuda_tile::FmaOp>(
+          op, adaptor.getSrcs()[0], adaptor.getSrcs()[1], adaptor.getSrcs()[2],
+          rmNearestEven, /*flush_to_zero=*/nullptr);
+      return success();
+    } else if (symbol == "__nv_fast_fdividef") {
+      // Fast approximate f32 division.
+      rewriter.replaceOpWithNewOp<cuda_tile::DivFOp>(
+          op, adaptor.getSrcs()[0], adaptor.getSrcs()[1],
+          cuda_tile::RoundingModeAttr::get(rewriter.getContext(),
+                                           cuda_tile::RoundingMode::APPROX),
+          /*flush_to_zero=*/nullptr);
       return success();
     } else if (symbol == "__nv_cos" || symbol == "__nv_cosf") {
       rewriter.replaceOpWithNewOp<cuda_tile::CosOp>(op, adaptor.getSrcs()[0]);
@@ -1211,18 +1362,26 @@ public:
     } else if (symbol == "__nv_tan" || symbol == "__nv_tanf") {
       rewriter.replaceOpWithNewOp<cuda_tile::TanOp>(op, adaptor.getSrcs()[0]);
       return success();
+    } else if (symbol == "__nv_cosh" || symbol == "__nv_coshf") {
+      rewriter.replaceOpWithNewOp<cuda_tile::CosHOp>(op, adaptor.getSrcs()[0]);
+      return success();
+    } else if (symbol == "__nv_sinh" || symbol == "__nv_sinhf") {
+      rewriter.replaceOpWithNewOp<cuda_tile::SinHOp>(op, adaptor.getSrcs()[0]);
+      return success();
     } else if (symbol == "__nv_exp" || symbol == "__nv_expf") {
       rewriter.replaceOpWithNewOp<cuda_tile::ExpOp>(op, adaptor.getSrcs()[0]);
       return success();
     } else if (symbol == "__nv_fast_expf") {
-          rewriter.replaceOpWithNewOp<cuda_tile::ExpOp>(
-              op, adaptor.getSrcs()[0]);
+      rewriter.replaceOpWithNewOp<cuda_tile::ExpOp>(op, adaptor.getSrcs()[0]);
       return success();
     } else if (symbol == "__nv_exp2" || symbol == "__nv_exp2f") {
       rewriter.replaceOpWithNewOp<cuda_tile::Exp2Op>(op, adaptor.getSrcs()[0]);
       return success();
     } else if (symbol == "__nv_log2f" || symbol == "__nv_log2") {
       rewriter.replaceOpWithNewOp<cuda_tile::Log2Op>(op, adaptor.getSrcs()[0]);
+      return success();
+    } else if (symbol == "__nv_logf" || symbol == "__nv_log") {
+      rewriter.replaceOpWithNewOp<cuda_tile::LogOp>(op, adaptor.getSrcs()[0]);
       return success();
     } else if (symbol == "__nv_rsqrtf" || symbol == "__nv_rsqrt") {
       rewriter.replaceOpWithNewOp<cuda_tile::RsqrtOp>(op, adaptor.getSrcs()[0]);
@@ -2904,6 +3063,161 @@ public:
   }
 };
 
+// Only whitespace is normalized. Preserve boundaries between PTX word tokens,
+// so e.g. "cvt .rn" cannot become "cvt.rn". Comments and extra instructions
+// remain part of the string and cannot match one of the supported forms.
+static std::string normalizeNativeInlineAsm(StringRef text) {
+  auto isWord = [](char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '$';
+  };
+  std::string result;
+  bool space = false;
+  for (char c : text) {
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' ||
+        c == '\v') {
+      space = true;
+      continue;
+    }
+    if (space && !result.empty() && isWord(result.back()) && isWord(c))
+      result += ' ';
+    result += c;
+    space = false;
+  }
+  return result;
+}
+
+// These are the complete pure, pack=1 forms used by triton_kernels. Keep
+// unsupported asm illegal; the public dialect has no generic inline-asm op.
+class ConvertKnownNumericInlineAsmToNativeOp
+    : public OpConversionPattern<triton::ElementwiseInlineAsmOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::ElementwiseInlineAsmOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!op.getPure() || op.getPackedElement() != 1 || op.getNumResults() != 1)
+      return failure();
+
+    std::string text = normalizeNativeInlineAsm(op.getAsmString());
+    std::string constraints = normalizeNativeInlineAsm(op.getConstraints());
+    bool fp4 = text == "{.reg .b8 r;cvt.rn.satfinite.e2m1x2.f32 r,$1,$2;"
+                       "mov.b32 $0,{r,r,r,r};}" &&
+               constraints == "=r,f,f";
+    bool exp2 = text == "ex2.approx.ftz.f32 $0,$1;" && constraints == "=r,r";
+    bool tf32 = text == "cvt.rn.tf32.f32 $0,$1;" && constraints == "=r,r";
+    bool xorsign = text == "{max.NaN.xorsign.abs.f32 $0,$1,$2;}" &&
+                   constraints == "=r,r,r";
+    if (!fp4 && !exp2 && !tf32 && !xorsign)
+      return failure();
+    if (adaptor.getArgs().size() != (fp4 || xorsign ? 2 : 1))
+      return failure();
+
+    auto resultTy = dyn_cast_or_null<cuda_tile::TileType>(
+        getTypeConverter()->convertType(op->getResult(0).getType()));
+    if (!resultTy || (fp4 ? !resultTy.getElementType().isSignlessInteger(8)
+                          : !resultTy.getElementType().isF32()))
+      return failure();
+    for (Value arg : adaptor.getArgs()) {
+      auto argTy = dyn_cast<cuda_tile::TileType>(arg.getType());
+      if (!argTy || !argTy.getElementType().isF32() ||
+          argTy.getShape() != resultTy.getShape())
+        return failure();
+    }
+
+    auto loc = op.getLoc();
+    auto rn = cuda_tile::RoundingModeAttr::get(
+        rewriter.getContext(), cuda_tile::RoundingMode::NEAREST_EVEN);
+    Value a = adaptor.getArgs()[0];
+    if (exp2) {
+      // PTX .ftz applies to both subnormal inputs and outputs. This modifier
+      // must remain true even when the pass's general FTZ option is false.
+      rewriter.replaceOpWithNewOp<cuda_tile::Exp2Op>(
+          op, resultTy, a, /*flush_to_zero=*/rewriter.getUnitAttr());
+      return success();
+    }
+    if (tf32) {
+      auto tf32Ty = cuda_tile::TileType::get(
+          resultTy.getShape(), FloatTF32Type::get(rewriter.getContext()));
+      Value rounded = cuda_tile::FToFOp::create(rewriter, loc, tf32Ty, a, rn);
+      // Preserve Inf/NaN as specified by native ftof. Unlike a host descriptor
+      // read, PTX cvt does not promise to retain the source NaN payload bits.
+      rewriter.replaceOpWithNewOp<cuda_tile::FToFOp>(op, resultTy, rounded, rn);
+      return success();
+    }
+    Value b = adaptor.getArgs()[1];
+    if (fp4) {
+      int64_t count = resultTy.getNumElements();
+      if (count <= 0 || count > std::numeric_limits<int64_t>::max() / 2)
+        return failure();
+      auto columnTy =
+          cuda_tile::TileType::get({count, 1}, rewriter.getF32Type());
+      Value lo = cuda_tile::ReshapeOp::create(rewriter, loc, columnTy, b);
+      Value hi = cuda_tile::ReshapeOp::create(rewriter, loc, columnTy, a);
+      auto pairTy = cuda_tile::TileType::get({count, 2}, rewriter.getF32Type());
+      // PTX's second input is the low nibble; native pack puts the first
+      // element in the low nibble. Interleave [b, a] for each output byte.
+      Value pairs = cuda_tile::CatOp::create(rewriter, loc, pairTy, lo, hi,
+                                             rewriter.getI64IntegerAttr(1));
+      auto flatTy =
+          cuda_tile::TileType::get({2 * count}, rewriter.getF32Type());
+      Value flat = cuda_tile::ReshapeOp::create(rewriter, loc, flatTy, pairs);
+      auto f4Ty = cuda_tile::TileType::get(
+          {2 * count}, Float4E2M1FNType::get(rewriter.getContext()));
+      // f4E2M1FN conversion natively saturates finite overflow and Inf to
+      // signed max, and NaN to positive max. There is no separate ftof
+      // saturation attribute in the public 13.4 dialect.
+      Value f4 = cuda_tile::FToFOp::create(rewriter, loc, f4Ty, flat, rn);
+      auto byteTy = cuda_tile::TileType::get({count}, rewriter.getI8Type());
+      Value bytes = cuda_tile::PackOp::create(rewriter, loc, byteTy, f4);
+      // mov.b32 repeats the packed byte, but the exact matched i8 result
+      // observes only its low byte. An i32 result must not use this lowering.
+      rewriter.replaceOpWithNewOp<cuda_tile::ReshapeOp>(op, resultTy, bytes);
+      return success();
+    }
+
+    // The maximum is native floating-point maxf. Integer operations only
+    // preserve PTX's exact sign-bit and canonical-NaN selection semantics.
+    auto bitsTy =
+        cuda_tile::TileType::get(resultTy.getShape(), rewriter.getI32Type());
+    auto constant = [&](int64_t value) -> Value {
+      return cuda_tile::ConstantOp::create(
+          rewriter, loc, bitsTy, DenseIntElementsAttr::get(bitsTy, {value}));
+    };
+    Value signMask = constant(0x80000000);
+    Value absMask = constant(0x7fffffff);
+    Value inf = constant(0x7f800000);
+    Value aBits = cuda_tile::BitcastOp::create(rewriter, loc, bitsTy, a);
+    Value bBits = cuda_tile::BitcastOp::create(rewriter, loc, bitsTy, b);
+    Value xorBits = cuda_tile::XOrIOp::create(rewriter, loc, aBits, bBits);
+    Value sign = cuda_tile::AndIOp::create(rewriter, loc, xorBits, signMask);
+    Value aAbsBits = cuda_tile::AndIOp::create(rewriter, loc, aBits, absMask);
+    Value bAbsBits = cuda_tile::AndIOp::create(rewriter, loc, bBits, absMask);
+    Value aAbs =
+        cuda_tile::BitcastOp::create(rewriter, loc, resultTy, aAbsBits);
+    Value bAbs =
+        cuda_tile::BitcastOp::create(rewriter, loc, resultTy, bAbsBits);
+    Value magnitude = cuda_tile::MaxFOp::create(
+        rewriter, loc, resultTy, aAbs, bAbs,
+        /*propagate_nan=*/rewriter.getUnitAttr(), /*flush_to_zero=*/nullptr);
+    Value magnitudeBits =
+        cuda_tile::BitcastOp::create(rewriter, loc, bitsTy, magnitude);
+    Value absMagnitudeBits =
+        cuda_tile::AndIOp::create(rewriter, loc, magnitudeBits, absMask);
+    Value isNan = cuda_tile::CmpIOp::create(
+        rewriter, loc, cuda_tile::ComparisonPredicate::GREATER_THAN,
+        absMagnitudeBits, inf, cuda_tile::Signedness::Unsigned);
+    Value signedBits =
+        cuda_tile::OrIOp::create(rewriter, loc, magnitudeBits, sign);
+    // Ignore xorsign when max returns NaN. Preserve native canonical NaN,
+    // including its sign; signed zero otherwise comes from the input XOR.
+    Value resultBits = cuda_tile::SelectOp::create(rewriter, loc, bitsTy, isNan,
+                                                   magnitudeBits, signedBits);
+    rewriter.replaceOpWithNewOp<cuda_tile::BitcastOp>(op, resultTy, resultBits);
+    return success();
+  }
+};
+
 static constexpr llvm::StringLiteral kGdcWaitHelperAsm =
     "griddepcontrol.wait; // dummy $0";
 static constexpr llvm::StringLiteral kGdcLaunchDependentsHelperAsm =
@@ -3073,6 +3387,8 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
 >(typeConverter, context);
 
   patterns.add<ConvertGdcInlineAsmToNativeOp>(typeConverter, context, /*benefit=*/2);
+  patterns.add<ConvertKnownNumericInlineAsmToNativeOp>(typeConverter, context,
+                                                       /*benefit=*/2);
 
   patterns.add<ConvertLoadOp, ConvertStoreOp>(typeConverter, context, numStagesMap, computeCapability, numStages);
 
@@ -3240,11 +3556,12 @@ checkDivisibilityForDescriptorOps(mlir::ModuleOp op,
   });
 }
 
-static void convertTmaDescriptorOps(Operation *op, TypeConverter &converter) {
+static LogicalResult convertTmaDescriptorOps(Operation *op,
+                                             TypeConverter &converter) {
   IRRewriter rewriter(op->getContext());
   auto ctx = op->getContext();
   auto loc = op->getLoc();
-  op->walk([&](Operation *op) {
+  WalkResult result = op->walk([&](Operation *op) {
     if (auto funcOp = dyn_cast<triton::FuncOp>(op)) {
       for (size_t i = 0; i < funcOp.getNumArguments(); i++) {
         Value tensorDesc = funcOp.getArgument(i);
@@ -3262,6 +3579,33 @@ static void convertTmaDescriptorOps(Operation *op, TypeConverter &converter) {
           auto tensorDescType =
               cast<triton::TensorDescType>(tensorDesc.getType());
           auto descBlock = tensorDescType.getBlockType();
+          if (auto attr = funcOp.getArgAttrOfType<IntegerAttr>(
+                  argIdx, kRoundHostDescriptor)) {
+            if (attr.getInt() != 0) {
+              if (!descBlock.getElementType().isF32()) {
+                funcOp.emitError(
+                    "round_f32_to_tf32 requires an f32 descriptor");
+                return WalkResult::interrupt();
+              }
+              // make_ttir inlines ordinary descriptor helpers before this pass.
+              // Nested loop/if captures still directly use this SSA descriptor.
+              // View-valued loop arguments/results are illegal in PUBLIC Tile
+              // IR; do not silently lose the property on an unhandled forward.
+              for (Operation *user : tensorDesc.getUsers()) {
+                if (isa<triton::DescriptorLoadOp, triton::DescriptorGatherOp>(
+                        user)) {
+                  user->setAttr(kRoundHostDescriptor, rewriter.getUnitAttr());
+                } else if (!isa<triton::DescriptorStoreOp,
+                                triton::DescriptorScatterOp>(user)) {
+                  user->emitError("cannot forward a rounding host descriptor; "
+                                  "inline helpers and capture the descriptor "
+                                  "directly in control-flow regions");
+                  return WalkResult::interrupt();
+                }
+              }
+            }
+            funcOp.removeArgAttr(argIdx, kRoundHostDescriptor);
+          }
           auto rank = descBlock.getRank();
           if (rank == 0) {
             op->emitError("Host TMA descriptor with rank 0 is not supported.");
@@ -3368,6 +3712,7 @@ static void convertTmaDescriptorOps(Operation *op, TypeConverter &converter) {
     }
     return WalkResult::advance();
   });
+  return failure(result.wasInterrupted());
 }
 
 /// Convert attributes that are related to the axis analysis.
@@ -3459,7 +3804,8 @@ public:
     block.push_front(mod);
 
     // Insert Host TMA descriptor ops.
-    convertTmaDescriptorOps(mod.getOperation(), typeConverter);
+    if (failed(convertTmaDescriptorOps(mod.getOperation(), typeConverter)))
+      return signalPassFailure();
 
     ModuleAxisInfoAnalysis axisInfo(mod_buildin);
 
