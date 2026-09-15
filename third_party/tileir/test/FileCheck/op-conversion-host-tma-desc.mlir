@@ -29,3 +29,21 @@ module {
 // CHECK: assume bounded<0, 4294967295>, %[[EXT3]] : tile<i64>
 // CHECK: %{{.+}} = assume bounded<0, 1099511627775>, %[[ARG4]] : tile<i64>
 // CHECK: %[[VIEW1:.*]] = make_tensor_view {{.*}}, shape = [{{.*}}, {{.*}}], {{.*}}
+
+// -----
+
+module {
+  tt.func public @host_tma_nan_padding(%in_desc: !tt.tensordesc<2x128xf16> {tileir.padding_nan = 1 : i32}, %in_desc_0: !tt.ptr<f16>, %in_desc_1: i32, %in_desc_2: i32 {tt.divisibility = 16 : i32}, %in_desc_3: i64, %in_desc_4: i64, %out_desc: !tt.tensordesc<2x128xf16>, %out_desc_5: !tt.ptr<f16>, %out_desc_6: i32, %out_desc_7: i32 {tt.divisibility = 16 : i32}, %out_desc_8: i64, %out_desc_9: i64) attributes {noinline = false} {
+    %cst = arith.constant dense<1.000000e+00> : tensor<2x128xf16>
+    %c0_i32 = arith.constant 0 : i32
+    %0 = tt.descriptor_load %in_desc[%c0_i32, %c0_i32] : !tt.tensordesc<2x128xf16> -> tensor<2x128xf16>
+    %1 = arith.addf %0, %cst : tensor<2x128xf16>
+    tt.descriptor_store %out_desc[%c0_i32, %c0_i32], %1 : !tt.tensordesc<2x128xf16>, tensor<2x128xf16>
+    tt.return
+  }
+}
+
+// CHECK-LABEL: entry @host_tma_nan_padding
+// CHECK-NOT: tileir.padding_nan
+// CHECK: make_strided_view {{.*}} padding_value = nan
+// CHECK: load_view_tko {{.*}} padding_value = nan

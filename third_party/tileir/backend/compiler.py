@@ -183,6 +183,18 @@ class TileIRBackend(BaseBackend):
             args["max_num_imprecise_acc_default"] = 2**30 if capability == 90 else 0
         return TileIROptions(**args)
 
+    @staticmethod
+    def get_tensor_descriptor_specialization(arg):
+        # A host descriptor is reconstructed as a native view in the compiler.
+        # Its padding must affect the cache key as well as the view attribute.
+        return "tileir_padding_nan" if arg.padding == "nan" else None
+
+    @staticmethod
+    def parse_attr(desc):
+        if desc == "tileir_padding_nan":
+            return [["tileir.padding_nan", 1]]
+        return BaseBackend.parse_attr(desc)
+
     def pack_metadata(self, metadata):
         return (
             metadata.num_warps,

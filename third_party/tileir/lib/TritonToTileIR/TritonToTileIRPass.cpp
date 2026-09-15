@@ -3253,6 +3253,12 @@ static void convertTmaDescriptorOps(Operation *op, TypeConverter &converter) {
           // 'i' is the tensordesc type
           int argIdx = i;
           rewriter.setInsertionPointToStart(&funcOp.getBody().front());
+          auto padding = cuda_tile::PaddingValue::zero;
+          if (auto attr = funcOp.getArgAttrOfType<IntegerAttr>(i, "tileir.padding_nan")) {
+            if (attr.getInt() != 0)
+              padding = cuda_tile::PaddingValue::nan;
+            funcOp.removeArgAttr(i, "tileir.padding_nan");
+          }
           auto tensorDescType =
               cast<triton::TensorDescType>(tensorDesc.getType());
           auto descBlock = tensorDescType.getBlockType();
@@ -3346,8 +3352,7 @@ static void convertTmaDescriptorOps(Operation *op, TypeConverter &converter) {
               ctx, rewriter.getDenseI32ArrayAttr(arrayOfi32Shape),
               rewriter.getDenseI32ArrayAttr(traversalStrides), tensorViewTy,
               dimMap,
-              cuda_tile::PaddingValueAttr::get(ctx,
-                                               cuda_tile::PaddingValue::zero));
+              cuda_tile::PaddingValueAttr::get(ctx, padding));
 
           auto stridedViewOp =
               cuda_tile::MakeStridedViewOp::create(rewriter,
