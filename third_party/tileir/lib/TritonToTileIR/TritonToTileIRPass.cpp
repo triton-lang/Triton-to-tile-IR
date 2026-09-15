@@ -3164,6 +3164,24 @@ class ConvertGatherOp : public OpConversionPattern<triton::GatherOp> {
                                          "gather axis exceeds i32 indexing");
 
     Location loc = op.getLoc();
+    Value source = adaptor.getSrc();
+    auto originalResultType = resultType;
+    // Transport floating-point values as bits so source bitwise expressions
+    // cannot become floating-point arithmetic while moving gathered slices.
+    // Public bitcast has no i4 tile operand, so retain sub-byte values directly.
+    if (auto floatType = dyn_cast<FloatType>(sourceType.getElementType());
+        floatType && floatType.getWidth() >= 8) {
+      Type bitsType = rewriter.getIntegerType(floatType.getWidth());
+      sourceType = cuda_tile::TileType::get(sourceType.getShape(), bitsType);
+      resultType = cuda_tile::TileType::get(resultType.getShape(), bitsType);
+      source = cuda_tile::BitcastOp::create(rewriter, loc, sourceType, source);
+    }
+    auto restoreResult = [&](Value value) -> Value {
+      if (resultType != originalResultType)
+        return cuda_tile::BitcastOp::create(rewriter, loc, originalResultType,
+                                             value);
+      return value;
+    };
     auto scalarI32 = cuda_tile::TileType::get({}, rewriter.getI32Type());
     auto constant = [&](int64_t value) -> Value {
       return cuda_tile::ConstantOp::create(
@@ -3177,11 +3195,11 @@ class ConvertGatherOp : public OpConversionPattern<triton::GatherOp> {
         cuda_tile::TileType::get(sliceShape, sourceType.getElementType());
     SmallVector<Value> offsets(sourceType.getRank(), zero);
     Value first = cuda_tile::ExtractOp::create(rewriter, loc, sliceType,
-                                               adaptor.getSrc(), offsets);
+                                               source, offsets);
     Value initial =
         cuda_tile::BroadcastOp::create(rewriter, loc, resultType, first);
     if (axisSize == 1) {
-      rewriter.replaceOp(op, initial);
+      rewriter.replaceOp(op, restoreResult(initial));
       return success();
     }
 
@@ -3234,14 +3252,15 @@ class ConvertGatherOp : public OpConversionPattern<triton::GatherOp> {
         broadcastK, cuda_tile::Signedness::Unsigned);
     offsets[axis] = k;
     Value slice = cuda_tile::ExtractOp::create(rewriter, loc, sliceType,
-                                               adaptor.getSrc(), offsets);
+                                               source, offsets);
     Value values =
         cuda_tile::BroadcastOp::create(rewriter, loc, resultType, slice);
     Value updated = cuda_tile::SelectOp::create(rewriter, loc, selected, values,
                                                 accumulated);
     Value next = cuda_tile::AddIOp::create(rewriter, loc, k, one);
     cuda_tile::ContinueOp::create(rewriter, loc, ValueRange{next, updated});
-    rewriter.replaceOp(op, loop.getResult(0));
+    rewriter.setInsertionPointAfter(loop);
+    rewriter.replaceOp(op, restoreResult(loop.getResult(0)));
     return success();
   }
 };

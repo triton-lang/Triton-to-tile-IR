@@ -105,6 +105,7 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_core.py', 'test_override_arch'): {'ttgir'},
  ('unit/language/test_core.py', 'test_permute'): {'ptx'},
  ('unit/language/test_core.py', 'test_poison_return'): {'llir'},
+ ('unit/language/test_core.py', 'test_scaled_dot'): {'ptx'},
  ('unit/language/test_core.py', 'test_store_cache_modifier'): {'ptx'},
  ('unit/language/test_core.py', 'test_store_eviction_policy'): {'ptx'},
  ('unit/language/test_core.py', 'test_tl_range_fuse'): {'ttgir'},

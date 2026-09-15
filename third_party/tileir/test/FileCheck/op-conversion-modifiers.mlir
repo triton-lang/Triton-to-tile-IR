@@ -397,14 +397,16 @@ module {
 // -----
 // NATIVE-LABEL: entry @gather_4_4_8_4_0_f32_i64_computed
 // NATIVE: %[[GATHER_VALUES:.*]] = addf
-// NATIVE: extract %[[GATHER_VALUES]]
+// NATIVE: %[[GATHER_BITS:.*]] = bitcast %[[GATHER_VALUES]] : tile<4x4xf32> -> tile<4x4xi32>
+// NATIVE: extract %[[GATHER_BITS]]
 // NATIVE: loop iter_values
 // NATIVE: cmpi equal
 // NATIVE: exti {{.*}} unsigned : tile<i32> -> tile<i64>
 // NATIVE: cmpi equal {{.*}} : tile<8x4xi64> -> tile<8x4xi1>
-// NATIVE: extract %[[GATHER_VALUES]]
-// NATIVE: select {{.*}} : tile<8x4xi1>, tile<8x4xf32>
+// NATIVE: extract %[[GATHER_BITS]]
+// NATIVE: select {{.*}} : tile<8x4xi1>, tile<8x4xi32>
 // NATIVE: continue
+// NATIVE: bitcast {{.*}} : tile<8x4xi32> -> tile<8x4xf32>
 module {
   tt.func public @gather_4_4_8_4_0_f32_i64_computed(%input: !tt.ptr<f32>, %indices: !tt.ptr<i64>, %output: !tt.ptr<f32>) {
     %source_offsets = tt.make_range {start = 0 : i32, end = 16 : i32} : tensor<16xi32>
@@ -459,7 +461,9 @@ module {
 
 // -----
 // NATIVE-LABEL: entry @gather_4_1_4_8_1_f16_i32_raw
-// NATIVE: broadcast {{.*}} : tile<4x1xf16> -> tile<4x8xf16>
+// NATIVE: bitcast {{.*}} : tile<4x1xf16> -> tile<4x1xi16>
+// NATIVE: broadcast {{.*}} : tile<4x1xi16> -> tile<4x8xi16>
+// NATIVE: bitcast {{.*}} : tile<4x8xi16> -> tile<4x8xf16>
 // NATIVE-NOT: loop
 // NATIVE-NOT: cmpi
 // NATIVE: return
