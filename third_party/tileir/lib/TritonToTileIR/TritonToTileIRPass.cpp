@@ -3182,7 +3182,8 @@ class ConvertKnownNumericInlineAsmToNativeOp
         cuda_tile::TileType::get(resultTy.getShape(), rewriter.getI32Type());
     auto constant = [&](int64_t value) -> Value {
       return cuda_tile::ConstantOp::create(
-          rewriter, loc, bitsTy, DenseIntElementsAttr::get(bitsTy, {value}));
+          rewriter, loc, bitsTy,
+          DenseIntElementsAttr::get(bitsTy, ArrayRef<APInt>{APInt(32, value)}));
     };
     Value signMask = constant(0x80000000);
     Value absMask = constant(0x7fffffff);

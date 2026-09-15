@@ -56,11 +56,11 @@ module {
       %ptr: !tt.ptr<f32>, %m: i32, %n: i32,
       %sm: i64, %sn: i64) attributes {noinline = false} {
     %zero = arith.constant 0 : i32
-    %rows = arith.constant dense<[0, 1, 2, 3]> : tensor<4xi32>
+    %rows = arith.constant dense<[0, 1, 2, 3, 4, 5, 6, 7]> : tensor<8xi32>
     %loaded = tt.descriptor_load %desc[%zero, %zero] : !tt.tensordesc<1x16xf32> -> tensor<1x16xf32>
     tt.descriptor_store %desc[%zero, %zero], %loaded : !tt.tensordesc<1x16xf32>, tensor<1x16xf32>
-    %gathered = tt.descriptor_gather %desc[%rows, %zero] : (!tt.tensordesc<1x16xf32>, tensor<4xi32>, i32) -> tensor<4x16xf32>
-    tt.descriptor_scatter %desc[%rows, %zero], %gathered : !tt.tensordesc<1x16xf32>, tensor<4xi32>, i32, tensor<4x16xf32>
+    %gathered = tt.descriptor_gather %desc[%rows, %zero] : (!tt.tensordesc<1x16xf32>, tensor<8xi32>, i32) -> tensor<8x16xf32>
+    tt.descriptor_scatter %desc[%rows, %zero], %gathered : !tt.tensordesc<1x16xf32>, tensor<8xi32>, i32, tensor<8x16xf32>
     tt.return
   }
 }
@@ -90,11 +90,11 @@ module {
       %ptr: !tt.ptr<f32>, %m: i32, %n: i32,
       %sm: i64, %sn: i64) attributes {noinline = false} {
     %zero = arith.constant 0 : i32
-    %rows = arith.constant dense<[0, 1, 2, 3]> : tensor<4xi32>
+    %rows = arith.constant dense<[0, 1, 2, 3, 4, 5, 6, 7]> : tensor<8xi32>
     %loaded = tt.descriptor_load %desc[%zero, %zero] : !tt.tensordesc<1x16xf32> -> tensor<1x16xf32>
     tt.descriptor_store %desc[%zero, %zero], %loaded : !tt.tensordesc<1x16xf32>, tensor<1x16xf32>
-    %gathered = tt.descriptor_gather %desc[%rows, %zero] : (!tt.tensordesc<1x16xf32>, tensor<4xi32>, i32) -> tensor<4x16xf32>
-    tt.descriptor_scatter %desc[%rows, %zero], %gathered : !tt.tensordesc<1x16xf32>, tensor<4xi32>, i32, tensor<4x16xf32>
+    %gathered = tt.descriptor_gather %desc[%rows, %zero] : (!tt.tensordesc<1x16xf32>, tensor<8xi32>, i32) -> tensor<8x16xf32>
+    tt.descriptor_scatter %desc[%rows, %zero], %gathered : !tt.tensordesc<1x16xf32>, tensor<8xi32>, i32, tensor<8x16xf32>
     tt.return
   }
 }
@@ -124,11 +124,11 @@ module {
       %ptr: !tt.ptr<f32>, %m: i32, %n: i32,
       %sm: i64, %sn: i64) attributes {noinline = false} {
     %zero = arith.constant 0 : i32
-    %rows = arith.constant dense<[0, 1, 2, 3]> : tensor<4xi32>
+    %rows = arith.constant dense<[0, 1, 2, 3, 4, 5, 6, 7]> : tensor<8xi32>
     %loaded = tt.descriptor_load %desc[%zero, %zero] : !tt.tensordesc<1x16xf32> -> tensor<1x16xf32>
     tt.descriptor_store %desc[%zero, %zero], %loaded : !tt.tensordesc<1x16xf32>, tensor<1x16xf32>
-    %gathered = tt.descriptor_gather %desc[%rows, %zero] : (!tt.tensordesc<1x16xf32>, tensor<4xi32>, i32) -> tensor<4x16xf32>
-    tt.descriptor_scatter %desc[%rows, %zero], %gathered : !tt.tensordesc<1x16xf32>, tensor<4xi32>, i32, tensor<4x16xf32>
+    %gathered = tt.descriptor_gather %desc[%rows, %zero] : (!tt.tensordesc<1x16xf32>, tensor<8xi32>, i32) -> tensor<8x16xf32>
+    tt.descriptor_scatter %desc[%rows, %zero], %gathered : !tt.tensordesc<1x16xf32>, tensor<8xi32>, i32, tensor<8x16xf32>
     tt.return
   }
 }
@@ -168,11 +168,11 @@ module {
       %ptr: !tt.ptr<f32>, %m: i32, %n: i32,
       %sm: i64, %sn: i64) attributes {noinline = false} {
     %zero = arith.constant 0 : i32
-    %rows = arith.constant dense<[0, 1, 2, 3]> : tensor<4xi32>
+    %rows = arith.constant dense<[0, 1, 2, 3, 4, 5, 6, 7]> : tensor<8xi32>
     %loaded = tt.descriptor_load %desc[%zero, %zero] : !tt.tensordesc<1x16xf32> -> tensor<1x16xf32>
     tt.descriptor_store %desc[%zero, %zero], %loaded : !tt.tensordesc<1x16xf32>, tensor<1x16xf32>
-    %gathered = tt.descriptor_gather %desc[%rows, %zero] : (!tt.tensordesc<1x16xf32>, tensor<4xi32>, i32) -> tensor<4x16xf32>
-    tt.descriptor_scatter %desc[%rows, %zero], %gathered : !tt.tensordesc<1x16xf32>, tensor<4xi32>, i32, tensor<4x16xf32>
+    %gathered = tt.descriptor_gather %desc[%rows, %zero] : (!tt.tensordesc<1x16xf32>, tensor<8xi32>, i32) -> tensor<8x16xf32>
+    tt.descriptor_scatter %desc[%rows, %zero], %gathered : !tt.tensordesc<1x16xf32>, tensor<8xi32>, i32, tensor<8x16xf32>
     tt.return
   }
 }
