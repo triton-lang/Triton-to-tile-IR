@@ -2,7 +2,9 @@ See [The original Triton README](https://github.com/triton-lang/Triton-to-tile-I
 
 ## ⚡ Helion Hackathon — Performance Tuning Guide
 
-**Default backend is OSS PTX backend(Triton 3.6). Using [Helion](https://github.com/pytorch/helion) with the TileIR backend([whl](https://github.com/triton-lang/Triton-to-tile-IR/releases/download/v3.6.0-rc1/nvtriton-3.6.0-cp313-cp313-linux_x86_64.whl))?** Check out the **[Helion TileIR Backend Performance Tuning Guide](HelionPerformanceTuningGuide.md)** for config recipes, autotuning strategies, and porting tips.
+This source branch uses Triton 3.7 with the CUDA Tile IR 13.4 toolchain; see the [backend build guide](third_party/tileir/README.md).
+
+**The default backend is OSS PTX. The following Triton 3.6 wheel is a previous release. Using [Helion](https://github.com/pytorch/helion) with the TileIR backend([whl](https://github.com/triton-lang/Triton-to-tile-IR/releases/download/v3.6.0-rc1/nvtriton-3.6.0-cp313-cp313-linux_x86_64.whl))?** Check out the **[Helion TileIR Backend Performance Tuning Guide](HelionPerformanceTuningGuide.md)** for config recipes, autotuning strategies, and porting tips.
 
 ### ⚠️ How to Submit TileIR Result
 
