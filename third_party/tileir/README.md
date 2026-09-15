@@ -1,27 +1,18 @@
 # Triton-TileIR Backend User Guide
 
-## Build Instructions
+This branch uses Triton 3.7, public CUDA Tile IR v13.4.0 sources, and matching 13.4.59 tileiras, ptxas, libnvvm and libdevice components. The source pin and runtime package versions are updated together.
 
-To build and install the Triton-TileIR backend, simply run:
+## Build and run
 
 ```bash
 pip install .
+ENABLE_TILE=1 python your_program.py
 ```
 
-## Running
+Set `ENABLE_TILE=1` before importing Triton. Without it, the default backend is NVIDIA PTX. A compatible NVIDIA driver is required.
 
-This source branch uses the public CUDA Tile IR 13.4 sources and bundles the matching 13.4.59 tileiras, ptxas, libnvvm and libdevice components at build time. A compatible NVIDIA driver is required. Enable the backend before importing Triton:
+## Capabilities and limitations
 
-```bash
-export ENABLE_TILE=1
-```
+The [repository README](../../README.md#cuda-134-update) is the single release support list. It distinguishes ordinary `tl.gather`, descriptor gather/scatter and descriptor atomic reduction, and records the supported scaled-MMA combinations and remaining limitations.
 
-## Known Limitations
-
-- Native scaled MMA supports matching FP4/FP8 operand types with both scales, and matching FP8 with exactly one scale. Mixed operand types, single-scale FP4 and two omitted scales remain unsupported.
-- Descriptor gather/scatter and ordinary `tl.gather` are supported. Histogram lowering remains unavailable.
-- Conditional branches cannot return descriptor views in the public 13.4 dialect.
-- Descriptor atomic reduction supports integer operations and floating-point add; floating-point min/max remain unsupported.
-- Block pointers and general inline assembly remain unsupported. CUDA GDC helpers and a small set of explicitly matched numerical assembly forms have native lowering.
-- Source line information is available, but some optimized loop and inlined helper lines are not preserved.
-- Backend-specific capability expectations are recorded in `python/test/conftest.py`. Numerical failures and unexpected compiler errors remain failures; missing PTX/TTGIR inspection does not establish numerical coverage.
+For tuning controls, see [Performance Tuning Tips](PerformanceTuningTips.md). Backend-specific capability expectations are maintained in `python/test/conftest.py`; numerical failures and unexpected compiler errors remain failures.
