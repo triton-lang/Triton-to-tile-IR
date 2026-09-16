@@ -1,18 +1,25 @@
 # Triton-TileIR Backend User Guide
 
-This branch uses Triton 3.7, public CUDA Tile IR v13.4.0 sources, and matching 13.4.59 tileiras, ptxas, libnvvm and libdevice components. The source pin and runtime package versions are updated together.
+## Build Instructions
 
-## Build and run
+To build and install the Triton-TileIR backend, simply run:
 
 ```bash
 pip install .
-ENABLE_TILE=1 python your_program.py
 ```
 
-Set `ENABLE_TILE=1` before importing Triton. Without it, the default backend is NVIDIA PTX. A compatible NVIDIA driver is required.
+This branch uses Triton 3.7, public CUDA Tile IR v13.4.0 sources, and bundled CUDA 13.4.59 compiler and runtime components.
 
-## Capabilities and limitations
+## Running
 
-The [repository README](../../README.md#supported-operations-and-features) is the single release support list. It retains the original guide, updates supported features, and lists the remaining operation and dtype limitations.
+Before using the backend, ensure your NVIDIA driver is compatible with CUDA 13.4 and set the following environment variable before importing Triton:
 
-For tuning controls, see [Performance Tuning Tips](PerformanceTuningTips.md). Backend-specific capability expectations are maintained in `python/test/conftest.py`; numerical failures and unexpected compiler errors remain failures.
+```bash
+export ENABLE_TILE=1
+```
+
+## Known Limitations
+
+- Some tests that are not supported by CudaTile are not yet automatically skipped; as a result, you may see failures in certain unit tests.
+
+For the current feature support list, see the [repository README](../../README.md#supported-operations-and-features). For tuning guidance, see [Performance Tuning Tips](PerformanceTuningTips.md).

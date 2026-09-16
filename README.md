@@ -53,8 +53,20 @@ export ENABLE_TILE=1
 
 ## Known functional issues
 
-CUDA Tile IR uses explicit memory tokens to order global memory operations. The backend now inserts tokens automatically for supported Triton memory operations, including aliasing accesses and descriptor reductions.
-Cross-block communication still requires appropriate atomic operations and synchronization; token ordering within a tile block does not replace a cross-block synchronization protocol.
+CUDA Tile IR now supports only an unordered memory model, where global memory access operations are not ordered by default. If explicit memory access ordering is required, memory token semantics are available for users to control this behavior.
+Currently, the implementation includes only APIs that are compatible with existing Triton APIs for current Triton kernels. Support for memory tokens will require extending the Triton APIs. We plan to submit another MR to extend Triton APIs for the CUDA Tile memory model later.
+At this stage, the following workloads may produce incorrect results unless the script is updated:
+
+- When there is memory aliasing between different global memory access operations.
+- When data transactions occur across different tile blocks (e.g., splitK/streamK), where deterministic reduction across tile blocks requires lock logic in global memory.
+
+Potential future solutions (to be discussed):
+
+- Extend Triton APIs to explicitly support the unordered memory model (scripts will need revision).
+- Abstract global memory locks into an independent API.
+- Apply conservative rules to append memory tokens during Triton-to-CUDA Tile conversion, which avoids script changes but may introduce performance loss.
+
+**CUDA 13.4 status:** The memory-model discussion above is retained as design context. The conservative token-insertion approach is now implemented for supported Triton memory operations, including aliasing accesses and descriptor reductions. Direct user control of memory tokens remains a separate API concern, and ordering within one tile block does not replace the cross-block synchronization required by splitK/streamK and lock-based protocols.
 
 ## Known performance issues
 - Small GEMM performance is currently poor (will be addressed in a future CUDA release).
@@ -71,7 +83,7 @@ Cross-block communication still requires appropriate atomic operations and synch
 ### Triton’s core files changes:
 
 1. When `ENABLE_TILE=1` is set, the default CUDA target is switched to the CUDA Tile IR target. Changes are made to `driver.py` and `compiler.py`.
-2. Automatic fallback to the NVIDIA PTX backend is disabled by default. The optional fallback path is controlled by `TRITON_TILEIR_RUNTIME_FALLBACK=1`.
+2. When a compilation bug occurs with the CUDA Tile IR Backend, it can fall back to the NVIDIA PTX backend. Main changes include `jit.py` and `nvidia/backend/driver.py`. In this release, automatic fallback is disabled by default; set `TRITON_TILEIR_RUNTIME_FALLBACK=1` to enable it.
 3. Support for lowering Triton host TMA APIs to CUDA Tile IR's TMA APIs. Triton provides both host and device TMA implementations, but CUDA TileIR only has the device implementation (internally, the CUDA Tile IR compiler determines whether to use host or device; however, in the language, only the kernel-level API exists). Main files modified: `core.py`, `semantic.py`, `tensor_descriptor.py`.
 4. CUDA Tile IR disables approx by default. To enable approx, pls use `export TILEIR_ENABLE_APPROX=1`
 5. CUDA Tile IR disables FTZ by default. To enable FTZ , pls use `export TILEIR_ENABLE_FTZ=1`
