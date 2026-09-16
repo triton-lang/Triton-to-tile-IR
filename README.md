@@ -123,5 +123,6 @@ CUDA Tile IR accepts `num_warps` for compatibility, while `occupancy` controls t
 - TMA offsets must satisfy the contiguous dimension's 16-byte alignment requirement
 - i64 tensor descriptor coordinates (use i32 coordinates; this does not restrict ordinary pointer indexing or descriptor strides to i32)
 - Conditional replacement of tensor descriptors
-- Block pointers and histogram
+- Histogram
+- Legacy block-pointer API coverage is incomplete in this Triton 3.7 snapshot; newer upstream versions have removed the API. Prefer tensor descriptors.
 - Gluon, Proton instrumentation, and PTX/TTGIR/LLIR inspection or override
