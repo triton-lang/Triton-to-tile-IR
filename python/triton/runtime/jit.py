@@ -4,6 +4,7 @@ import copy
 import hashlib
 import inspect
 import itertools
+import logging
 import threading
 import re
 import textwrap
@@ -15,10 +16,17 @@ from typing import Callable, Generic, Iterable, Optional, TypeVar, overload, Dic
 from triton.backends import BaseBackend
 from types import ModuleType
 from .. import knobs
-from .driver import driver
+from .driver import driver, _create_driver, _is_tileir_enabled
 from . import _async_compile
 from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dict, is_namedtuple
+
+# Added imports
+import os
 from .cache import get_cache_key
+from ..runtime.driver import driver
+from triton.backends.tileir.driver import get_tileir_driver
+from triton.backends.nvidia.driver import GlobalNvidiaDriver
+
 from triton._C.libtriton import get_cache_invalidating_env_vars, native_specialize_impl
 
 TRITON_MODULE = "triton.language"
@@ -176,6 +184,7 @@ class DependenciesFinder(ast.NodeVisitor):
 
         self.record_reference(val, var_dict, node.id)
         return val
+
 
     def visit_Tuple(self, node):
         # We need to explicitly return the tuple values so that visit_Assign can
@@ -354,6 +363,10 @@ def mangle_type(arg, specialize=False):
 
 class KernelInterface(Generic[T]):
     run: T
+    enable_tile = os.environ.get("ENABLE_TILE", "0") == "1"
+
+    def tileir_run(self, *args, grid, warmup, **kwargs):
+        return self.run(*args, grid=grid, warmup=warmup, **kwargs)
 
     def warmup(self, *args, grid, **kwargs):
         return self.run(grid=grid, warmup=True, *map(MockTensor.wrap_dtype, args), **kwargs)
@@ -693,6 +706,41 @@ class JITFunction(JITCallable, KernelInterface[T]):
         return options, signature, constexprs, attrs
 
     def run(self, *args, grid, warmup, **kwargs):
+        # Bracket launches, direct run and warmup use the same backend policy.
+        # A process may explicitly switch backend after another kernel ran.
+        if os.environ.get("TRITON_DEFAULT_BACKEND"):
+            driver.set_active(_create_driver())
+        if not _is_tileir_enabled(self.enable_tile):
+            return self.run_internal(*args, grid=grid, warmup=warmup, **kwargs)
+
+        tileir_driver = get_tileir_driver()
+        driver.set_active(tileir_driver)
+        try:
+            return self.run_internal(*args, grid=grid, warmup=warmup, **kwargs)
+        except RuntimeError:
+            if os.environ.get("TRITON_TILEIR_RUNTIME_FALLBACK", "0") != "1":
+                raise
+            previous_enable_tile = os.environ.get("ENABLE_TILE")
+            previous_backend = os.environ.get("TRITON_DEFAULT_BACKEND")
+            os.environ["ENABLE_TILE"] = "0"
+            os.environ["TRITON_DEFAULT_BACKEND"] = "nvidia"
+            driver.set_active(GlobalNvidiaDriver)
+            try:
+                fallback_kwargs = dict(kwargs)
+                fallback_kwargs.pop("occupancy", None)
+                return self.run_internal(*args, grid=grid, warmup=warmup, **fallback_kwargs)
+            finally:
+                if previous_enable_tile is None:
+                    os.environ.pop("ENABLE_TILE", None)
+                else:
+                    os.environ["ENABLE_TILE"] = previous_enable_tile
+                if previous_backend is None:
+                    os.environ.pop("TRITON_DEFAULT_BACKEND", None)
+                else:
+                    os.environ["TRITON_DEFAULT_BACKEND"] = previous_backend
+                driver.set_active(tileir_driver)
+
+    def run_internal(self, *args, grid, warmup, **kwargs):
         kwargs["debug"] = kwargs.get("debug", self.debug) or knobs.runtime.debug
         kwargs["instrumentation_mode"] = knobs.compilation.instrumentation_mode
 
@@ -704,7 +752,11 @@ class JITFunction(JITCallable, KernelInterface[T]):
         for hook in self.pre_run_hooks:
             hook(*args, **kwargs)
 
-        kernel_cache, kernel_key_cache, target, backend, binder = self.device_caches[device]
+        target = driver.active.get_current_target()
+        kernel_cache, kernel_key_cache, cached_target, backend, binder = self.device_caches[device]
+        if cached_target != target:
+            self.device_caches = defaultdict(self.create_binder)
+            kernel_cache, kernel_key_cache, target, backend, binder = self.device_caches[device]
         # specialization is list[tuple[str, Any]], where first element of tuple is
         # the type and the second parameter is the 'specialization' value.
         bound_args, specialization, options = binder(*args, **kwargs)
@@ -784,6 +836,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         # Hooks that will be called prior to executing "run"
         self.pre_run_hooks = []
 
+
     def preload(self, specialization_data):
         import json
         import triton.language as tl
@@ -824,7 +877,11 @@ class JITFunction(JITCallable, KernelInterface[T]):
         )
 
     def _do_compile(self, key, signature, device, constexprs, options, attrs, warmup):
-        kernel_cache, _, target, backend, _ = self.device_caches[device]
+        target = driver.active.get_current_target()
+        kernel_cache, kernel_key_cache, cached_target, backend, binder = self.device_caches[device]
+        if cached_target != target:
+            self.device_caches = defaultdict(self.create_binder)
+            kernel_cache, kernel_key_cache, target, backend, binder = self.device_caches[device]
 
         if self._call_hook(knobs.runtime.jit_cache_hook, key, signature, device, constexprs, options, [attrs], warmup):
             return None
@@ -1026,6 +1083,24 @@ def reinterpret(tensor, dtype):
         return TensorWrapper(tensor, dtype)
     else:
         raise TypeError(f"Cannot reinterpret a {type(tensor)}.")
+
+
+def get_jit_fn_file_line(fn):
+    base_fn = fn
+    while not isinstance(base_fn, JITCallable):
+        base_fn = base_fn.fn
+    file_name = base_fn.fn.__code__.co_filename
+    begin_line = base_fn.starting_line_number
+    # Match the following pattern:
+    # @triton.autotune(...) <- foo.__code__.co_firstlineno
+    # @triton.heuristics(...)
+    # @triton.jit
+    # def foo(...): <- this line is the first line
+    for idx, line in enumerate(base_fn.raw_src):
+        if line.strip().startswith("def "):
+            begin_line += idx
+            break
+    return file_name, begin_line
 
 
 def get_jit_fn_file_line(fn):

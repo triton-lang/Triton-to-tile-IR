@@ -6,7 +6,7 @@ import torch
 import csv
 from dataclasses import dataclass
 import inspect
-from .target_info import is_hip, is_cuda
+from .target_info import is_hip, is_cuda, is_tileir
 
 
 @dataclass
@@ -89,7 +89,7 @@ def get_memset_tbps():
     buf = torch.empty(n_bytes, device="cuda", dtype=torch.uint8)
     stream0 = ctypes.c_void_p(0)
 
-    if is_cuda():
+    if is_cuda() or is_tileir():
         libname = "libcuda.so"
         init_name = "cuInit"
         memset_name = "cuMemsetD8Async"
@@ -135,7 +135,7 @@ def get_memset_tbps():
 def get_cublas_tflops(dtype):
     dtype = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp8": torch.float8_e4m3fn}[dtype]
     cublas_workspace = torch.empty(32 * 1024 * 1024, device="cuda", dtype=torch.uint8)
-    if is_cuda():
+    if is_cuda() or is_tileir():
         cublas = nvidia.cublas.CublasLt(cublas_workspace)
         bench_fn = cublas.matmul
     elif is_hip():

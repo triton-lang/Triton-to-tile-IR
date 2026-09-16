@@ -32,11 +32,13 @@ def get_current_target():
         return None
     return triton.runtime.driver.active.get_current_target()
 
-
 def is_cuda():
     target = get_current_target()
-    return False if target is None else target.backend == "cuda"
+    return False if target is None else target.backend in ["cuda", "tileir"]
 
+# [Diff] add tileir backend.
+def is_tileir():
+    return get_current_target().backend == "tileir"
 
 def is_ampere_or_newer():
     return is_cuda() and torch.cuda.get_device_capability()[0] >= 8

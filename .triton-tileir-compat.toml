@@ -1,0 +1,14 @@
+schema_version = 1
+line = "triton-3.6-ctk-13.4"
+status = "integration-validation-pending"
+current_triton_version = "3.6.0"
+target_triton_version = "3.6.0"
+tileir_version = "13.4.0"
+tileir_runtime_version = "13.4.59"
+public_backend_source_commit = "ac12adc396a26a939fadcda3f0c44b9c0f6390b5"
+target_oait_commit = "7c56a5e40f7fd928dfd5c72902d5def0097db73a"
+cuda_tile_commit = "7e8e2e68fa219716103824c01f7303367cf7df8d"
+# .oait-base is written only after this new release line is validated.
+# No Python/performance baseline has been accepted for this combination.
+python_gate_baseline = "pending"
+push_requires_explicit_owner_command = true

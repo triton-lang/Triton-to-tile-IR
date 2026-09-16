@@ -130,6 +130,7 @@ def make_bitmatrix_metadata(nonzero_indx, bitmatrix):
         col_offs, col_sum.shape[0], col_partial_sum,  # inputs
         col_partial_sum.shape[0], col_partial_sum.stride(0), col_partial_sum.stride(1),  # outputs
         BLOCK_M=512, BLOCK_N=512,  # tunable parameters
+        occupancy=8,
     )
     # this kernel computes valid entries of `{row,col}_sorted_indx`
     # using `col_offs` and `col_partial_sums`
