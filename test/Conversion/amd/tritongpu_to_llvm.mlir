@@ -1,25 +1,135 @@
-// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=arch=gfx942 --convert-builtin-func-to-llvm | FileCheck %s --check-prefixes=CHECK,COMMON
-// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=arch=gfx950 | FileCheck %s --check-prefixes=GFX950,COMMON
-// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=arch=gfx1250 | FileCheck %s --check-prefixes=GFX1250,COMMON
-// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=arch=gfx906 | FileCheck %s --check-prefixes=GFX906,COMMON
+// RUN: triton-opt %s -split-input-file --allocate-shared-memory --triton-amdgpu-membar='gfx-arch=gfx942' --convert-triton-amdgpu-to-llvm=gfx-arch=gfx942 --convert-builtin-func-to-llvm | FileCheck %s --enable-var-scope --check-prefixes=CHECK,COMMON
+// RUN: triton-opt %s -split-input-file --allocate-shared-memory --triton-amdgpu-membar='gfx-arch=gfx950' --convert-triton-amdgpu-to-llvm=gfx-arch=gfx950 | FileCheck %s --enable-var-scope --check-prefixes=GFX950,COMMON
+// RUN: triton-opt %s -split-input-file --allocate-shared-memory --triton-amdgpu-membar='gfx-arch=gfx1250' --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1250 | FileCheck %s --enable-var-scope --check-prefixes=GFX1250,COMMON
+
+// COMMON-DAG: [[$LOCAL_MMRA_TAG:#[A-Za-z0-9_]+]] = #llvm.mmra_tag<"amdgpu-synchronize-as":"local">
+// COMMON-DAG: [[$GLOBAL_MMRA_TAG:#[A-Za-z0-9_]+]] = #llvm.mmra_tag<"amdgpu-synchronize-as":"global">
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
+  // COMMON-LABEL: lower_barrier
+  tt.func @lower_barrier() {
+    // COMMON: llvm.fence syncscope("workgroup") release {llvm.mmra = [[$LOCAL_MMRA_TAG]]}
+    // COMMON-NEXT: rocdl.s.barrier
+    // COMMON-NEXT: llvm.fence syncscope("workgroup") acquire {llvm.mmra = [[$LOCAL_MMRA_TAG]]}
+    ttg.barrier local
+
+    // COMMON: llvm.fence syncscope("workgroup") release {llvm.mmra = [[$GLOBAL_MMRA_TAG]]}
+    // COMMON-NEXT: rocdl.s.barrier
+    // COMMON-NEXT: llvm.fence syncscope("workgroup") acquire {llvm.mmra = [[$GLOBAL_MMRA_TAG]]}
+    ttg.barrier global_read
+
+    // COMMON: llvm.fence syncscope("workgroup") release {llvm.mmra = [[$GLOBAL_MMRA_TAG]]}
+    // COMMON-NEXT: rocdl.s.barrier
+    // COMMON-NEXT: llvm.fence syncscope("workgroup") acquire {llvm.mmra = [[$GLOBAL_MMRA_TAG]]}
+    ttg.barrier global_write
+
+    // COMMON: llvm.fence syncscope("workgroup") release{{$}}
+    // COMMON-NEXT: rocdl.s.barrier
+    // COMMON-NEXT: llvm.fence syncscope("workgroup") acquire{{$}}
+    ttg.barrier local|global_read|global_write
+
+    tt.return
+  }
+}
+
+// -----
+
+#shared = #ttg.amd_rotating_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 8], warpsPerCTA = [2, 2], order = [1, 0]}>
+module attributes {"ttg.target" = "hip:gfx942", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 64 : i32} {
+  // COMMON-LABEL: @amd_pipeline_stage_subslice_index
+  // COMMON-DAG: llvm.mlir.constant(256 : i32)
+  // CHECK-DAG: llvm.getelementptr {{.*}}[768]
+  // GFX950-DAG: llvm.mlir.constant(768 : i32)
+  // GFX1250-DAG: llvm.mlir.constant(768 : i32)
+  // COMMON: llvm.mul
+  // COMMON: llvm.getelementptr
+  tt.func @amd_pipeline_stage_subslice_index(%index: i32) {
+    %parent = ttg.local_alloc : () -> !ttg.memdesc<7x16x16xf16, #shared, #smem, mutable>
+    %stages = ttg.memdesc_subslice %parent [3, 0, 0] : !ttg.memdesc<7x16x16xf16, #shared, #smem, mutable> -> !ttg.memdesc<2x16x16xf16, #shared, #smem, mutable, 7x16x16>
+    %view = ttg.memdesc_index %stages[%index] : !ttg.memdesc<2x16x16xf16, #shared, #smem, mutable, 7x16x16> -> !ttg.memdesc<16x16xf16, #shared, #smem, mutable>
+    %zero = arith.constant dense<0.0> : tensor<16x16xf16, #blocked>
+    ttg.local_store %zero, %view : tensor<16x16xf16, #blocked> -> !ttg.memdesc<16x16xf16, #shared, #smem, mutable>
+    tt.return
+  }
+}
+
+// -----
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
   // CHECK-LABEL: atomic_add_f32_scalar
   // GFX1250-LABEL: atomic_add_f32_scalar
   tt.func @atomic_add_f32_scalar(%arg0 : !tt.ptr<f32>, %arg1 : i1, %arg2 : f32) {
-    // Scalar atomics should not have the compiler fence (no tensorTy)
-    // GFX1250-NOT: llvm.inline_asm
     // CHECK: llvm.cond_br
     // GFX1250: llvm.cond_br
     // CHECK: llvm.atomicrmw
     // CHECK: llvm.store
     // CHECK: llvm.br
-    // CHECK: rocdl.s.waitcnt 49279
-    // CHECK: rocdl.s.barrier
+    // COMMON: llvm.fence syncscope("workgroup") release {llvm.mmra = [[$LOCAL_MMRA_TAG]]}
+    // COMMON-NEXT: rocdl.s.barrier
+    // COMMON-NEXT: llvm.fence syncscope("workgroup") acquire {llvm.mmra = [[$LOCAL_MMRA_TAG]]}
     // CHECK: llvm.load
     // CHECK: llvm.store
     %0 = tt.atomic_rmw fadd, relaxed, gpu, %arg0, %arg2, %arg1 : (!tt.ptr<f32>, f32, i1) -> f32
     tt.store %arg0, %0 : !tt.ptr<f32>
+    tt.return
+  }
+}
+
+// -----
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
+  // COMMON-LABEL: atomic_max_f16_fallback
+  tt.func @atomic_max_f16_fallback(%ptr : !tt.ptr<f16>, %mask : i1,
+                                   %value : f16) {
+    // COMMON: llvm.atomicrmw fmax
+    %0 = tt.atomic_rmw max, relaxed, gpu, %ptr, %value, %mask : (!tt.ptr<f16>, f16, i1) -> f16
+    tt.return
+  }
+
+  // COMMON-LABEL: atomic_min_bf16_fallback
+  tt.func @atomic_min_bf16_fallback(%ptr : !tt.ptr<bf16>, %mask : i1,
+                                    %value : bf16) {
+    // COMMON: llvm.atomicrmw fmin
+    %0 = tt.atomic_rmw min, relaxed, gpu, %ptr, %value, %mask : (!tt.ptr<bf16>, bf16, i1) -> bf16
+    tt.return
+  }
+
+  // COMMON-LABEL: atomic_max_f32_fallback
+  tt.func @atomic_max_f32_fallback(%ptr : !tt.ptr<f32>, %mask : i1,
+                                   %value : f32) {
+    // COMMON: llvm.atomicrmw fmax
+    %0 = tt.atomic_rmw max, relaxed, gpu, %ptr, %value, %mask : (!tt.ptr<f32>, f32, i1) -> f32
+    tt.return
+  }
+
+  // COMMON-LABEL: atomic_min_f64_fallback
+  tt.func @atomic_min_f64_fallback(%ptr : !tt.ptr<f64>, %mask : i1,
+                                   %value : f64) {
+    // COMMON: llvm.atomicrmw fmin
+    %0 = tt.atomic_rmw min, relaxed, gpu, %ptr, %value, %mask : (!tt.ptr<f64>, f64, i1) -> f64
+    tt.return
+  }
+}
+
+// -----
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
+  // COMMON-LABEL: atomic_rmw_acquire_staged_result
+  tt.func @atomic_rmw_acquire_staged_result(%ptr : !tt.ptr<f32>,
+                                             %out : !tt.ptr<f32>, %mask : i1,
+                                             %val : f32) {
+    // COMMON-NOT: rocdl.s.barrier
+    // COMMON: llvm.atomicrmw fadd {{.*}} acquire
+    // COMMON: llvm.store {{.*}} : f32, !llvm.ptr<3>
+    // COMMON: rocdl.s.barrier
+    // COMMON: llvm.load {{.*}} : !llvm.ptr<3> -> f32
+    // COMMON-NOT: rocdl.s.barrier
+    // COMMON: llvm.store
+    // COMMON: llvm.return
+    %old = tt.atomic_rmw fadd, acquire, gpu, %ptr, %val, %mask {allocation.offset = 0 : i32} : (!tt.ptr<f32>, f32, i1) -> f32
+    tt.store %out, %old : !tt.ptr<f32>
     tt.return
   }
 }
@@ -31,9 +141,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
   // CHECK-LABEL: atomic_add_f32
   // GFX1250-LABEL: atomic_add_f32
   tt.func @atomic_add_f32(%arg0 : tensor<256x!tt.ptr<f32>, #blocked0>, %arg1 : tensor<256xi1, #blocked0>, %arg2 : tensor<256xf32, #blocked0>) {
-    // Tensor atomics on gfx1250 should have a compiler fence before the cond_br
-    // to prevent MachineSink from sinking LDS loads past barriers.
-    // GFX1250: llvm.inline_asm has_side_effects asm_dialect = att operand_attrs = [] "", "~{memory}"
     // GFX1250: llvm.cond_br
     // CHECK: llvm.cond_br
     // CHECK: llvm.atomicrmw
@@ -224,6 +331,45 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
 }
 
 // -----
+#blocked3 = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [64], warpsPerCTA = [1], order = [0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 64 : i32} {
+  // CHECK-LABEL: reduce_dpp_max_commuted
+  tt.func @reduce_dpp_max_commuted(%arg0: tensor<64xf32, #blocked3>) {
+    // CHECK: rocdl.update.dpp
+    // CHECK-SAME: with 280, 15, 15, true : f32
+    // CHECK-NEXT: llvm.intr.maxnum
+
+    // CHECK-NEXT: rocdl.update.dpp
+    // CHECK-SAME: with 276, 15, 15, true : f32
+    // CHECK-NEXT: llvm.intr.maxnum
+
+    // CHECK-NEXT: rocdl.update.dpp
+    // CHECK-SAME: with 274, 15, 15, true : f32
+    // CHECK-NEXT: llvm.intr.maxnum
+
+    // CHECK-NEXT: rocdl.update.dpp
+    // CHECK-SAME: with 273, 15, 15, true : f32
+    // CHECK-NEXT: llvm.intr.maxnum
+
+    // CHECK-NEXT: rocdl.update.dpp
+    // CHECK-SAME: with 322, 10, 15, true : f32
+    // CHECK-NEXT: llvm.intr.maxnum
+
+    // CHECK-NEXT: rocdl.update.dpp
+    // CHECK-SAME: with 323, 15, 15, true : f32
+    // CHECK-NEXT: llvm.intr.maxnum
+
+    // CHECK: rocdl.readlane
+    %0 = "tt.reduce"(%arg0) <{axis = 0 : i32}> ({
+    ^bb0(%arg1: f32, %arg2: f32):
+      %1 = arith.maxnumf %arg2, %arg1 : f32
+      tt.reduce.return %1 : f32
+    }) : (tensor<64xf32, #blocked3>) -> f32
+    tt.return
+  }
+}
+
+// -----
 
 #blocked4 = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [64], warpsPerCTA = [1], order = [0]}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 64 : i32} {
@@ -234,29 +380,53 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
 
     // stride 8: ROW_ROR:8 (0x128 = 296)
     // CHECK: rocdl.update.dpp
-    // CHECK-SAME: with 296, 15, 15, false : i32
+    // CHECK-SAME: with 296, 15, 15, true : i32
     // CHECK: llvm.intr.maxnum
 
     // stride 4: ROW_HALF_MIRROR (0x141 = 321) + quad_perm xor 3 (27)
     // CHECK: rocdl.update.dpp
-    // CHECK-SAME: with 321, 15, 15, false : i32
+    // CHECK-SAME: with 321, 15, 15, true : i32
     // CHECK: rocdl.update.dpp
-    // CHECK-SAME: with 27, 15, 15, false : i32
+    // CHECK-SAME: with 27, 15, 15, true : i32
     // CHECK: llvm.intr.maxnum
 
     // stride 2: quad_perm xor 2 (78)
     // CHECK: rocdl.update.dpp
-    // CHECK-SAME: with 78, 15, 15, false : i32
+    // CHECK-SAME: with 78, 15, 15, true : i32
     // CHECK: llvm.intr.maxnum
 
     // stride 1: quad_perm xor 1 (177)
     // CHECK: rocdl.update.dpp
-    // CHECK-SAME: with 177, 15, 15, false : i32
+    // CHECK-SAME: with 177, 15, 15, true : i32
     %0 = "tt.reduce"(%arg0) <{axis = 0 : i32}> ({
     ^bb0(%arg1: f32, %arg2: f32):
       %1 = arith.maxnumf %arg1, %arg2 : f32
       tt.reduce.return %1 : f32
     }) : (tensor<32xf32, #blocked4>) -> f32
+    tt.return
+  }
+}
+
+// -----
+
+#linear64 = #ttg.linear<{register = [[0, 1]], lane = [[1, 0], [0, 0], [2, 0], [4, 0], [8, 0], [16, 0]], warp = [], block = []}>
+#slice64 = #ttg.slice<{dim = 0, parent = #linear64}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 64 : i32} {
+  // GFX950-LABEL: reduce_xor_permlane_swap
+  tt.func @reduce_xor_permlane_swap(%arg0: tensor<32x2xf32, #linear64>) {
+    // stride 32: CDNA4 permlane32.swap + select
+    // GFX950-NOT: rocdl.ds_bpermute
+    // GFX950: llvm.call_intrinsic "llvm.amdgcn.permlane32.swap"
+    // GFX950: llvm.select
+
+    // stride 16: CDNA4 permlane16.swap + select
+    // GFX950: llvm.call_intrinsic "llvm.amdgcn.permlane16.swap"
+    // GFX950: llvm.select
+    %0 = "tt.reduce"(%arg0) <{axis = 0 : i32}> ({
+    ^bb0(%arg1: f32, %arg2: f32):
+      %1 = arith.maxnumf %arg1, %arg2 : f32
+      tt.reduce.return %1 : f32
+    }) : (tensor<32x2xf32, #linear64>) -> tensor<2xf32, #slice64>
     tt.return
   }
 }
@@ -274,15 +444,15 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
 
     // stride 8: ROW_XMASK:8
     // GFX1250: rocdl.update.dpp
-    // GFX1250-SAME: with 360, 15, 15, false
+    // GFX1250-SAME: with 360, 15, 15, true
 
     // stride 4: ROW_XMASK:4
     // GFX1250: rocdl.update.dpp
-    // GFX1250-SAME: with 356, 15, 15, false
+    // GFX1250-SAME: with 356, 15, 15, true
 
     // stride 1: ROW_XMASK:1
     // GFX1250: rocdl.update.dpp
-    // GFX1250-SAME: with 353, 15, 15, false
+    // GFX1250-SAME: with 353, 15, 15, true
     %0 = "tt.reduce"(%arg0) <{axis = 0 : i32}> ({
     ^bb0(%arg1: f32, %arg2: f32):
       %1 = arith.maxnumf %arg1, %arg2 : f32
@@ -523,7 +693,7 @@ module attributes {"ttg.target" = "hip:gfx942", "ttg.num-ctas" = 1 : i32, "ttg.n
     // Skip three constants from the stride calculation
     // GFX950: llvm.mlir.constant
     // GFX950: llvm.mlir.constant
-    // GFX950: llvm.mlir.constant
+    // GFX950: llvm.mlir.constant(4096 : i32)
 
     // GFX950-DAG: %[[CST0:.+]] = llvm.mlir.constant(0 : i32)
     // GFX950-DAG: %[[CST7:.+]] = llvm.mlir.constant(7 : i32)
@@ -600,11 +770,35 @@ module attributes {"ttg.target" = "hip:gfx942", "ttg.num-ctas" = 1 : i32, "ttg.n
 #mma = #ttg.amd_mfma<{version = 4, warpsPerCTA = [2, 1], instrShape = [16, 16, 32], isTransposed = true}>
 module attributes {"ttg.target" = "hip:gfx942", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, "ttg.threads-per-warp" = 64 : i32} {
   tt.func @padded_shared_layout_subslice_load_store(%arg0: tensor<32x32xf16, #blocked>) {
+    // CHECK: %[[SUBSLICE_CST16:.+]] = llvm.mlir.constant(16 : i32)
+    // CHECK: %[[SUBSLICE_CST3:.+]] = llvm.mlir.constant(3 : i32)
+    // CHECK: %[[SUBSLICE_CST2:.+]] = llvm.mlir.constant(2 : i32)
+    // CHECK: %[[SUBSLICE_CST6:.+]] = llvm.mlir.constant(6 : i32)
+    // CHECK: %[[SUBSLICE_CST0:.+]] = llvm.mlir.constant(0 : i32)
     // CHECK: llvm.store {{.*}} : vector<8xf16>, !llvm.ptr<3>
     // CHECK-NOT: llvm.store
     %0 = ttg.local_alloc %arg0 : (tensor<32x32xf16, #blocked>) -> !ttg.memdesc<32x32xf16, #shared, #smem, mutable>
     %1 = ttg.memdesc_subslice %0 [16, 0]  : !ttg.memdesc<32x32xf16, #shared, #smem, mutable> -> !ttg.memdesc<16x32xf16, #shared, #smem, mutable, 32x32>
-    // CHECK-COUNT-2: llvm.load {{.*}} : !llvm.ptr<3> -> vector<4xf16>
+    // COMMON: llvm.fence syncscope("workgroup") release {llvm.mmra = [[$LOCAL_MMRA_TAG]]}
+    // COMMON-NEXT: rocdl.s.barrier
+    // COMMON-NEXT: llvm.fence syncscope("workgroup") acquire {llvm.mmra = [[$LOCAL_MMRA_TAG]]}
+    // CHECK: %[[AFF_I8:.+]] = llvm.mul %{{.+}}, %[[SUBSLICE_CST2]] : i32
+    // CHECK-NEXT: %[[AFF_SHR:.+]] = llvm.lshr %[[AFF_I8]], %[[SUBSLICE_CST6]] : i32
+    // CHECK-NEXT: %[[AFF_SHL:.+]] = llvm.shl %[[AFF_SHR]], %[[SUBSLICE_CST3]] : i32
+    // CHECK-NEXT: %[[AFF_PAD0:.+]] = llvm.add %[[AFF_SHL]], %[[SUBSLICE_CST0]] : i32
+    // CHECK-NEXT: %[[PAD_AFF:.+]] = llvm.add %[[AFF_I8]], %[[AFF_PAD0]] : i32
+    // CHECK: %[[DYN_BASE:.+]] = llvm.xor %{{.+}}, %[[SUBSLICE_CST0]] : i32
+    // CHECK-NEXT: %[[DYN_SHR:.+]] = llvm.lshr %[[DYN_BASE]], %[[SUBSLICE_CST6]] : i32
+    // CHECK-NEXT: %[[DYN_SHL:.+]] = llvm.shl %[[DYN_SHR]], %[[SUBSLICE_CST3]] : i32
+    // CHECK-NEXT: %[[DYN_PAD0:.+]] = llvm.add %[[DYN_SHL]], %[[SUBSLICE_CST0]] : i32
+    // CHECK-NEXT: %[[PAD_DYN:.+]] = llvm.add %[[DYN_BASE]], %[[DYN_PAD0]] : i32
+    // CHECK-NEXT: %[[PADDED_OFF:.+]] = llvm.add %[[PAD_DYN]], %[[PAD_AFF]] : i32
+    // CHECK-NEXT: %[[INNER_OFF0:.+]] = llvm.add %[[PADDED_OFF]], %[[SUBSLICE_CST0]] : i32
+    // CHECK-NEXT: %[[LOAD_PTR0:.+]] = llvm.getelementptr inbounds %{{.+}}[%[[INNER_OFF0]]] : (!llvm.ptr<3>, i32) -> !llvm.ptr<3>, i8
+    // CHECK-NEXT: llvm.load %[[LOAD_PTR0]] : !llvm.ptr<3> -> vector<4xf16>
+    // CHECK: %[[INNER_OFF1:.+]] = llvm.add %[[PADDED_OFF]], %{{.+}} : i32
+    // CHECK-NEXT: %[[LOAD_PTR1:.+]] = llvm.getelementptr inbounds %{{.+}}[%[[INNER_OFF1]]] : (!llvm.ptr<3>, i32) -> !llvm.ptr<3>, i8
+    // CHECK-NEXT: llvm.load %[[LOAD_PTR1]] : !llvm.ptr<3> -> vector<4xf16>
     // CHECK-NOT: llvm.load
     %2 = ttg.local_load %1: !ttg.memdesc<16x32xf16, #shared, #smem, mutable, 32x32> -> tensor<16x32xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 4}>>
     // CHECK-COUNT-2: llvm.store {{.*}} : vector<4xf16>, !llvm.ptr<3>
@@ -639,6 +833,22 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 %1 = "tt.reduce"(%arg0) <{axis = 1 : i32}> ({
 ^bb0(%arg24: f32, %arg25: f32):
   %3166 = "arith.maxnumf"(%arg24, %arg25) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+  "tt.reduce.return"(%3166) : (f32) -> ()
+}) : (tensor<64x16xf32, #ttg.amd_mfma<{versionMajor = 4, versionMinor = 0, warpsPerCTA = [4, 1], instrShape = [16, 16, 16], isTransposed = true}>>) -> tensor<64xf32, #ttg.slice<{dim = 1, parent = #ttg.amd_mfma<{versionMajor = 4, versionMinor = 0, warpsPerCTA = [4, 1], instrShape = [16, 16, 16], isTransposed = true}>}>>
+  tt.return
+  }
+}
+
+// -----
+
+// GFX950-LABEL: reduce_16x16_commuted
+// GFX950: llvm.call_intrinsic "llvm.amdgcn.permlane32.swap"
+// GFX950: llvm.call_intrinsic "llvm.amdgcn.permlane16.swap"
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 64 : i32} {
+  tt.func @reduce_16x16_commuted(%arg0: tensor<64x16xf32, #ttg.amd_mfma<{versionMajor = 4, versionMinor = 0, warpsPerCTA = [4, 1], instrShape = [16, 16, 16], isTransposed = true}>>){
+%1 = "tt.reduce"(%arg0) <{axis = 1 : i32}> ({
+^bb0(%arg24: f32, %arg25: f32):
+  %3166 = "arith.maxnumf"(%arg25, %arg24) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
   "tt.reduce.return"(%3166) : (f32) -> ()
 }) : (tensor<64x16xf32, #ttg.amd_mfma<{versionMajor = 4, versionMinor = 0, warpsPerCTA = [4, 1], instrShape = [16, 16, 16], isTransposed = true}>>) -> tensor<64xf32, #ttg.slice<{dim = 1, parent = #ttg.amd_mfma<{versionMajor = 4, versionMinor = 0, warpsPerCTA = [4, 1], instrShape = [16, 16, 16], isTransposed = true}>}>>
   tt.return
@@ -780,43 +990,62 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
 
 // -----
 
+#blocked4_atomic = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [64], warpsPerCTA = [4], order = [0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 64 : i32} {
+  // COMMON-LABEL: @atomic_load_store
+  // COMMON: llvm.load %{{.*}} atomic syncscope("agent") monotonic
+  // COMMON-NOT: rocdl.s.barrier
+  // COMMON: llvm.fence syncscope("agent") acquire
+  // COMMON: rocdl.s.barrier
+  // COMMON: llvm.load %{{.*}} : !llvm.ptr<3> -> i32
+  // COMMON: llvm.fence syncscope("workgroup") release
+  // COMMON: llvm.store %{{.*}}, %{{.*}} atomic syncscope("workgroup") monotonic
+  tt.func public @atomic_load_store(%ptr: !tt.ptr<i32>, %out: !tt.ptr<i32>, %mask: i1) {
+    %loaded = tt.atomic_load acquire, gpu, %ptr, %mask : (!tt.ptr<i32>, i1) -> i32
+    tt.atomic_store release, cta, %out, %loaded, %mask : !tt.ptr<i32>
+    tt.return
+  }
+
+  // COMMON-LABEL: @sharded_atomic_load_acquire
+  // COMMON-COUNT-4: llvm.load %{{.*}} atomic syncscope("agent") monotonic
+  // COMMON-NOT: rocdl.s.barrier
+  // COMMON: llvm.fence syncscope("agent") acquire
+  // COMMON: rocdl.s.barrier
+  // COMMON: llvm.return
+  tt.func public @sharded_atomic_load_acquire(
+      %ptrs: tensor<1024x!tt.ptr<i32>, #blocked4_atomic>,
+      %mask: tensor<1024xi1, #blocked4_atomic>) {
+    %loaded = tt.atomic_load acquire, gpu, %ptrs, %mask : (tensor<1024x!tt.ptr<i32>, #blocked4_atomic>, tensor<1024xi1, #blocked4_atomic>) -> tensor<1024xi32, #blocked4_atomic>
+    tt.return
+  }
+
+  // COMMON-LABEL: @sharded_atomic_store_release
+  // COMMON: llvm.fence syncscope("agent") release
+  // COMMON-COUNT-4: llvm.store %{{.*}}, %{{.*}} atomic syncscope("agent") monotonic
+  tt.func public @sharded_atomic_store_release(
+      %ptrs: tensor<1024x!tt.ptr<i32>, #blocked4_atomic>,
+      %values: tensor<1024xi32, #blocked4_atomic>,
+      %mask: tensor<1024xi1, #blocked4_atomic>) {
+    tt.atomic_store release, gpu, %ptrs, %values, %mask : tensor<1024x!tt.ptr<i32>, #blocked4_atomic>
+    tt.return
+  }
+}
+
+// -----
+
 // Make sure there is no rocdl.grid.dim.* generated when global_scratch_memory_size is 0.
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 64 : i32, ttg.global_scratch_memory_size = 0 : i32, ttg.global_scratch_memory_alignment = 1 : i32} {
   // CHECK-LABEL: @test_call_zero_scratch_no_grid_ops
   // CHECK-NOT: rocdl.grid.dim
   // CHECK: llvm.call @callee_zero_scratch
+  // CHECK: llvm.func internal @callee_zero_scratch
+  // CHECK-SAME: passthrough = ["noinline", "convergent"]
+  // CHECK-SAME: ws_num_warps = 4 : i32
   tt.func public @test_call_zero_scratch_no_grid_ops() attributes {noinline = false} {
     tt.call @callee_zero_scratch() : () -> ()
     tt.return
   }
   tt.func private @callee_zero_scratch() attributes {noinline = true} {
-    tt.return
-  }
-}
-
-// -----
-
-/// gfx906 has the same dot intrinsics as gfx908+ (HasDot1Insts) but not
-/// the compact VOP2 encoding (HasDot2Insts); LLVM handles this transparently.
-
-// GFX906-LABEL: v_dot_fp16_gfx906
-#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 8], warpsPerCTA = [2, 2], order = [1, 0]}>
-module attributes {"ttg.target" = "hip:gfx906", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 64 : i32} {
-  tt.func @v_dot_fp16_gfx906(%arg0: tensor<16x16xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>, %arg1: tensor<16x16xf16, #ttg.dot_op<{opIdx = 1, parent = #blocked}>>, %arg2: tensor<16x16xf32, #blocked>) {
-    // GFX906-COUNT-8: llvm.call_intrinsic "llvm.amdgcn.fdot2"
-    %0 = tt.dot %arg0, %arg1, %arg2, inputPrecision = ieee : tensor<16x16xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> * tensor<16x16xf16, #ttg.dot_op<{opIdx = 1, parent = #blocked}>> -> tensor<16x16xf32, #blocked>
-    tt.return
-  }
-}
-
-// -----
-
-// GFX906-LABEL: v_dot_i8_gfx906
-#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 8], warpsPerCTA = [2, 2], order = [1, 0]}>
-module attributes {"ttg.target" = "hip:gfx906", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 64 : i32} {
-  tt.func @v_dot_i8_gfx906(%arg0: tensor<16x16xi8, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>, %arg1: tensor<16x16xi8, #ttg.dot_op<{opIdx = 1, parent = #blocked}>>, %arg2: tensor<16x16xi32, #blocked>) {
-    // GFX906-COUNT-4: llvm.call_intrinsic "llvm.amdgcn.sdot4"
-    %0 = tt.dot %arg0, %arg1, %arg2, inputPrecision = ieee : tensor<16x16xi8, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> * tensor<16x16xi8, #ttg.dot_op<{opIdx = 1, parent = #blocked}>> -> tensor<16x16xi32, #blocked>
     tt.return
   }
 }

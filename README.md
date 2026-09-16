@@ -2,7 +2,7 @@ See [The original Triton README](https://github.com/triton-lang/Triton-to-tile-I
 
 ## ⚡ Helion Hackathon — Performance Tuning Guide
 
-**The default backend is OSS PTX. The linked Triton 3.6 wheel is a previous release; this source branch uses Triton 3.7 and CUDA Tile IR 13.4. Using [Helion](https://github.com/pytorch/helion) with the TileIR backend([whl](https://github.com/triton-lang/Triton-to-tile-IR/releases/download/v3.6.0-rc1/nvtriton-3.6.0-cp313-cp313-linux_x86_64.whl))?** Check out the **[Helion TileIR Backend Performance Tuning Guide](HelionPerformanceTuningGuide.md)** for config recipes, autotuning strategies, and porting tips.
+**The default backend is OSS PTX. The linked Triton 3.6 wheel is a previous release; this source branch uses a Triton 3.8 development snapshot and CUDA Tile IR 13.4. Using [Helion](https://github.com/pytorch/helion) with the TileIR backend([whl](https://github.com/triton-lang/Triton-to-tile-IR/releases/download/v3.6.0-rc1/nvtriton-3.6.0-cp313-cp313-linux_x86_64.whl))?** Check out the **[Helion TileIR Backend Performance Tuning Guide](HelionPerformanceTuningGuide.md)** for config recipes, autotuning strategies, and porting tips.
 
 ### ⚠️ How to Submit TileIR Result
 
@@ -37,7 +37,7 @@ import helion.language as hl
 ---
 
 # Triton CUDA Tile IR Backend
-This incubator repo adds the CUDA Tile IR backend to Triton. Users can enable the CUDA Tile IR backend by setting the environment variable `ENABLE_TILE=1`. This branch uses Triton 3.7, public CUDA Tile IR v13.4.0 sources, and matching 13.4.59 compiler and runtime components. Set `ENABLE_TILE=1` before importing Triton.
+This incubator repo adds the CUDA Tile IR backend to Triton. Users can enable the CUDA Tile IR backend by setting the environment variable `ENABLE_TILE=1`. This branch uses a Triton 3.8 development snapshot, public CUDA Tile IR v13.4.0 sources, and matching 13.4.59 compiler and runtime components. Set `ENABLE_TILE=1` before importing Triton.
 
 ## How to install?
 doesn't change
@@ -124,5 +124,4 @@ CUDA Tile IR accepts `num_warps` for compatibility, while `occupancy` controls t
 - i64 tensor descriptor coordinates (use i32 coordinates; this does not restrict ordinary pointer indexing or descriptor strides to i32)
 - Conditional replacement of tensor descriptors
 - Histogram
-- Legacy block-pointer API coverage is incomplete in this Triton 3.7 snapshot; newer upstream versions have removed the API. Prefer tensor descriptors.
 - Gluon, Proton instrumentation, and PTX/TTGIR/LLIR inspection or override

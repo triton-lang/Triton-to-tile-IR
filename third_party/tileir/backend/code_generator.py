@@ -1,4 +1,5 @@
 import ast
+import builtins
 import inspect
 import re
 from typing import Dict, Optional
@@ -20,6 +21,8 @@ from triton.compiler.code_generator import (
     _is_triton_tensor,
     _unwrap_if_constexpr,
     ASTFunction,
+    normalize_value,
+    is_namedtuple,
     CodeGenerator,
     enter_sub_region,
     flatten_values_to_ir,
@@ -27,7 +30,6 @@ from triton.compiler.code_generator import (
 )
 from triton.compiler.errors import CompilationError
 from triton.runtime.jit import (
-    get_jit_fn_file_line,
     get_full_name,
     JITFunction,
     JITCallable,
@@ -84,6 +86,7 @@ class TileIRCodeGenerator(CodeGenerator):
         file_name: Optional[str] = None,
         begin_line=0,
         begin_col=1,
+        caller_context=None,
     ):
         super().__init__(
             context=context,
@@ -102,6 +105,7 @@ class TileIRCodeGenerator(CodeGenerator):
             file_name=file_name,
             begin_line=begin_line,
             begin_col=begin_col,
+            caller_context=caller_context,
         )
     def get_used_vars(self, stmt):
         used_vars = dict()
@@ -123,8 +127,7 @@ class TileIRCodeGenerator(CodeGenerator):
         args = bound_args.arguments
         args = [args[name] for name in fn.arg_names]
         for i, arg in enumerate(args):
-            if not isinstance(arg, base_value) or isinstance(arg, JITCallable):
-                args[i] = language.core.constexpr(arg)
+            args[i] = normalize_value(arg)
         # mangle
         caller_context = caller_context or self.caller_context
         arg_types = [arg.type for arg in args]
@@ -132,7 +135,7 @@ class TileIRCodeGenerator(CodeGenerator):
         # generate function def if necessary
         if not self.module.has_function(fn_name):
             # If the callee is not set, we use the same debug setting as the caller
-            file_name, begin_line = get_jit_fn_file_line(fn)
+            file_name, begin_line = fn.file_name, fn.def_file_line_number
             prototype = ASTFunction([], arg_types, dict())
             # TileIR backend does not support noinline mode currently
             if fn.noinline:
@@ -158,6 +161,7 @@ class TileIRCodeGenerator(CodeGenerator):
                 options=self.builder.options,
                 codegen_fns=self.builder.codegen_fns,
                 module_map=self.builder.module_map,
+                caller_context=caller_context,
                 is_gluon=False,
             )
             try:
@@ -175,8 +179,6 @@ class TileIRCodeGenerator(CodeGenerator):
         symbol = self.module.get_function(fn_name)
         args_val = flatten_values_to_ir(args)
         call_op = self.builder.call(symbol, args_val)
-        if callee_ret_type == language.void:
-            return None
         handles = [call_op.get_result(i) for i in range(call_op.get_num_results())]
         return next(unflatten_ir_values(handles, [callee_ret_type]))
 
@@ -188,13 +190,19 @@ def ast_to_ttir(fn, src, context, options, codegen_fns, module_map, module=None)
         idx = fn.arg_names.index(k)
         arg_types[idx] = str_to_ty(v, None)
 
+    def constexpr_type(value):
+        if isinstance(value, builtins.tuple):
+            fields = value._fields if is_namedtuple(type(value)) else None
+            return language.tuple_type([constexpr_type(v) for v in value], fields)
+        return constexpr(value).type
+
     def apply_constexpr_types(argument, indices, value):
         index = indices.pop()
         if len(indices) == 0:
             if isinstance(argument, list):
-                argument[index] = constexpr(value).type
+                argument[index] = constexpr_type(value)
             else:
-                argument.types[index] = constexpr(value).type
+                argument.types[index] = constexpr_type(value)
         else:
             apply_constexpr_types(argument[index], indices, value)
 
@@ -202,7 +210,7 @@ def ast_to_ttir(fn, src, context, options, codegen_fns, module_map, module=None)
         apply_constexpr_types(arg_types, list(path)[::-1], value)
 
     prototype = ASTFunction([], arg_types, src.attrs)
-    file_name, begin_line = get_jit_fn_file_line(fn)
+    file_name, begin_line = fn.file_name, fn.def_file_line_number
     # query function representation
     from collections import namedtuple
     leaves = filter(lambda v: len(v) == 1, src.constants)
@@ -224,6 +232,7 @@ def ast_to_ttir(fn, src, context, options, codegen_fns, module_map, module=None)
         options=options,
         codegen_fns=codegen_fns,
         module_map=module_map,
+        module=module,
         is_gluon=False,
     )
     generator.visit(fn.parse())
@@ -232,4 +241,7 @@ def ast_to_ttir(fn, src, context, options, codegen_fns, module_map, module=None)
     # module takes ownership of the context
     ret.context = context
     ret.name = generator.function_name
+    if not ret.verify():
+        print(ret)
+        raise RuntimeError("error encountered during parsing")
     return ret

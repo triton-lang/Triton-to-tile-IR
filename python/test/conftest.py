@@ -1,60 +1,10 @@
 import pytest
-import tempfile
 
 
 def pytest_configure(config):
     # If pytest-sugar is not active, enable instafail
     if not config.pluginmanager.hasplugin("sugar"):
         config.option.instafail = True
-
-
-def pytest_addoption(parser):
-    parser.addoption("--device", action="store", default="cuda")
-
-
-@pytest.fixture
-def device(request):
-    return request.config.getoption("--device")
-
-
-@pytest.fixture
-def fresh_triton_cache():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        from triton import knobs
-
-        with knobs.cache.scope(), knobs.runtime.scope(), knobs.compilation.scope():
-            # This fixture tests an empty cache and its subsequent reuse.
-            knobs.compilation.always_compile = False
-            knobs.cache.dir = tmpdir
-            yield tmpdir
-
-
-@pytest.fixture
-def fresh_knobs():
-    """
-    Resets all knobs except ``build``, ``nvidia``, and ``amd`` (preserves
-    library paths needed to compile kernels).
-    """
-    from triton._internal_testing import _fresh_knobs_impl
-    fresh_function, reset_function = _fresh_knobs_impl(skipped_attr={"build", "nvidia", "amd"})
-    try:
-        yield fresh_function()
-    finally:
-        reset_function()
-
-
-@pytest.fixture
-def fresh_knobs_including_libraries():
-    """
-    Resets ALL knobs including ``build``, ``nvidia``, and ``amd``.
-    Use for tests that verify initial values of these knobs.
-    """
-    from triton._internal_testing import _fresh_knobs_impl
-    fresh_function, reset_function = _fresh_knobs_impl()
-    try:
-        yield fresh_function()
-    finally:
-        reset_function()
 
 
 @pytest.fixture
@@ -93,6 +43,9 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_core.py', 'test_assume'): {'llir', 'ttgir'},
  ('unit/language/test_core.py', 'test_atomic_cas'): {'ptx'},
  ('unit/language/test_core.py', 'test_atomic_rmw'): {'ptx'},
+ ('unit/language/test_core.py', 'test_atomic_load_store'): {'ptx'},
+ ('unit/language/test_core.py', 'test_umulhi'): {'ptx'},
+ ('unit/language/test_core.py', 'test_umulhi_known_bits'): {'ptx'},
  ('unit/language/test_core.py', 'test_disable_licm'): {'llir'},
  ('unit/language/test_core.py', 'test_dot'): {'ptx'},
  ('unit/language/test_core.py', 'test_dot_max_num_imprecise_acc'): {'ptx'},
@@ -135,12 +88,16 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_warp_specialization.py', 'test_warp_specialize_tma_matmul_persistent'): {'ttgir'},
  ('unit/test_debuginfo.py', 'test_triton_debuginfo_on'): {'llir'}}
 
-_TILEIR_134_UNSUPPORTED = {('unit/instrumentation/test_gpuhello.py', 'test_op'): 'LLVM GPU instruction instrumentation is not connected to '
+_TILEIR_134_UNSUPPORTED = {
+ ('unit/language/test_core.py', 'test_atomic_poll'): 'atomic_poll has no public13.4 lowering; native timeout/poll support is unavailable',
+ ('unit/language/test_core.py', 'test_atomic_poll_tensor_results'): 'atomic_poll has no public13.4 lowering; native timeout/poll support is unavailable',
+ ('unit/language/test_core.py', 'test_atomic_poll_no_timeout_uses_no_shared_memory'): 'atomic_poll has no public13.4 lowering; native timeout/poll support is unavailable',
+ ('unit/language/test_core.py', 'test_atomic_poll_timeout'): 'atomic_poll has no public13.4 lowering; native timeout/poll support is unavailable',
+ ('unit/language/test_core.py', 'test_atomic_poll_waits_for_remote_cta'): 'atomic_poll has no public13.4 lowering; native timeout/poll support is unavailable',
+ ('unit/instrumentation/test_gpuhello.py', 'test_op'): 'LLVM GPU instruction instrumentation is not connected to '
                                                        'the TileIR compiler pipeline',
- ('unit/language/test_block_pointer.py', 'test_block_copy'): 'block pointer make_tensor_ptr/advance lowering is '
-                                                             'unavailable',
- ('unit/language/test_block_pointer.py', 'test_block_ptr_matmul_no_scf'): 'block pointer make_tensor_ptr/advance '
-                                                                          'lowering is unavailable',
+
+
  ('unit/language/test_compile_errors.py', 'test_min_dot_size'): 'TileIR accepts dot dimensions below the NVIDIA '
                                                                 'diagnostic minimum',
  ('unit/language/test_compile_only.py', 'test_fp8_compiles_for_multiple_architectures_cuda'): 'this test includes '
@@ -184,7 +141,7 @@ _TILEIR_134_UNSUPPORTED = {('unit/instrumentation/test_gpuhello.py', 'test_op'):
                                                              'effect in the scan body',
  ('unit/language/test_core.py', 'test_smid'): 'generic inline assembly is unavailable; only native GDC helper '
                                               'forms are recognized',
- ('unit/language/test_core.py', 'test_trans_reshape'): 'this kernel requires unavailable block pointer lowering',
+
  ('unit/language/test_core.py', 'test_unroll_attr'): 'this test requires frontend TTIR unrolling; TileIR unrolling '
                                                      'occurs downstream',
  ('unit/language/test_libdevice.py', 'test_bessel'): 'j0/j1/y0/y1/cyl_bessel_i0/cyl_bessel_i1 have no public '

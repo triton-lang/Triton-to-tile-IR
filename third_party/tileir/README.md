@@ -8,7 +8,7 @@ To build and install the Triton-TileIR backend, simply run:
 pip install .
 ```
 
-This branch uses Triton 3.7, public CUDA Tile IR v13.4.0 sources, and bundled CUDA 13.4.59 compiler and runtime components.
+This branch uses a Triton 3.8 development snapshot, public CUDA Tile IR v13.4.0 sources, and bundled CUDA 13.4.59 compiler and runtime components.
 
 ## Running
 

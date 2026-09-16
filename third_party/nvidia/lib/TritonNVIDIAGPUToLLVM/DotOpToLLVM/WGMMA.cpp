@@ -35,6 +35,8 @@ using ::mlir::triton::gpu::MemDescType;
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
 using ::mlir::triton::gpu::SharedEncodingTrait;
 
+namespace {
+
 triton::nvgpu::WGMMAEltType getMmaRetType(Value d) {
   auto dTy = cast<RankedTensorType>(d.getType()).getElementType();
   if (dTy.isF32()) {
@@ -147,8 +149,8 @@ SmallVector<Value> unpackAccumulator(ConversionPatternRewriter &rewriter,
   return results;
 }
 
-static Value faddAccumulate(ConversionPatternRewriter &rewriter, Location loc,
-                            Value a, Value b) {
+Value faddAccumulate(ConversionPatternRewriter &rewriter, Location loc, Value a,
+                     Value b) {
   int numEl = cast<LLVM::LLVMStructType>(a.getType()).getBody().size();
   Value newStruct = LLVM::UndefOp::create(rewriter, loc, a.getType());
   for (int i = 0; i < numEl; ++i) {
@@ -160,9 +162,8 @@ static Value faddAccumulate(ConversionPatternRewriter &rewriter, Location loc,
   return newStruct;
 }
 
-static SmallVector<Value> emitWait(ConversionPatternRewriter &rewriter,
-                                   Location loc, SmallVector<Value> acc,
-                                   int pendings) {
+SmallVector<Value> emitWait(ConversionPatternRewriter &rewriter, Location loc,
+                            SmallVector<Value> acc, int pendings) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   SmallVector<Type> types(acc.size(), acc[0].getType());
   auto structTy =
@@ -234,7 +235,7 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
     aLoader = std::move(*loader);
     transA = aLoader.getDescriptor().transposed;
   } else {
-    structA = unpackLLElements(loc, loadedA, rewriter);
+    structA = unpackTensorElements(loc, loadedA, rewriter, aTensorTy);
   }
   auto bLoader = DotOpMmaSmemLoader::build(loc, rewriter, bTensorTy, baseB,
                                            {K, N}, 1, 3, false, dTensorTy);
@@ -246,7 +247,7 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   }
   bool transB = !bLoader->getDescriptor().transposed;
 
-  auto fc = unpackLLElements(loc, loadedC, rewriter);
+  auto fc = unpackTensorElements(loc, loadedC, rewriter, dTensorTy);
 
   triton::nvgpu::WGMMAEltType eltTypeC = getMmaRetType(d);
   triton::nvgpu::WGMMAEltType eltTypeA = getMmaOperandType(a, allowTF32);
@@ -365,13 +366,13 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
       unpackAccumulator(rewriter, loc, mmaResults, dTensorTy);
 
   // replace with new packed result
-  Type structTy = LLVM::LLVMStructType::getLiteral(
-      mmaEncoding.getContext(),
-      SmallVector<Type>(results.size(), dTensorTy.getElementType()));
-  auto res = packLLElements(loc, typeConverter, results, rewriter, structTy);
+  auto res =
+      packTensorElements(loc, typeConverter, results, rewriter, dTensorTy);
   rewriter.replaceOp(op, res);
   return success();
 }
+
+} // namespace
 
 LogicalResult convertWGMMA(triton::nvidia_gpu::WarpGroupDotOp op,
                            triton::nvidia_gpu::WarpGroupDotOp::Adaptor adaptor,

@@ -16,7 +16,12 @@ patch_in_place() {
   rm -f "${tmpfile}"
 
   # Keep each sed argument intact (some expressions include spaces).
-  sed "$@" "${file}" > "${tmpfile}" && mv "${tmpfile}" "${file}"
+  sed "$@" "${file}" > "${tmpfile}"
+  if cmp -s "${file}" "${tmpfile}"; then
+    rm "${tmpfile}"
+  else
+    mv "${tmpfile}" "${file}"
+  fi
 }
 
 # Treat the argument as the extracted cuda_tile repo root (preferred), or fall back
@@ -90,26 +95,52 @@ if [[ -f "${CUDATILE_CPP_PATH}" ]]; then
     -e 's|ValueRange(), /\*attributes=\*/std::nullopt)|ValueRange(), /\*attributes=\*/llvm::ArrayRef<mlir::NamedAttribute>{})|g'
 fi
 
-# 4) Triton 3.7's LLVM renamed DenseIntOrFPElementsAttr to
+# Operation properties were renamed in newer LLVM revisions.
+if grep -q 'class PropertyRef' "${LLVM_SYSPATH}/include/mlir/IR/OperationSupport.h"; then
+  patch_in_place "${CUDATILE_CPP_PATH}" -e 's/\bOpaqueProperties\b/PropertyRef/g'
+else
+  patch_in_place "${CUDATILE_CPP_PATH}" -e 's/\bPropertyRef\b/OpaqueProperties/g'
+fi
+
+# 4) New LLVM revisions renamed DenseIntOrFPElementsAttr to
 # DenseTypedElementsAttr. Keep TileIR 13.4 pinned and bridge the copied build
 # source instead of changing the released TileIR sources.
-echo "[patch] Global rename: DenseIntOrFPElementsAttr → DenseTypedElementsAttr"
-find "${REPO_ROOT}" -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.td" \) \
-  -exec sed -i 's/DenseIntOrFPElementsAttr/DenseTypedElementsAttr/g' {} +
+if grep -q 'DenseTypedElementsAttr' "${LLVM_SYSPATH}/include/mlir/IR/BuiltinAttributes.h"; then
+  dense_rename='s/DenseIntOrFPElementsAttr/DenseTypedElementsAttr/g'
+else
+  dense_rename='s/DenseTypedElementsAttr/DenseIntOrFPElementsAttr/g'
+fi
+while IFS= read -r -d '' source; do
+  patch_in_place "${source}" -e "${dense_rename}"
+done < <(find "${REPO_ROOT}" -path "${REPO_ROOT}/build" -prune -o \
+  -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.td" \) -print0)
 
 # CUDA Tile 13.4 provides canonical i1 bytecode encoding and decoding.
 # Keep that upstream implementation intact.
 
 # 5) Patch BytecodeReader.cpp for LLVM api changes:
-# - Triton 3.7's LLVM uses the 2-argument isValidRawBuffer overload.
-# - Triton 3.7's LLVM exposes make_scope_exit rather than a directly
-#   constructible scope_exit template.
+# Select the API exposed by this Triton revision's pinned LLVM headers.
 BYTECODE_READER_PATH="${REPO_ROOT}/lib/Bytecode/Reader/BytecodeReader.cpp"
 if [[ -f "${BYTECODE_READER_PATH}" ]]; then
   echo "[patch] Patching: ${BYTECODE_READER_PATH}"
-  patch_in_place "${BYTECODE_READER_PATH}" \
-    -e 's/llvm::scope_exit removeIndex(/auto removeIndex = llvm::make_scope_exit(/g' \
-    -e 's/DenseElementsAttr::isValidRawBuffer(tileType, rawData, isSplat)/DenseElementsAttr::isValidRawBuffer(tileType, rawData)/g'
+  if grep -q 'make_scope_exit' "${LLVM_SYSPATH}/include/llvm/ADT/ScopeExit.h"; then
+    patch_in_place "${BYTECODE_READER_PATH}" \
+      -e 's/llvm::scope_exit removeIndex(/auto removeIndex = llvm::make_scope_exit(/g'
+  else
+    patch_in_place "${BYTECODE_READER_PATH}" \
+      -e 's/auto removeIndex = llvm::make_scope_exit(/llvm::scope_exit removeIndex(/g'
+  fi
+  if grep -q 'bool &detectedSplat' "${LLVM_SYSPATH}/include/mlir/IR/BuiltinAttributes.h"; then
+    if ! grep -q 'bool isSplat = false;' "${BYTECODE_READER_PATH}"; then
+      patch_in_place "${BYTECODE_READER_PATH}" \
+        -e '/if (!DenseElementsAttr::isValidRawBuffer(tileType, rawData/i\      [[maybe_unused]] bool isSplat = false;'
+    fi
+    patch_in_place "${BYTECODE_READER_PATH}" \
+      -e 's/DenseElementsAttr::isValidRawBuffer(tileType, rawData)/DenseElementsAttr::isValidRawBuffer(tileType, rawData, isSplat)/g'
+  else
+    patch_in_place "${BYTECODE_READER_PATH}" \
+      -e 's/DenseElementsAttr::isValidRawBuffer(tileType, rawData, isSplat)/DenseElementsAttr::isValidRawBuffer(tileType, rawData)/g'
+  fi
 fi
 
 # This option is newer than the LLVM pinned by Triton 3.7.

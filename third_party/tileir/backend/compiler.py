@@ -89,6 +89,7 @@ class TileIROptions:
     num_warps: int = 4
     cluster_dims: tuple = (1, 1, 1)
     instrumentation_mode: str = ""
+    fpsan_homomorphic_casts: bool = False
     debug: bool = False
     disable_line_info: bool = False
     sanitize_overflow: bool = True
@@ -116,6 +117,8 @@ class TileIROptions:
         return TileIREnvConf.enable_approx()
 
     def __post_init__(self):
+        if self.fpsan_homomorphic_casts:
+            raise NotImplementedError("TileIR does not support FPSan homomorphic casts")
         # Match the immutable option representation exposed by other backends.
         # This only normalizes metadata/cache inputs; it does not link libraries.
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
@@ -134,8 +137,13 @@ class TileIROptions:
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
+@functools.lru_cache()
+def _get_tileiras_version(path):
+    return subprocess.check_output([path, "--version"], text=True).strip()
+
+
 def get_tileir_version():
-    return "13.1"
+    return _get_tileiras_version(TileIREnvConf.get_tileiras_path())
 
 
 class TileIRBackend(BaseBackend):

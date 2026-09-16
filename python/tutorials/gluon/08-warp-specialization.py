@@ -28,7 +28,6 @@ from functools import partial
 from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
 
-from triton.language.core import _aggregate as aggregate
 from triton.experimental.gluon.nvidia.hopper import TensorDescriptor
 from triton.experimental.gluon.language.nvidia.hopper import tma, mbarrier, fence_async_shared
 from triton.experimental.gluon.language.nvidia.blackwell import (
@@ -104,7 +103,7 @@ if __name__ == "__main__" and not is_hopper_or_newer():
 # mbarrier.arrive(bar, count=1)
 #
 # mbarrier.wait(bar, phase=0)  # in partition B
-# tma.async_copy_shared_to_global(desc, [0, 0], smem)
+# tma.async_store(desc, [0, 0], smem)
 # ```
 #
 # A fence is needed somewhere between the shared memory store and the TMA store.
@@ -175,7 +174,7 @@ def store_partition(descs, barriers, buffers, xoff, numel, YBLOCK: gl.constexpr)
         # Wait for the compute partition to produce c.
         mbarrier.wait(c_ready_bar, phase)
         yoff = i * YBLOCK
-        tma.async_copy_shared_to_global(c_desc, [xoff, yoff], c_buf)
+        tma.async_store(c_desc, [xoff, yoff], c_buf)
 
         tma.store_wait(outstanding_stores)
         c_empty_bar = c_empty_bars.index((i - outstanding_stores) % num_buffers)
@@ -185,7 +184,7 @@ def store_partition(descs, barriers, buffers, xoff, numel, YBLOCK: gl.constexpr)
         mbarrier.arrive(c_empty_bar, count=1, pred=i >= outstanding_stores)
 
     # Since we waited for the last value of c, all the other partitions have
-    # exited by now. We just need to wait the stores to complete.
+    # exited by now. We just need the final stores to complete.
     tma.store_wait(0)
 
 
@@ -385,7 +384,7 @@ if __name__ == "__main__":
 
 
 # Helper class for passing arguments around partitions.
-@aggregate
+@gluon.aggregate
 class PartitionArgs:
     a_desc: tma.tensor_descriptor
     b_desc: tma.tensor_descriptor
@@ -417,7 +416,7 @@ class PartitionArgs:
 
 
 # Counter abstraction for tracking barrier index and phase.
-@aggregate
+@gluon.aggregate
 class Counter:
     index: gl.tensor
     phase: gl.tensor
@@ -554,7 +553,7 @@ def matmul_epilogue_partition(p, SchedulerImpl: gl.constexpr):
             if i == 0:
                 mbarrier.arrive(acc_empty_bars.index(acc_state.index), count=1)
             fence_async_shared()
-            tma.async_copy_shared_to_global(p.c_desc, [off_m, off_n + SPLIT_N * i], acc_smem)
+            tma.async_store(p.c_desc, [off_m, off_n + SPLIT_N * i], acc_smem)
     # Overlap the last store with the wait, then wait for the last store here.
     tma.store_wait(pendings=0)
 
