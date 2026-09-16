@@ -13,6 +13,6 @@ Set `ENABLE_TILE=1` before importing Triton. Without it, the default backend is 
 
 ## Capabilities and limitations
 
-The [repository README](../../README.md#cuda-134-update) is the single release support list. It distinguishes ordinary `tl.gather`, descriptor gather/scatter and descriptor atomic reduction, and records the supported scaled-MMA combinations and remaining limitations.
+The [repository README](../../README.md#supported-operations-and-features) is the single release support list. It retains the original guide, updates supported features, and lists the remaining operation and dtype limitations.
 
 For tuning controls, see [Performance Tuning Tips](PerformanceTuningTips.md). Backend-specific capability expectations are maintained in `python/test/conftest.py`; numerical failures and unexpected compiler errors remain failures.
