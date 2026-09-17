@@ -21,7 +21,11 @@ class TensorDescriptor:
         if ty.__name__ not in ("FakeTensor", "FunctionalTensor"):
             assert self.base.data_ptr() % 16 == 0, "base must be 16-byte aligned"
         validate_block_shape(self.block_shape)
-        elem_bytes = self.base.dtype.itemsize
+        # avoid run into 'dtype object has no attribute itemsize' error.
+        if type(self.base).__name__ == "TensorWrapper":
+            elem_bytes = self.base.base.dtype.itemsize
+        else:
+            elem_bytes = self.base.dtype.itemsize
         for stride in self.strides[:-1]:
             assert (stride * elem_bytes) % 16 == 0, "strides must be 16-byte aligned"
         for shape_dim in self.shape:
