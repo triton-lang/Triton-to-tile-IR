@@ -68,8 +68,10 @@ print(f'The maximum difference between torch and triton is '
 #  Customize the libdevice library path
 # -------------------------------------
 # We can also customize the libdevice library path by passing the path to the `libdevice` library to the `asin` kernel.
+# TileIR lowers supported libdevice calls to native CUDA Tile operations;
+# extern_libs does not replace those native implementations.
 def is_cuda():
-    return triton.runtime.driver.active.get_current_target().backend == "cuda"
+    return triton.runtime.driver.active.get_current_target().backend in ("cuda", "tileir")
 
 
 def is_hip():

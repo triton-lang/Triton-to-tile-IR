@@ -10,7 +10,7 @@ from typing import Dict, Tuple, List, Optional
 
 from .. import knobs
 from .jit import KernelInterface, JITFunction
-from .errors import OutOfResources, PTXASError, AutotunerError
+from .errors import OutOfResources, PTXASError, TileirasError, AutotunerError
 from .driver import driver
 from .cache import get_cache_manager, triton_key
 from triton._C.libtriton import get_cache_invalidating_env_vars
@@ -94,6 +94,7 @@ class Autotuner(KernelInterface):
         self.num_reps = rep
         self.use_cuda_graph = use_cuda_graph
 
+
         # If we got explicitly called via the old interface, raise a warning
         # and proceed with the old behavior.
         if warmup is not None or rep is not None or use_cuda_graph:
@@ -162,7 +163,7 @@ class Autotuner(KernelInterface):
 
         try:
             return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
-        except (OutOfResources, CompileTimeAssertionFailure, PTXASError) as e:
+        except (OutOfResources, CompileTimeAssertionFailure, PTXASError, TileirasError) as e:
             if verbose:
                 print(f"Autotuning failed with {e}")
             return [float("inf"), float("inf"), float("inf")]
@@ -233,7 +234,6 @@ class Autotuner(KernelInterface):
                     full_nargs = {**self.nargs, **kwargs, **self.cache[key].all_kwargs()}
                     self.pre_hook(full_nargs, reset_only=True)
                     self.configs_timings = timings
-
                 if self.cache_results:
                     used_cached_result = self.check_disk_cache(key, pruned_configs, benchmark)
                 else:
@@ -318,9 +318,14 @@ class Config:
     :ivar pre_hook: a function that will be called before the kernel is called. Parameters of this
                     function are args.
     :ivar ir_override: filename of a user-defined IR (*.{ttgir|llir|ptx|amdgcn}).
+    :ivar opt_level: tileir backend optimization level.
     """
 
-    def __init__(self, kwargs, num_warps=4, num_stages=3, num_ctas=1, maxnreg=None, pre_hook=None, ir_override=None):
+    # [Diff]
+    # TODO: do we retain opt_level? rename it or remove it?
+    # - Better autotune with Better kernel naming
+    # - Add opt_level in Config's every builtin methods
+    def __init__(self, kwargs, num_warps=4, num_stages=3, num_ctas=1, maxnreg=None, pre_hook=None, ir_override=None, opt_level=3):
         self.kwargs = kwargs
         self.num_warps = num_warps
         self.num_ctas = num_ctas
@@ -328,6 +333,7 @@ class Config:
         self.maxnreg = maxnreg
         self.pre_hook = pre_hook
         self.ir_override = ir_override
+        self.opt_level = opt_level
 
     def __setstate__(self, state):
         self.kwargs = state.get("kwargs", {})
@@ -337,19 +343,32 @@ class Config:
         self.maxnreg = state.get("maxnreg", None)
         self.pre_hook = state.get("pre_hook", None)
         self.ir_override = state.get("ir_override", None)
+        self.opt_level = state.get("opt_level", 0)
 
     def all_kwargs(self):
+        # NOTE:
+        # `opt_level` is only meaningful for the "tileir" backend.
+        # For other backends, do not pass it through as a kernel meta-parameter.
+        from .driver import driver
+        backend = driver.active.get_current_target().backend
+
+        extra_kwargs = [
+            ("num_warps", self.num_warps),
+            ("num_ctas", self.num_ctas),
+            ("num_stages", self.num_stages),
+            ("maxnreg", self.maxnreg),
+            ("ir_override", self.ir_override),
+        ]
+        if backend == "tileir":
+            extra_kwargs.append(("opt_level", self.opt_level))
+
         return {
-            **self.kwargs, **{
+            **self.kwargs,
+            **{
                 k: v
-                for (k, v) in (
-                    ("num_warps", self.num_warps),
-                    ("num_ctas", self.num_ctas),
-                    ("num_stages", self.num_stages),
-                    ("maxnreg", self.maxnreg),
-                    ("ir_override", self.ir_override),
-                ) if v is not None
-            }
+                for (k, v) in extra_kwargs
+                if v is not None
+            },
         }
 
     def __str__(self):
@@ -360,21 +379,23 @@ class Config:
         res.append(f"num_ctas: {self.num_ctas}")
         res.append(f"num_stages: {self.num_stages}")
         res.append(f"maxnreg: {self.maxnreg}")
+        res.append(f"opt_level: {self.opt_level}")
         return ", ".join(res)
 
+    def _key(self):
+        # Configs may be deduplicated at import time. Their identity must not
+        # initialize a device or change when the active backend changes.
+        return (*self.kwargs.items(), self.num_warps, self.num_ctas,
+                self.num_stages, self.maxnreg, self.pre_hook, self.ir_override,
+                self.opt_level)
+
     def __hash__(self):
-        return hash((*self.all_kwargs().items(), self.pre_hook))
+        return hash(self._key())
 
     def __eq__(self, other):
-        self_tuple = tuple((
-            *self.all_kwargs().items(),
-            self.pre_hook,
-        ))
-        other_tuple = tuple((
-            *other.all_kwargs().items(),
-            other.pre_hook,
-        ))
-        return self_tuple == other_tuple
+        if not isinstance(other, Config):
+            return NotImplemented
+        return self._key() == other._key()
 
 
 def autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_value=None, pre_hook=None, post_hook=None,

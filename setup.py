@@ -334,7 +334,7 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
     if is_offline_build():
         return
     triton_cache_path = get_triton_cache_path()
-    if variable in os.environ:
+    if variable is not None and variable in os.environ:
         return
     base_dir = os.path.dirname(__file__)
     system = platform.system()
@@ -631,7 +631,58 @@ def download_and_copy_dependencies():
     )
 
 
-backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
+    # Match the public CUDA Tile compiler runtime independently of PTX codegen.
+    download_and_copy(
+        name="cupti",
+        src_func=lambda system, arch, version: f"cuda_cupti-{system}-{arch}-{version}-archive/lib",
+        dst_path="lib/cupti-blackwell",
+        variable="TRITON_CUPTI_LIB_BLACKWELL_PATH",
+        version=NVIDIA_TOOLCHAIN_VERSION["cupti-blackwell"],
+        url_func=lambda system, arch, version:
+        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
+    )
+    download_and_copy(
+        name="tileiras",
+        src_func=lambda system, arch, version:
+        f"cuda_tileiras-{system}-{arch}-{version}-archive/bin/tileiras{exe_extension}",
+        dst_path="tileir_cuda/bin/tileiras",
+        variable="TRITON_TILEIRAS_PATH",
+        version=NVIDIA_TOOLCHAIN_VERSION["tileiras"],
+        url_func=lambda system, arch, version:
+        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_tileiras/{system}-{arch}/cuda_tileiras-{system}-{arch}-{version}-archive.tar.xz",
+    )
+    download_and_copy(
+        name="tileir-ptxas",
+        src_func=lambda system, arch, version:
+        f"cuda_nvcc-{system}-{arch}-{version}-archive/bin/ptxas{exe_extension}",
+        dst_path="tileir_cuda/bin/ptxas",
+        variable=None,
+        version=NVIDIA_TOOLCHAIN_VERSION["tileir-ptxas"],
+        url_func=lambda system, arch, version:
+        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/{system}-{arch}/cuda_nvcc-{system}-{arch}-{version}-archive.tar.xz",
+    )
+    download_and_copy(
+        name="tileir-libnvvm",
+        src_func=lambda system, arch, version:
+        f"libnvvm-{system}-{arch}-{version}-archive/nvvm/lib64",
+        dst_path="tileir_cuda/nvvm/lib64",
+        variable=None,
+        version=NVIDIA_TOOLCHAIN_VERSION["tileir-libnvvm"],
+        url_func=lambda system, arch, version:
+        f"https://developer.download.nvidia.com/compute/cuda/redist/libnvvm/{system}-{arch}/libnvvm-{system}-{arch}-{version}-archive.tar.xz",
+    )
+    download_and_copy(
+        name="tileir-libdevice",
+        src_func=lambda system, arch, version:
+        f"libnvvm-{system}-{arch}-{version}-archive/nvvm/libdevice",
+        dst_path="tileir_cuda/nvvm/libdevice",
+        variable=None,
+        version=NVIDIA_TOOLCHAIN_VERSION["tileir-libnvvm"],
+        url_func=lambda system, arch, version:
+        f"https://developer.download.nvidia.com/compute/cuda/redist/libnvvm/{system}-{arch}/libnvvm-{system}-{arch}-{version}-archive.tar.xz",
+    )
+
+backends = [*BackendInstaller.copy(["nvidia", "amd", "tileir"]), *BackendInstaller.copy_externals()]
 
 
 def get_package_dirs():
