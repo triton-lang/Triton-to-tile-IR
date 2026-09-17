@@ -27,7 +27,6 @@ cat > "${INSTALL_DIR}/activate.sh" <<EOF
 #   source ${INSTALL_DIR}/activate.sh
 export PYTHONPATH="${INSTALL_DIR}\${PYTHONPATH:+:\$PYTHONPATH}"
 export ENABLE_TILE=1
-export HELION_BACKEND=tileir
 echo "triton_tileir activated."
 EOF
 
@@ -40,7 +39,6 @@ if [ -n "\${PYTHONPATH:-}" ]; then
     [ -z "\${PYTHONPATH}" ] && unset PYTHONPATH || export PYTHONPATH
 fi
 unset ENABLE_TILE
-unset HELION_BACKEND
 echo "triton_tileir deactivated. OSS triton is now active."
 EOF
 
