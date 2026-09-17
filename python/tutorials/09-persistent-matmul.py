@@ -57,7 +57,7 @@ def supports_ws():
 
 
 def supports_clc():
-    return is_cuda() and torch.cuda.get_device_capability()[0] >= 10
+    return triton.runtime.driver.active.get_current_target().backend == "cuda" and torch.cuda.get_device_capability()[0] >= 10
 
 
 def _matmul_launch_metadata(grid, kernel, args):

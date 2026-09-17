@@ -131,7 +131,7 @@ from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor, fp8e8m0_to_float32
 
 
 def is_cuda():
-    return triton.runtime.driver.active.get_current_target().backend == "cuda"
+    return triton.runtime.driver.active.get_current_target().backend in ("cuda", "tileir")
 
 
 def is_hip_cdna4():
@@ -738,8 +738,9 @@ if __name__ == "__main__":
     parser.add_argument("--clc", action="store_true", help="Enable CLC scheduling on NVIDIA SM100+")
     args = parser.parse_args()
 
-    if args.clc and (not is_cuda() or torch.cuda.get_device_capability()[0] < 10):
-        parser.error("--clc requires an NVIDIA SM100+ GPU")
+    if args.clc and (triton.runtime.driver.active.get_current_target().backend != "cuda"
+                     or torch.cuda.get_device_capability()[0] < 10):
+        parser.error("--clc requires the NVIDIA PTX backend on an SM100+ GPU")
 
     if not supports_block_scaling():
         print("⛔ This example requires GPU support for block scaled matmul")

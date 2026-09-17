@@ -65,6 +65,8 @@ def pytest_collection_modifyitems(items):
         "test_jit", "test_select_ids", "test_trace", "test_multi_session",
         "test_autotune", "test_warp_spec", "test_timeline", "test_globaltime",
         "test_overhead", "test_gmem_buffer", "test_event_args", "test_threaded_kernel_call",
+        "test_event", "test_gluon_event", "test_gluon_warp_specialized_event",
+        "test_gluon_warp_specialized_dynamic_event", "test_no_scope_zero_scratch",
     }
     for item in items:
         params = item.callspec.params if hasattr(item, "callspec") else {}

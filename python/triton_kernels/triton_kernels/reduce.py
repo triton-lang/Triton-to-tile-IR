@@ -179,6 +179,7 @@ def _select_reduce_forward_config(
         mask_chainable
         and K <= 32
         and target_info.is_cuda()
+        and not target_info.is_tileir()
         and torch.cuda.get_device_capability()[0] >= 9
     )
 

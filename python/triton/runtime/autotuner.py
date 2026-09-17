@@ -427,19 +427,20 @@ class Config:
         res.append(f"ir_override: {self.ir_override}")
         return ", ".join(res)
 
+    def _key(self):
+        # Configs may be deduplicated at import time. Their identity must not
+        # initialize a device or change when the active backend changes.
+        return (*self.kwargs.items(), self.num_warps, self.num_ctas,
+                self.num_stages, self.maxnreg, self.pre_hook, self.ir_override,
+                self.opt_level)
+
     def __hash__(self):
-        return hash((*self.all_kwargs().items(), self.pre_hook))
+        return hash(self._key())
 
     def __eq__(self, other):
-        self_tuple = tuple((
-            *self.all_kwargs().items(),
-            self.pre_hook,
-        ))
-        other_tuple = tuple((
-            *other.all_kwargs().items(),
-            other.pre_hook,
-        ))
-        return self_tuple == other_tuple
+        if not isinstance(other, Config):
+            return NotImplemented
+        return self._key() == other._key()
 
 
 def autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_value=None, pre_hook=None, post_hook=None,

@@ -3505,6 +3505,43 @@ class ConvertKnownNumericInlineAsmToNativeOp
   }
 };
 
+// The packed PTX instruction independently decodes each unsigned scale byte.
+// Public ftof preserves its minimum exponent and NaN encoding natively.
+class ConvertPackedE8M0UpcastInlineAsmToNativeOp
+    : public OpConversionPattern<triton::ElementwiseInlineAsmOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::ElementwiseInlineAsmOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!op.getPure() || op.getPackedElement() != 2 ||
+        op.getNumResults() != 1 || adaptor.getArgs().size() != 1 ||
+        normalizeNativeInlineAsm(op.getConstraints()) != "=r,h" ||
+        normalizeNativeInlineAsm(op.getAsmString()) !=
+            "cvt.rn.bf16x2.ue8m0x2 $0,$1;")
+      return failure();
+
+    auto resultTy = dyn_cast_or_null<cuda_tile::TileType>(
+        getTypeConverter()->convertType(op->getResult(0).getType()));
+    Value input = adaptor.getArgs()[0];
+    auto inputTy = dyn_cast<cuda_tile::TileType>(input.getType());
+    if (!resultTy || !resultTy.getElementType().isBF16() || !inputTy ||
+        !inputTy.getElementType().isSignlessInteger(8) ||
+        inputTy.getShape() != resultTy.getShape() ||
+        inputTy.getNumElements() % 2 != 0)
+      return failure();
+
+    auto loc = op.getLoc();
+    auto scaleTy = cuda_tile::TileType::get(
+        inputTy.getShape(), Float8E8M0FNUType::get(rewriter.getContext()));
+    Value scale = cuda_tile::BitcastOp::create(rewriter, loc, scaleTy, input);
+    auto rn = cuda_tile::RoundingModeAttr::get(
+        rewriter.getContext(), cuda_tile::RoundingMode::NEAREST_EVEN);
+    rewriter.replaceOpWithNewOp<cuda_tile::FToFOp>(op, resultTy, scale, rn);
+    return success();
+  }
+};
+
 // Match only the packed FP4-to-half conversion used by triton_kernels. The
 // caller subsequently extracts the low/high halfwords from this i32 result.
 class ConvertPackedFp4UpcastInlineAsmToNativeOp
@@ -3751,6 +3788,8 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
 
   patterns.add<ConvertGdcInlineAsmToNativeOp>(typeConverter, context, /*benefit=*/2);
   patterns.add<ConvertPackedFp4UpcastInlineAsmToNativeOp>(
+      typeConverter, context, /*benefit=*/2);
+  patterns.add<ConvertPackedE8M0UpcastInlineAsmToNativeOp>(
       typeConverter, context, /*benefit=*/2);
   patterns.add<ConvertKnownNumericInlineAsmToNativeOp>(typeConverter, context,
                                                        /*benefit=*/2);

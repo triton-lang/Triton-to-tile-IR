@@ -88,6 +88,7 @@ class TileIROptions:
     # tileir doesn't need these flags, just for compatibility with other backend
     num_warps: int = 4
     cluster_dims: tuple = (1, 1, 1)
+    clc: bool = False
     instrumentation_mode: str = ""
     fpsan_homomorphic_casts: bool = False
     debug: bool = False
@@ -117,6 +118,10 @@ class TileIROptions:
         return TileIREnvConf.enable_approx()
 
     def __post_init__(self):
+        if self.clc:
+            raise NotImplementedError("TileIR does not support CLC scheduling with CUDA 13.4")
+        if self.instrumentation_mode:
+            raise NotImplementedError("TileIR does not support compiler instrumentation modes")
         if self.fpsan_homomorphic_casts:
             raise NotImplementedError("TileIR does not support FPSan homomorphic casts")
         # Match the immutable option representation exposed by other backends.
