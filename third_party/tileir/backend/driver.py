@@ -20,7 +20,6 @@ from triton.runtime.build import compile_module_from_src
 from triton.runtime.cache import get_cache_manager
 from triton.backends.compiler import GPUTarget
 from triton.backends.driver import GPUDriver
-from triton.backends.tileir.conf import TileIREnvConf
 from triton.tools.tensor_descriptor import TensorDescriptor
 
 
