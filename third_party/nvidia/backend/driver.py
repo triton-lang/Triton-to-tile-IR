@@ -407,5 +407,3 @@ class CudaDriver(GPUDriver):
 
     def clear_cache(self, cache):
         cache.zero_()
-
-GlobalNvidiaDriver = CudaDriver()

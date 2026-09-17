@@ -16,7 +16,7 @@ from typing import Callable, Concatenate, Generic, Iterable, Optional, ParamSpec
 from triton.backends import BaseBackend
 from types import ModuleType
 from .. import knobs
-from .driver import driver, _create_driver, _is_tileir_enabled
+from .driver import driver, _create_driver, _get_backend_driver, _is_tileir_enabled
 from . import _async_compile
 from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dict, is_namedtuple
 
@@ -25,7 +25,6 @@ import os
 from .cache import get_cache_key
 from ..runtime.driver import driver
 from triton.backends.tileir.driver import get_tileir_driver
-from triton.backends.nvidia.driver import GlobalNvidiaDriver
 
 from triton._C.libtriton import get_cache_invalidating_env_vars, native_specialize_impl, ir
 
@@ -762,7 +761,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
             previous_backend = os.environ.get("TRITON_DEFAULT_BACKEND")
             os.environ["ENABLE_TILE"] = "0"
             os.environ["TRITON_DEFAULT_BACKEND"] = "nvidia"
-            driver.set_active(GlobalNvidiaDriver)
+            driver.set_active(_get_backend_driver("nvidia"))
             try:
                 fallback_kwargs = dict(kwargs)
                 fallback_kwargs.pop("occupancy", None)

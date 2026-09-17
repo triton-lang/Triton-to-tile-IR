@@ -762,9 +762,13 @@ def bench(K, dtype, reps=10000, warmup_reps=10000):
 
 def run_test(expect, fn, a, b, label, enabled=True):
     print(f"  {label}: ...", end="")
-    actual = fn(a, b)
-    passed = torch.allclose(expect, actual.to(expect.dtype), atol=1.0)
-    icon = "✅" if passed else "❌"
+    if enabled:
+        actual = fn(a, b)
+        passed = torch.allclose(expect, actual.to(expect.dtype), atol=1.0)
+        icon = "✅" if passed else "❌"
+        assert passed, f"{label}: numerical validation failed"
+    else:
+        icon = "⭕"
     print(f"\r  {label}: {icon}  ")
 
 
