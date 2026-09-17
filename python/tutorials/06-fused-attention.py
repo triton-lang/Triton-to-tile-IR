@@ -29,7 +29,7 @@ def is_hip():
 
 
 def is_cuda():
-    return triton.runtime.driver.active.get_current_target().backend == "cuda"
+    return triton.runtime.driver.active.get_current_target().backend in ("cuda", "tileir")
 
 
 def supports_host_descriptor():
@@ -155,9 +155,14 @@ def keep(conf):
 
 def prune_invalid_configs(configs, named_args, **kwargs):
     N_CTX = kwargs["N_CTX"]
+    STAGE = kwargs["STAGE"]
 
     # Filter out configs where BLOCK_M > N_CTX
-    return [conf for conf in configs if conf.kwargs.get("BLOCK_M", 0) <= N_CTX]
+    # Filter out configs where BLOCK_M < BLOCK_N when causal is True
+    return [
+        conf for conf in configs if conf.kwargs.get("BLOCK_M", 0) <= N_CTX and (
+            conf.kwargs.get("BLOCK_M", 0) >= conf.kwargs.get("BLOCK_N", 0) or STAGE == 1)
+    ]
 
 
 @triton.jit
@@ -168,7 +173,7 @@ def _maybe_make_tensor_desc(desc_or_ptr, shape, strides, block_shape):
         return tl.make_tensor_descriptor(desc_or_ptr, shape, strides, block_shape)
 
 
-@triton.autotune(configs=list(filter(keep, configs)), key=["N_CTX", "HEAD_DIM", "FP8_OUTPUT", "warp_specialize"],
+@triton.autotune(configs=list(filter(keep, configs)), key=["N_CTX", "HEAD_DIM", "FP8_OUTPUT", "warp_specialize", "STAGE"],
                  prune_configs_by={'early_config_prune': prune_invalid_configs})
 @triton.jit
 def _attn_fwd(sm_scale, M,  #

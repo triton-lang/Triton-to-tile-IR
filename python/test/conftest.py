@@ -227,7 +227,7 @@ _TILEIR_134_UNSUPPORTED = {('unit/instrumentation/test_gpuhello.py', 'test_op'):
  ('unit/test_perf_warning.py', 'test_remark_vectorization'): 'this test requires the NVIDIA vectorization pass '
                                                              'remark text; TileIR uses a different compiler '
                                                              'pipeline',
- ('unit/test_stages_inspection.py', 'test_inspection'): 'this inspection/reproducer test installs NVIDIA '
+ ('backend/test_stages_inspection.py', 'test_inspection'): 'this inspection/reproducer test installs NVIDIA '
                                                         'make_ttgir, which is not a TileIR compilation stage',
  ('unit/tools/test_aot.py', 'test_compile_link_autotune_matmul'): 'TileIR has no AOT compile/link templates or '
                                                                   'profile-scratch metadata for this CUDA C '
@@ -337,8 +337,6 @@ def pytest_collection_modifyitems(items):
         if key == ("unit/language/test_line_info.py", "test_line_info"):
             if params.get("func") == "call_noinline":
                 line_reason = "public backend inlines device helpers; separate callee source-line coverage is not preserved"
-            elif params.get("func") == "autotune":
-                line_reason = "public13.4 compiler omits the optimized loop-header line while preserving load/store lines"
         elif key == ("unit/language/test_line_info.py", "test_line_info_ir_source") and params.get("status") == "":
             line_reason = "public13.4 cubin omits the original TTIR load source line retained in input TileIR"
         if line_reason:

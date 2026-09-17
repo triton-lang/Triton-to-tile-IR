@@ -29,7 +29,6 @@ class Autotuner(KernelInterface):
                 `prune_configs_by( configs: List[triton.Config], named_args: Dict[str, Any], **kwargs: Dict[str, Any]) -> List[triton.Config]:`
                 and return pruned configs. It should return at least one config.
         """
-        self.backend = driver.active.get_current_target().backend
         if not configs:
             self.configs = [Config({}, num_warps=4, num_stages=3, num_ctas=1)]
         else:
@@ -149,7 +148,7 @@ class Autotuner(KernelInterface):
                 config.pre_hook(full_nargs)
             self.pre_hook(full_nargs)
             try:
-                kernel = self.fn.run(
+                self.fn.run(
                     *args,
                     **current,
                 )
@@ -245,10 +244,8 @@ class Autotuner(KernelInterface):
             config = self.configs[0]
         self.best_config = config
         if knobs.autotuning.print and not used_cached_result:
-            print(
-                f"Triton autotuning for function {self.base_fn.__name__} finished after "
-                f"{self.bench_time:.2f}s\nbest config selected: {self.best_config}\n\033[31mbest kernel: {self.config2kernel[self.best_config]} latency: {self.configs_timings[self.best_config][0]:.5f}\033[0m ms"
-            )
+            print(f"Triton autotuning for function {self.base_fn.__name__},\nwith key as {key},\n"
+                  f"finished after {self.bench_time:.2f}s,\nbest config selected: {self.best_config};")
         if config.pre_hook is not None:
             full_nargs = {**self.nargs, **kwargs, **config.all_kwargs()}
             config.pre_hook(full_nargs)
@@ -385,19 +382,20 @@ class Config:
         res.append(f"opt_level: {self.opt_level}")
         return ", ".join(res)
 
+    def _key(self):
+        # Configs may be deduplicated at import time. Their identity must not
+        # initialize a device or change when the active backend changes.
+        return (*self.kwargs.items(), self.num_warps, self.num_ctas,
+                self.num_stages, self.maxnreg, self.pre_hook, self.ir_override,
+                self.opt_level)
+
     def __hash__(self):
-        return hash((*self.all_kwargs().items(), self.pre_hook))
+        return hash(self._key())
 
     def __eq__(self, other):
-        self_tuple = tuple((
-            *self.all_kwargs().items(),
-            self.pre_hook,
-        ))
-        other_tuple = tuple((
-            *other.all_kwargs().items(),
-            other.pre_hook,
-        ))
-        return self_tuple == other_tuple
+        if not isinstance(other, Config):
+            return NotImplemented
+        return self._key() == other._key()
 
 
 def autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_value=None, pre_hook=None, post_hook=None,

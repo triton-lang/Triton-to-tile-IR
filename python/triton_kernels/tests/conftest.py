@@ -63,6 +63,7 @@ def pytest_collection_modifyitems(items):
     unsupported_pairs = {
         ("bfloat16", "mxfloat4_e2m1"),
         ("bfloat16", "mxfloat8_e4m3fn"),
+        ("bfloat16", "mxfloat8_e5m2"),
         ("float8_e5m2", "mxfloat4_e2m1"),
         ("float8_e5m2", "mxfloat8_e4m3fn"),
         ("mxfloat8_e4m3fn", "mxfloat4_e2m1"),
@@ -77,9 +78,7 @@ def pytest_collection_modifyitems(items):
             reason = "CTK 13.4 TileIR: native scaled MMA requires matching FP4/FP8 types and both scales"
         elif (item.path.resolve() == root / "test_tensor_details/test_layout_hopper.py"
               and item.originalname == "test_upcast_mxfp4_to_bf16"
-              and set(params) == {"mx_axis", "num_warps"}
-              and type(params["mx_axis"]) is int and params["mx_axis"] in (0, 1)
-              and type(params["num_warps"]) is int and params["num_warps"] in (4, 8)):
+              and not params):
             reason = "CTK 13.4 TileIR: Hopper MXFP4 unpacking requires unsupported packed BF16 inline assembly"
         if reason:
             item.add_marker(pytest.mark.xfail(run=False, strict=True, reason=reason))
@@ -93,9 +92,9 @@ def pytest_collection_modifyitems(items):
                 or type(params.get("is_persistent")) is not bool
                 or not all(type(params.get(dim)) is int and params[dim] > 0 for dim in ("m", "n", "k"))):
             continue
-        if type(params.get("b_hbm_swizzling")) is not bool:
+        if type(params.get("hbm_swizzling")) is not bool:
             continue
-        if params["b_hbm_swizzling"]:
+        if params["hbm_swizzling"]:
             # The existing layout selector picks Blackwell value layout on
             # SM100. Hopper's BF16 decode + ordinary dot must remain runnable.
             target = item.module.triton.runtime.driver.active.get_current_target()
