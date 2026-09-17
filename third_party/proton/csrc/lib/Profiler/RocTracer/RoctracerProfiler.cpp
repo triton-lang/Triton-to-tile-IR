@@ -6,11 +6,12 @@
 #include "Driver/GPU/RoctracerApi.h"
 #include "Runtime/HipRuntime.h"
 #include "Utility/Env.h"
+#include "Utility/Errors.h"
 
+#include "Driver/GPU/RoctxTypes.h"
 #include "hip/amd_detail/hip_runtime_prof.h"
 #include "roctracer/roctracer_ext.h"
 #include "roctracer/roctracer_hip.h"
-#include "roctracer/roctracer_roctx.h"
 
 #include <algorithm>
 #include <iostream>
@@ -91,11 +92,10 @@ convertActivityToMetric(const roctracer_record_t *activity) {
 }
 
 void processActivityKernel(
-    RoctracerProfiler::CorrIdToExternIdMap &corrIdToExternId,
-    RoctracerProfiler::ExternIdToStateMap &externIdToState,
+    CorrIdToExternIdMap &corrIdToExternId, ExternIdToStateMap &externIdToState,
     ThreadSafeMap<uint64_t, bool, std::unordered_map<uint64_t, bool>>
         &corrIdToIsHipGraph,
-    std::map<Data *, std::pair<size_t, size_t>> &dataPhases, size_t externId,
+    DataPhases &dataPhases, size_t externId,
     const roctracer_record_t *activity) {
   if (externId == Scope::DummyScopeId)
     return;
@@ -142,12 +142,10 @@ void processActivityKernel(
 }
 
 void processActivity(
-    RoctracerProfiler::CorrIdToExternIdMap &corrIdToExternId,
-    RoctracerProfiler::ExternIdToStateMap &externIdToState,
+    CorrIdToExternIdMap &corrIdToExternId, ExternIdToStateMap &externIdToState,
     ThreadSafeMap<uint64_t, bool, std::unordered_map<uint64_t, bool>>
         &corrIdToIsHipGraph,
-    std::map<Data *, std::pair<size_t, size_t>> &dataPhases, size_t parentId,
-    const roctracer_record_t *record) {
+    DataPhases &dataPhases, size_t parentId, const roctracer_record_t *record) {
   switch (record->kind) {
   case kHipVdiCommandTask:
   case kHipVdiCommandKernel: {
@@ -256,7 +254,7 @@ struct RoctracerProfiler::RoctracerProfilerPimpl
         getIntEnv("TRITON_PROFILE_METRIC_BUFFER_SIZE", 64 * 1024 * 1024),
         runtime);
   }
-  virtual ~RoctracerProfilerPimpl() = default;
+  ~RoctracerProfilerPimpl() override = default;
 
   void doStart() override;
   void doFlush() override;
@@ -302,6 +300,9 @@ void RoctracerProfiler::RoctracerProfilerPimpl::apiCallback(
       const char *kernelName = getKernelName(cid, data);
       threadState.enterOp(Scope(kernelName ? kernelName : ""));
       auto &dataToEntry = threadState.dataToEntry;
+      if (dataToEntry.empty()) {
+        return;
+      }
       size_t numInstances = 1;
       if (cid == HIP_API_ID_hipGraphLaunch) {
         pImpl->corrIdToIsHipGraph[data->correlation_id] = true;
@@ -387,9 +388,13 @@ void RoctracerProfiler::RoctracerProfilerPimpl::apiCallback(
         break;
       }
       }
+      const bool deactivated = threadState.dataToEntry.empty();
       threadState.exitOp();
+      if (deactivated) {
+        return;
+      }
       // Track outstanding op for flush
-      profiler.correlation.submit(data->correlation_id);
+      profiler.correlation.submit(/*numNodes=*/1, data->correlation_id);
     }
   } else if (domain == ACTIVITY_DOMAIN_ROCTX) {
     const roctx_api_data_t *data =
@@ -410,13 +415,12 @@ void RoctracerProfiler::RoctracerProfilerPimpl::activityCallback(
       profiler.pImpl.get());
   auto &correlation = profiler.correlation;
 
-  static thread_local std::map<Data *, size_t> dataFlushedPhases;
   const roctracer_record_t *record =
       reinterpret_cast<const roctracer_record_t *>(begin);
   const roctracer_record_t *endRecord =
       reinterpret_cast<const roctracer_record_t *>(end);
   uint64_t maxCorrelationId = 0;
-  std::map<Data *, std::pair<size_t, size_t>> dataPhases;
+  DataPhases dataPhases;
 
   while (record != endRecord) {
     // Log latest completed correlation id.  Used to ensure we have flushed all
@@ -439,8 +443,7 @@ void RoctracerProfiler::RoctracerProfilerPimpl::activityCallback(
     roctracer::getNextRecord<true>(record, &record);
   }
   correlation.complete(maxCorrelationId);
-  profiler.flushDataPhases(dataFlushedPhases, dataPhases,
-                           profiler.pendingGraphPool.get());
+  profiler.flushDataPhases(dataPhases, profiler.pendingGraphPool.get());
 }
 
 void RoctracerProfiler::RoctracerProfilerPimpl::doStart() {
@@ -459,6 +462,11 @@ void RoctracerProfiler::RoctracerProfilerPimpl::doStart() {
   roctracer::openPool<true>(&properties);
   roctracer::enableDomainActivity<true>(ACTIVITY_DOMAIN_HIP_OPS);
   roctracer::start();
+
+  if (!profiler.timestampOffsetNs) {
+    profiler.timestampOffsetNs =
+        detail::computeTimestampOffsetNs(roctracer::getTimestamp<true>);
+  }
 }
 
 void RoctracerProfiler::RoctracerProfilerPimpl::doFlush() {
@@ -495,8 +503,7 @@ void RoctracerProfiler::doSetMode(
                                     periodicFlushingFormat, modeAndOptions,
                                     "RoctracerProfiler");
   } else if (!mode.empty()) {
-    throw std::invalid_argument(
-        "[PROTON] RoctracerProfiler: unsupported mode: " + mode);
+    throw makeInvalidArgument("RoctracerProfiler: unsupported mode: " + mode);
   }
 }
 

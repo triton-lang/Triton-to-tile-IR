@@ -23,6 +23,11 @@ __all__ = [
     "async_load_im2col",
     "async_store",
     "store_wait",
+    "tensor_descriptor",
+    "tensor_descriptor_im2col",
+    "tensor_descriptor_type",
+    "tensor_descriptor_im2col_type",
+    "make_tensor_descriptor",
 ]
 
 
@@ -168,12 +173,9 @@ def _emit_alignment_check(desc, coord, fn_name: str, arg_name: str, _semantic=No
     elem_bytes = dtype.primitive_bitwidth // 8
     align = align_bytes // elem_bytes
 
-    align_val = ttgl.to_tensor(align, _semantic=_semantic)
-    zero = ttgl.to_tensor(0, _semantic=_semantic)
-
     coord = ttgl.to_tensor(coord, _semantic=_semantic)
-    rem = coord.__mod__(align_val, _semantic=_semantic)
-    is_zero = rem.__eq__(zero, _semantic=_semantic)
+    rem = coord.__mod__(align, _semantic=_semantic)
+    is_zero = rem.__eq__(0, _semantic=_semantic)
 
     fp4_padded = "with fp4_padded=True " if desc.layout.fp4_padded else ""
     ttgl.device_assert(
@@ -202,7 +204,9 @@ def async_load(tensor_desc, coord, barrier, result, pred=True, multicast=False, 
     Args:
         tensor_desc: Tensor descriptor (tiled)
         coord: Coordinates in the source tensor
-        barrier: Barrier for synchronization
+        barrier: Barrier for synchronization. In a two-CTA kernel, use a
+            two-CTA barrier when this TMA load feeds a tcgen05 op; otherwise
+            use a barrier allocated with ``two_ctas=False``.
         result: Destination memory descriptor
         pred: Predicate for conditional execution
         multicast: Enable multicast
@@ -237,7 +241,9 @@ def async_load_im2col(tensor_desc, coord, offsets, barrier, result, pred=True, m
             - For 3D tensors: 1 offset
             - For 4D tensors: 2 offsets
             - For 5D tensors: 3 offsets
-        barrier: Barrier for synchronization
+        barrier: Barrier for synchronization. In a two-CTA kernel, use a
+            two-CTA barrier when this TMA load feeds a tcgen05 op; otherwise
+            use a barrier allocated with ``two_ctas=False``.
         result: Destination memory descriptor
         pred: Predicate for conditional execution
         multicast: Enable multicast
@@ -277,10 +283,19 @@ def async_store(tensor_desc, coord, src, _semantic=None):
     _semantic.builder.create_async_tma_copy_local_to_global(tensor_desc.handle, coord, src.handle)
 
 
-# Backward-compatible aliases
-async_copy_global_to_shared = async_load
-async_copy_global_to_shared_im2col = async_load_im2col
-async_copy_shared_to_global = async_store
+@builtin
+def async_copy_global_to_shared(*args, _semantic=None, **kwargs):
+    raise RuntimeError("async_copy_global_to_shared has been removed; call async_load instead")
+
+
+@builtin
+def async_copy_global_to_shared_im2col(*args, _semantic=None, **kwargs):
+    raise RuntimeError("async_copy_global_to_shared_im2col has been removed; call async_load_im2col instead")
+
+
+@builtin
+def async_copy_shared_to_global(*args, _semantic=None, **kwargs):
+    raise RuntimeError("async_copy_shared_to_global has been removed; call async_store instead")
 
 
 def _async_atomic_shared_to_global(kind, tensor_desc, coord, src, fn_name: str, _semantic=None):
@@ -375,9 +390,24 @@ def async_atomic_xor(tensor_desc, coord, src, _semantic=None):
 
 
 @builtin
-def store_wait(pendings, _semantic=None):
+def store_wait(pendings, read_only=True, _semantic=None):
+    """
+    Wait for pending TMA stores.
+
+    Args:
+        pendings (int | ttgl.constexpr): Maximum number of TMA stores allowed to remain pending.
+        read_only (bool | ttgl.constexpr): If true, wait only until the pending stores have finished reading
+            their shared-memory sources, but writes may not be visible in HBM. Defaults to true.
+
+    Notes:
+        By default, ``tma.store_wait`` only waits for the TMA store to finish reading from the shared memory,
+        however this does not mean that the write has been fully flushed to HBM. If your kernel uses TMA to pass
+        messages between CTAs, or between nvlink devices then you will need to use ``read_only=False`` before any
+        release operation.
+    """
     pendings = _unwrap_if_constexpr(pendings)
-    _semantic.builder.create_async_tma_store_wait(pendings)
+    read_only = _unwrap_if_constexpr(read_only)
+    _semantic.builder.create_async_tma_store_wait(pendings, read_only)
 
 
 @builtin

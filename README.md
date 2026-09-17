@@ -2,7 +2,7 @@ See [The original Triton README](https://github.com/triton-lang/Triton-to-tile-I
 
 ## ⚡ Helion Hackathon — Performance Tuning Guide
 
-**The default backend is OSS PTX. The linked Triton 3.6 wheel is a previous release; this source branch uses Triton 3.7 and CUDA Tile IR 13.4. Using [Helion](https://github.com/pytorch/helion) with the TileIR backend([whl](https://github.com/triton-lang/Triton-to-tile-IR/releases/download/v3.6.0-rc1/nvtriton-3.6.0-cp313-cp313-linux_x86_64.whl))?** Check out the **[Helion TileIR Backend Performance Tuning Guide](HelionPerformanceTuningGuide.md)** for config recipes, autotuning strategies, and porting tips.
+**The default backend is OSS PTX. The linked Triton 3.6 wheel is a previous release; this source branch uses a Triton 3.8 development snapshot and CUDA Tile IR 13.4. Using [Helion](https://github.com/pytorch/helion) with the TileIR backend([whl](https://github.com/triton-lang/Triton-to-tile-IR/releases/download/v3.6.0-rc1/nvtriton-3.6.0-cp313-cp313-linux_x86_64.whl))?** Check out the **[Helion TileIR Backend Performance Tuning Guide](HelionPerformanceTuningGuide.md)** for config recipes, autotuning strategies, and porting tips.
 
 ### ⚠️ How to Submit TileIR Result
 
@@ -37,7 +37,7 @@ import helion.language as hl
 ---
 
 # Triton CUDA Tile IR Backend
-This incubator repo adds the CUDA Tile IR backend to Triton. Users can enable the CUDA Tile IR backend by setting the environment variable `ENABLE_TILE=1`. This branch uses Triton 3.7, public CUDA Tile IR v13.4.0 sources, and matching 13.4.59 compiler and runtime components. Set `ENABLE_TILE=1` before importing Triton.
+This incubator repo adds the CUDA Tile IR backend to Triton. Users can enable the CUDA Tile IR backend by setting the environment variable `ENABLE_TILE=1`. This branch uses a Triton 3.8 development snapshot, public CUDA Tile IR v13.4.0 sources, and matching 13.4.59 compiler and runtime components. Set `ENABLE_TILE=1` before importing Triton.
 
 ## How to install?
 doesn't change
@@ -107,7 +107,7 @@ CUDA Tile IR accepts `num_warps` for compatibility, while `occupancy` controls t
 - Tensor descriptor (TMA) gather/scatter, atomic reductions, and load padding.
 - Ordinary `tt.gather`, `tt.unsplat`, and `tt.map_elementwise`.
 - Matching FP4/FP8 scaled matrix multiplication, including single-scale FP8.
-- More native math and conversion operations, bf16 atomic add, source-line information, and memory ordering improvements.
+- Native atomic load/store with acquire/release ordering, bf16 atomic add, more native math and conversions, and source-line information.
 
 ### Operations and features not yet supported or fully supported:
 - `tt.elementwise_inline_asm` (general inline PTX; only selected forms have native lowerings)
@@ -119,9 +119,11 @@ CUDA Tile IR accepts `num_warps` for compatibility, while `occupancy` controls t
 - TMA reduce (floating-point min/max are not supported; floating-point add and supported integer reductions are available)
 - `math.erf`
 - `atomic_cas` (bf16 and fp16 not supported)
+- Multi-CTA `atomic_cas` return values for some small tensor shapes in CUDA 13.4
+- `atomic_poll`
 - TMA read-modify-write operations that return the previous values (descriptor reductions do not return values)
 - TMA offsets must satisfy the contiguous dimension's 16-byte alignment requirement
 - i64 tensor descriptor coordinates (use i32 coordinates; this does not restrict ordinary pointer indexing or descriptor strides to i32)
 - Conditional replacement of tensor descriptors
-- Block pointers and histogram
+- Histogram
 - Gluon, Proton instrumentation, and PTX/TTGIR/LLIR inspection or override
