@@ -82,7 +82,7 @@ class TileIREnvConf:
     @staticmethod
     def in_release_pipeline():
         """Check if running in release pipeline environment"""
-        return os.getenv("NVT_RUN_RELEASE_PIPELINE", "0") == "1"
+        return os.getenv("TILEIR_RUN_RELEASE_PIPELINE", "0") == "1"
 
     @staticmethod
     def get_sm_arch():
@@ -95,7 +95,7 @@ class TileIREnvConf:
 
     @staticmethod
     def enable_tma_offset_assert_check():
-        return os.getenv("NVT_TMA_OFFSET_CHECK", "0") == "1"
+        return os.getenv("TILEIR_TMA_OFFSET_CHECK", "0") == "1"
 
 
 @contextmanager
