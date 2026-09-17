@@ -1855,6 +1855,11 @@ void init_triton_ir(py::module &&m) {
               std::vector<Value> &offsets) -> Value {
              return self.create<AdvanceOp>(ptr.getType(), ptr, offsets);
            })
+      // TileIR does not run the TTG lowering that handles ttg.barrier.
+      .def("create_gpu_barrier",
+           [](TritonOpBuilder &self) {
+             self.create<mlir::gpu::BarrierOp>();
+           })
       // Make a tensor descriptor
       .def("create_make_tensor_descriptor",
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &shape,

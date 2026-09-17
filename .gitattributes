@@ -1,0 +1,14 @@
+third_party/tileir/scripts/cuda_dep_arm64/bin filter=lfs diff=lfs merge=lfs -text
+third_party/tileir/scripts/cuda_dep_arm64/nvvm filter=lfs diff=lfs merge=lfs -text
+third_party/tileir/scripts/cuda_dep_x86/bin filter=lfs diff=lfs merge=lfs -text
+third_party/tileir/scripts/cuda_dep_x86/nvvm filter=lfs diff=lfs merge=lfs -text
+third_party/tileir/scripts/cuda_dep_arm64/bin/ptxas filter=lfs diff=lfs merge=lfs -text
+third_party/tileir/scripts/cuda_dep_arm64/bin/tileiras filter=lfs diff=lfs merge=lfs -text
+third_party/tileir/scripts/cuda_dep_arm64/nvvm/lib64/libnvvm.so filter=lfs diff=lfs merge=lfs -text
+third_party/tileir/scripts/cuda_dep_arm64/nvvm/lib64/libnvvm.so.4 filter=lfs diff=lfs merge=lfs -text
+third_party/tileir/scripts/cuda_dep_arm64/nvvm/lib64/libnvvm.so.4.0.0 filter=lfs diff=lfs merge=lfs -text
+third_party/tileir/scripts/cuda_dep_x86/nvvm/lib64/libnvvm.so filter=lfs diff=lfs merge=lfs -text
+third_party/tileir/scripts/cuda_dep_x86/nvvm/lib64/libnvvm.so.4 filter=lfs diff=lfs merge=lfs -text
+third_party/tileir/scripts/cuda_dep_x86/nvvm/lib64/libnvvm.so.4.0.0 filter=lfs diff=lfs merge=lfs -text
+third_party/tileir/scripts/cuda_dep_x86/bin/ptxas filter=lfs diff=lfs merge=lfs -text
+third_party/tileir/scripts/cuda_dep_x86/bin/tileiras filter=lfs diff=lfs merge=lfs -text

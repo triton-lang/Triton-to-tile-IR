@@ -8,7 +8,7 @@ from ..backends.compiler import BaseBackend, GPUTarget
 from .. import __version__, knobs
 from ..runtime.autotuner import OutOfResources
 from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager, get_cache_key
-from ..runtime.driver import driver
+from ..runtime.driver import driver, _get_driver_for_target, _is_tileir_enabled
 from ..tools.disasm import get_sass
 from pathlib import Path
 import re
@@ -76,7 +76,10 @@ class ASTSource:
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
     def make_ir(self, target: GPUTarget, options, codegen_fns, module_map, context):
-        from .code_generator import ast_to_ttir
+        if target.backend == "tileir":
+            from ..backends.tileir.code_generator import ast_to_ttir
+        else:
+            from .code_generator import ast_to_ttir
         return ast_to_ttir(self.fn, self, context=context, options=options, codegen_fns=codegen_fns,
                            module_map=module_map)
 
@@ -131,8 +134,9 @@ class IRSource:
 
 
 @functools.lru_cache()
-def max_shared_mem(device):
-    return driver.active.utils.get_device_properties(device)["max_shared_mem"]
+def max_shared_mem(device, runtime_driver=None):
+    runtime_driver = driver.active if runtime_driver is None else runtime_driver
+    return runtime_driver.utils.get_device_properties(device)["max_shared_mem"]
 
 
 def parse(full_name, ext, context):
@@ -162,6 +166,8 @@ def filter_traceback(e: BaseException):
 
     # If a user has a file that matches one of these, they're out of luck.
     BAD_FILES = [
+        # [Diff] add tileir code_generator.py to the bad files for compile error test
+        "/triton/backends/tileir/code_generator.py",
         "/triton/compiler/code_generator.py",
         "/ast.py",
     ]
@@ -227,6 +233,10 @@ def compile(src, target=None, options=None, _env_vars=None):
     compilation_listener = knobs.compilation.listener
     if compilation_listener:
         timer = CompileTimer()
+
+    if _is_tileir_enabled() and target is not None and target.backend == "cuda":
+        # torch.compile will set the target to cuda, but we need to compile the kernel for tileir
+        target = GPUTarget("tileir", target.arch, target.warp_size)
 
     if target is None:
         target = driver.active.get_current_target()
@@ -435,6 +445,7 @@ class CompiledKernel:
         self.module = None
         self.function = None
         self._run = None
+        self._driver = None
 
     def _init_handles(self):
         if self.module is not None:
@@ -450,26 +461,53 @@ class CompiledKernel:
             self._run = functools.partial(_raise_error, cloned_err)
             raise err
 
-        device = driver.active.get_current_device()
-        # create launcher
-        self._run = driver.active.launcher_cls(self.src, self.metadata)
+        # The compiled target determines both the launcher and binary-load ABI.
+        # Loading a cached kernel must not depend on the current environment.
+        runtime_driver = _get_driver_for_target(self.metadata.target)
+        self._driver = runtime_driver
+        device = runtime_driver.get_current_device()
+        self._run = runtime_driver.launcher_cls(self.src, self.metadata)
         # not enough shared memory to run the kernel
-        max_shared = max_shared_mem(device)
-        if self.metadata.shared > max_shared:
-            raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
-        if hasattr(self.metadata, "tmem_size") and self.metadata.tmem_size is not None:
-            # Use blackwell max tmem size for now, this should be moved in device properties
-            max_tmem_size = 512  # tmem size in number of columns
-            if self.metadata.tmem_size > max_tmem_size:
-                raise_(OutOfResources(self.metadata.tmem_size, max_tmem_size, "tensor memory"))
-        if knobs.runtime.kernel_load_start_hook is not None:
-            knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
-        # TODO: n_regs, n_spills should be metadata generated when calling `ptxas`
-        self.module, self.function, self.n_regs, self.n_spills, self.n_max_threads = driver.active.utils.load_binary(
-            self.name, self.kernel, self.metadata.shared, device)
-        warp_size = driver.active.get_current_target().warp_size
-        if self.metadata.num_warps * warp_size > self.n_max_threads:
-            raise_(OutOfResources(self.metadata.num_warps * warp_size, self.n_max_threads, "threads"))
+        if self.metadata.target.backend == "tileir":
+            # todo:
+            # * n_regs, n_spills, smem size should be metadata generated in lowerings.
+            # * load_binary function signature has been changed.
+            if knobs.runtime.kernel_load_start_hook is not None:
+                knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
+            from collections import namedtuple
+            (
+                self.module,
+                self.function,
+                self.n_regs,
+                self.n_spills,
+                self.static_smem_bytes,
+                self.n_max_threads,
+            ) = runtime_driver.utils.load_binary(self.name, self.kernel, device)
+            if "shared" not in self.metadata._fields:
+                KernelMetadata = namedtuple("KernelMetadata", self.metadata._fields + ("shared",))
+                self.metadata = KernelMetadata(**self.metadata._asdict(), shared=self.static_smem_bytes)
+            # not enough shared memory to run the kernel
+            max_shared = max_shared_mem(device, runtime_driver)
+            if self.metadata.shared > max_shared:
+                raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
+        else:
+            # not enough shared memory to run the kernel
+            if hasattr(self.metadata, "tmem_size") and self.metadata.tmem_size is not None:
+                # Use blackwell max tmem size for now, this should be moved in device properties
+                max_tmem_size = 512  # tmem size in number of columns
+                if self.metadata.tmem_size > max_tmem_size:
+                    raise_(OutOfResources(self.metadata.tmem_size, max_tmem_size, "tensor memory"))
+            max_shared = max_shared_mem(device, runtime_driver)
+            if self.metadata.shared > max_shared:
+                raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
+            if knobs.runtime.kernel_load_start_hook is not None:
+                knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
+            # TODO: n_regs, n_spills should be metadata generated when calling `ptxas`
+            self.module, self.function, self.n_regs, self.n_spills, self.n_max_threads = runtime_driver.utils.load_binary(
+                self.name, self.kernel, self.metadata.shared, device)
+            warp_size = runtime_driver.get_current_target().warp_size
+            if self.metadata.num_warps * warp_size > self.n_max_threads:
+                raise_(OutOfResources(self.metadata.num_warps * warp_size, self.n_max_threads, "threads"))
         if knobs.runtime.kernel_load_end_hook is not None:
             knobs.runtime.kernel_load_end_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
 
@@ -495,10 +533,11 @@ class CompiledKernel:
 
         def runner(*args, stream=None):
             if stream is None:
-                device = driver.active.get_current_device()
-                stream = driver.active.get_current_stream(device)
+                device = self._driver.get_current_device()
+                stream = self._driver.get_current_stream(device)
             launch_metadata = self.launch_metadata(grid, stream, *args)
             self.run(grid[0], grid[1], grid[2], stream, self.function, self.packed_metadata, launch_metadata,
                      knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *args)
 
         return runner
+

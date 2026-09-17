@@ -86,6 +86,11 @@ class BaseBackend(metaclass=ABCMeta):
         return ""
 
     @staticmethod
+    def get_tensor_descriptor_specialization(arg):
+        # Backends that encode descriptor properties at runtime need no key.
+        return None
+
+    @staticmethod
     def get_tensor_specialization(arg, **kwargs):
         if arg.data_ptr() % 16 == 0 and kwargs.get("align", False):
             return "D"

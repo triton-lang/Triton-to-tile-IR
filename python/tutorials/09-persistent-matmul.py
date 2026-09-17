@@ -33,7 +33,7 @@ from typing import Optional
 
 
 def is_cuda():
-    return triton.runtime.driver.active.get_current_target().backend == "cuda"
+    return triton.runtime.driver.active.get_current_target().backend in ("cuda", "tileir")
 
 
 def is_hip():

@@ -22,7 +22,6 @@ TRITON_BUILTIN = "__triton_builtin__"
 
 PropagateNan = ir.PROPAGATE_NAN
 
-
 def must_use_result(x, s=True):
     """If the result of this function is unused, throw an error."""
     if isinstance(x, str):
@@ -1291,6 +1290,7 @@ class tuple(base_value):
             raise AttributeError(f"'tuple' object has no attribute {name}")
         return self.values[fields.index(name)]
 
+
     # TODO: remove
     def _setitem(self, idx, value):
         idx = _unwrap_if_constexpr(idx)
@@ -1487,6 +1487,36 @@ class tensor_descriptor_type(tensor_descriptor_base_type):
                                                                                     == other.strides_type)
 
 
+class tileir_tensor_descriptor_type(tensor_descriptor_type):
+
+    def __init__(self, block_type: block_type, shape_type: tuple_type, strides_type: tuple_type):
+        super().__init__(block_type, shape_type, strides_type)
+        self.ptr_type = pointer_type(block_type.element_ty)
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple[tensor_descriptor_base, int]:
+        handle = handles[cursor]
+        cursor += 1
+        # Support host tma function call
+        ptr, cursor = self.ptr_type._unflatten_ir(handles, cursor)
+        shape, cursor = self.shape_type._unflatten_ir(handles, cursor)
+        strides, cursor = self.strides_type._unflatten_ir(handles, cursor)
+        shape = shape.values
+        strides = strides.values
+        # Support host tma function call
+        value = tileir_tensor_descriptor(handle, shape, strides, self.block_type, ptr)
+        return value, cursor
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        # We need to insert ptr_type before shape and strides, so we cannot call super()._flatten_ir_types()
+        # because that would append shape and strides immediately.
+        # Call the base class of tensor_descriptor_type instead.
+        tensor_descriptor_base_type._flatten_ir_types(self, builder, out)
+        # Support host tma function call
+        self.ptr_type._flatten_ir_types(builder, out)
+        self.shape_type._flatten_ir_types(builder, out)
+        self.strides_type._flatten_ir_types(builder, out)
+
+
 class tensor_descriptor(tensor_descriptor_base):
     """A descriptor representing a tensor in global memory.
     """
@@ -1508,6 +1538,31 @@ class tensor_descriptor(tensor_descriptor_base):
         handles.append(self.handle)
         self.shape._flatten_ir(handles)
         self.strides._flatten_ir(handles)
+
+
+class tileir_tensor_descriptor(tensor_descriptor):
+    """A descriptor representing a tensor in global memory for tileIR.
+    """
+
+    def __init__(self, handle, shape: List[tensor], strides: List[tensor], block_type: block_type, ptr):
+        """Not called by user code."""
+        # We call super with the standard args
+        super().__init__(handle, shape, strides, block_type)
+        # additional ptr field to satisfy tileir backend TensorDescriptor handling.
+        self.ptr = ptr
+        # Overwrite the type with tileir specific type
+        self.type = tileir_tensor_descriptor_type(
+            block_type,
+            shape_type=self.shape.type,
+            strides_type=self.strides.type,
+        )
+
+    def _flatten_ir(self, handles: List[ir.value]) -> None:
+        handles.append(self.handle)
+        # Support host tma function call
+        handles.append(self.ptr.handle)
+        handles.extend(s.handle for s in self.shape)
+        handles.extend(s.handle for s in self.strides)
 
 
 # -----------------------
@@ -1851,6 +1906,7 @@ def join(a, b, _semantic=None):
     :type b: Tensor
     """
     return _semantic.join(a, b)
+
 
 
 def _unsplat(x, _semantic=None, _generator=None):

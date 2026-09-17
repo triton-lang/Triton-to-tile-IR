@@ -7,12 +7,12 @@ import numbers
 
 from triton.runtime import driver
 
+
 from .._C.libtriton import ir
 from . import core as tl
 
 T = TypeVar('T')
 TensorTy = TypeVar('TensorTy')
-
 
 class IncompatibleTypeErrorImpl(Exception):
 
@@ -1105,6 +1105,7 @@ class TritonSemantic(Generic[TensorTy]):
         assert len(offsets) == ndim, f"expected {ndim} offsets, but got {len(offsets)}"
 
         offsets = self._convert_to_ir_values(offsets, require_i64=False)
+
         x = self.builder.create_descriptor_load(desc.handle, offsets, self._str_to_load_cache_modifier(cache_modifier),
                                                 self._str_to_eviction_policy(eviction_policy))
         return self.tensor(x, desc.block_type)
@@ -1120,6 +1121,7 @@ class TritonSemantic(Generic[TensorTy]):
         # implicitly cast to the descriptor's type
         value = self.cast(value, desc.dtype)
         offsets = self._convert_to_ir_values(offsets, require_i64=False)
+
         return self.tensor(self.builder.create_descriptor_store(desc.handle, value.handle, offsets), tl.void)
 
     def descriptor_atomic_add(self, desc: tl.tensor_descriptor_base, value: TensorTy, offsets) -> TensorTy:
@@ -1131,7 +1133,7 @@ class TritonSemantic(Generic[TensorTy]):
 
     def _has_native_tma(self, ):
         target = driver.active.get_current_target()
-        return (target.backend == "cuda" and target.arch >= 90)
+        return ((target.backend == "cuda" or target.backend == "tileir") and target.arch >= 90)
 
     def _descriptor_atomic_min_max_supported(self, dtype):
         assert dtype in {tl.uint32, tl.int32, tl.uint64, tl.int64, tl.float16, tl.bfloat16}, "Unsupported dtype"
@@ -1831,6 +1833,11 @@ class TritonSemantic(Generic[TensorTy]):
         return x
 
     def debug_barrier(self) -> TensorTy:
+        # TileIR lowers gpu.barrier directly and does not run the TTG lowering
+        # that handles ttg.barrier. Keep this backend bridge until TileIR gains
+        # native ttg.barrier support.
+        if self.builder.options.backend_name == "tileir":
+            return self.tensor(self.builder.create_gpu_barrier(), tl.void)
         return self.tensor(self.builder.create_barrier(), tl.void)
 
     def device_print(self, prefix: str, args: List[TensorTy], hex: bool) -> TensorTy:
@@ -1973,4 +1980,7 @@ class TritonSemantic(Generic[TensorTy]):
         handle = self.builder.create_make_tensor_descriptor(base_handle, [s.handle for s in shape],
                                                             [s.handle for s in strides], block_shape, is_signed_int,
                                                             padding)
+        target = driver.active.get_current_target()
+        if target.backend == "tileir":
+            return tl.tileir_tensor_descriptor(handle, shape, strides, type, base)
         return tl.tensor_descriptor(handle, shape, strides, type)
