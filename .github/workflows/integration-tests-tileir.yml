@@ -1,4 +1,4 @@
-name: nvtriton-tileir-ci-integration-tests
+name: triton-tileir-ci-integration-tests
 
 on:
   workflow_call:
@@ -7,7 +7,7 @@ on:
         required: true
         type: string
       wheel-artifact-base:
-        description: 'Base name of wheel artifact for CI image (e.g. nvtriton-wheel-abc123). If set, builds --target wheel.'
+        description: 'Base name of wheel artifact for CI image (e.g. triton_tileir-wheel-abc123). If set, builds --target wheel.'
         required: false
         type: string
         default: ''

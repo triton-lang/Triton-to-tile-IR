@@ -1,4 +1,4 @@
-name: nvtriton-tileir-ci
+name: triton-tileir-ci
 on:
   push:
     branches:
@@ -50,17 +50,17 @@ jobs:
     uses: ./.github/workflows/pre-commit.yml
 
   build-wheel:
-    name: build-nvtriton-wheels
+    name: build-triton-tileir-wheels
     needs: config
     uses: NVIDIA/TileGym/.github/workflows/build-wheel.yml@main
     with:
-      package-name: nvtriton
+      package-name: triton_tileir
       artifact-suffix: ${{ needs.config.outputs.artifact_suffix }}
       python-versions: '["3.10", "3.11", "3.12", "3.13", "3.14"]'
       architectures: '["x86_64", "arm64"]'
       retention-days: 7
       skip-import-test: true  # Triton requires CUDA/GPU
-      check-wheel-contents-ignore: 'W002'  # nvtriton ships .so + versioned symlinks (duplicate content)
+      check-wheel-contents-ignore: 'W002'  # triton_tileir ships .so + versioned symlinks (duplicate content)
       runner-x86-64: 'linux-amd64-cpu32m'
       runner-arm64: 'linux-arm64-cpu32m'
 
