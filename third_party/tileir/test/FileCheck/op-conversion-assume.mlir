@@ -27,9 +27,9 @@ module @kernel{
     %c8_i32 = arith.constant 8 : i32
     %c1_i64 = arith.constant 1 : i64
     %0 = arith.extsi %arg6 : i32 to i64
-    %1 = tt.make_tensor_descriptor %arg0, [%arg3, %arg5], [%0, %c1_i64] : <f16>, <tensor<64x64xf16>>
+    %1 = tt.make_tensor_descriptor %arg0, [%arg3, %arg5], [%0, %c1_i64] : <f16>, <64x64xf16>
     %2 = arith.extsi %arg7 : i32 to i64
-    %3 = tt.make_tensor_descriptor %arg1, [%arg4, %arg5], [%2, %c1_i64] : <f16>, <tensor<64x64xf16>>
+    %3 = tt.make_tensor_descriptor %arg1, [%arg4, %arg5], [%2, %c1_i64] : <f16>, <64x64xf16>
     %4 = tt.get_program_id x : i32
     %5 = arith.addi %arg3, %c63_i32 : i32
     %6 = arith.divsi %5, %c64_i32 : i32
@@ -64,8 +64,8 @@ module @kernel{
       %34 = arith.muli %32, %c64_i32 : i32
       %35 = scf.for %arg13 = %c0_i32 to %10 step %c1_i32 iter_args(%arg14 = %cst) -> (tensor<64x64xf32>)  : i32 {
         %43 = arith.muli %arg13, %c64_i32 : i32
-        %44 = tt.descriptor_load %1[%33, %43] : !tt.tensordesc<tensor<64x64xf16>> -> tensor<64x64xf16>
-        %45 = tt.descriptor_load %3[%34, %43] : !tt.tensordesc<tensor<64x64xf16>> -> tensor<64x64xf16>
+        %44 = tt.descriptor_load %1[%33, %43] : !tt.tensordesc<64x64xf16> -> tensor<64x64xf16>
+        %45 = tt.descriptor_load %3[%34, %43] : !tt.tensordesc<64x64xf16> -> tensor<64x64xf16>
         %46 = tt.trans %45 {order = array<i32: 1, 0>} : tensor<64x64xf16> -> tensor<64x64xf16>
         %47 = tt.dot %44, %46, %arg14, inputPrecision = tf32 : tensor<64x64xf16> * tensor<64x64xf16> -> tensor<64x64xf32>
         scf.yield %47 : tensor<64x64xf32>

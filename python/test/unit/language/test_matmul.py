@@ -5,7 +5,7 @@ import triton
 import triton.language as tl
 from test_mxfp import MXFP4Tensor, MXScaleTensor
 import re
-from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4, is_hip_cdna, is_tileir, is_hip_gfx1250
+from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4, is_hip_cdna, is_hip_gfx1250
 
 
 def f8_to_f16(x, dtype):
@@ -161,8 +161,6 @@ def test_simple_matmul(dtype_src_str, dtype_dst_str, BLOCK_M, BLOCK_N, BLOCK_K, 
         rtol = 0.001
     torch.testing.assert_close(ref_out, output, atol=atol, rtol=rtol)
     # Make sure the mma is pipelined by checking if in the TTGIR we see two mmav5
-    if is_tileir():
-        return
     # operations. (Pipeliner will add additional mma operation by peeling the prologue.)
     # This applies only if TCv5 MMA is used (M % 64 == 0 and N % 8 == 0) and
     # when MMA arguments loads are pipelined (N > 16)
@@ -287,10 +285,6 @@ def test_simple_persistent_matmul(BLOCK_M, BLOCK_N, BLOCK_K, NUM_WARPS, DISALLOW
     torch.testing.assert_close(ref_out, output, atol=0.01, rtol=0.01)
 
     # Make sure the mma is pipelined by checking if in the TTGIR we have peeled mmav5 ops.
-    if is_tileir():
-        return
-
-    # Make sure the mma is pipelined by checking if in the TTGIR we have peeled mmav5 ops.
     # This applies only if TCv5 MMA is used (M % 64 == 0 and N % 8 == 0) and
     # when MMA arguments loads are pipelined (N > 16)
     if (device == "cuda" and torch.cuda.get_device_capability()[0] == 10 and BLOCK_M % 64 == 0 and BLOCK_N % 8 == 0
@@ -367,8 +361,6 @@ def test_mxfp(BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, nonKDim, NUM_WARPS, device)
             pytest.skip("Scaled mxfp8 matmul is only natively supported on CDNA4 or above")
         if (nonKDim == 16 and BLOCK_K < 128) or (nonKDim == 32 and BLOCK_K < 64):
             pytest.skip(f"CDNA4 does not support {BLOCK_K=} for scaled mfma {nonKDim=} variants")
-    if is_tileir():
-        pytest.skip("skip for tileir, tt.dot_scaled")
         if (BLOCK_M == 256 or BLOCK_N == 256) and BLOCK_K == 256:
             pytest.skip("Config requires too much shared memory")
 
@@ -756,8 +748,6 @@ def test_preshuffle_scale_mxfp_cdna4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, DTYPE_A
 @pytest.mark.parametrize("USE_2D_SCALE_LOAD", [False, True])
 @pytest.mark.skipif(is_hip() or torch.cuda.get_device_capability()[0] != 10, reason="Requires compute capability == 10")
 def test_blocked_scale_mxfp(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, USE_2D_SCALE_LOAD, device):
-    if is_tileir():
-        pytest.skip("skip for tileir, tt.dot_scaled")
     if BLOCK_N == 256 and BLOCK_K == 256:
         NUM_STAGES = min(NUM_STAGES, 2)
     elif BLOCK_K == 256:
@@ -804,9 +794,6 @@ def test_blocked_scale_mxfp(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, USE_
     atol = 0.0001
     rtol = 0.0001
     torch.testing.assert_close(ref_out, output, atol=atol, rtol=rtol)
-    # Make sure the mma is pipelined by checking if in the TTGIR we see two mmav5
-    if is_tileir():
-        return
 
     if USE_2D_SCALE_LOAD:
         # Due to an issue in the coalescing pass, tmem_copy can not be generated for the 5D load.
@@ -834,7 +821,6 @@ def test_blocked_scale_mxfp(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, USE_
 @pytest.mark.parametrize("a_trans", [False, True])
 @pytest.mark.parametrize("dtype_src_str", ["float32", "float16", "float8e5"])
 @pytest.mark.skipif(is_hip() or torch.cuda.get_device_capability()[0] != 10, reason="Requires compute capability == 10")
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, ttgir")
 def test_lhs_in_tmem(BLOCK_M, BLOCK_N, BLOCK_K, a_trans, dtype_src_str, device, monkeypatch):
     M = 1024
     N = 512
@@ -865,9 +851,6 @@ def test_lhs_in_tmem(BLOCK_M, BLOCK_N, BLOCK_K, a_trans, dtype_src_str, device, 
     atol = 0.03
     rtol = 0.03
     torch.testing.assert_close(ref_out, output, atol=atol, rtol=rtol)
-    # Make sure the mma is pipelined by checking if in the TTGIR we see two mmav5
-    if is_tileir():
-        return
     pattern = r"%\w+\s*=\s*ttng\.tmem_alloc[\s\S]*?tng\.tc_gen5_mma\s+%\w+,"
     ttgir = k.asm["ttgir"]
     assert re.search(pattern, ttgir)
@@ -902,7 +885,6 @@ def lhs_in_tmem_kernel_mxfp(  #
 
 
 @pytest.mark.skipif(is_hip() or torch.cuda.get_device_capability()[0] != 10, reason="Requires compute capability == 10")
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, ttgir")
 def test_lhs_in_tmem_mxfp(device, monkeypatch):
     _knob_promote_lhs_to_tmem(monkeypatch)
     M, N, K = 128, 64, 32
@@ -931,9 +913,6 @@ def test_lhs_in_tmem_mxfp(device, monkeypatch):
     atol = 0.003
     rtol = 0.003
     torch.testing.assert_close(ref_out, output, atol=atol, rtol=rtol)
-    # Make sure the mma is pipelined by checking if in the TTGIR we see two mmav5
-    if is_tileir():
-        return
 
 
 @triton.jit
@@ -1033,8 +1012,6 @@ def test_block_scale_fp4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, VEC_SIZE, with_a_sc
             pytest.skip("CDNA4 only supports E8M0 scale")
         if (nonKDim == 16 and BLOCK_K < 128) or (nonKDim == 32 and BLOCK_K < 64):
             pytest.skip(f"CDNA4 does not support {BLOCK_K=} for scaled mfma {nonKDim=} variants")
-    if is_tileir():
-        pytest.skip("skip for tileir, tt.dot_scaled")
 
     NUM_STAGES = 1
     torch.manual_seed(42)
@@ -1184,7 +1161,7 @@ def test_mxfp8_mxfp4_matmul(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, B_TR
         if not (A_DATA_TYPE == "float8e5" and B_DATA_TYPE == "float4"):
             pytest.skip(f"(A: {A_DATA_TYPE}, B: {B_DATA_TYPE}) has not been tested on NV backend")
     elif is_hip():
-        if not is_hip_cdna4():
+        if not (is_hip_cdna4() or is_hip_gfx1250()):
             pytest.skip("Scaled mxfp4 & mxfp8 matmul is only natively supported on CDNA4 and above")
         if (nonKDim == 16 and BLOCK_K < 128) or (nonKDim == 32 and BLOCK_K < 64):
             pytest.skip(f"CDNA4 does not support {BLOCK_K=} for scaled mfma {nonKDim=} variants")
@@ -1194,8 +1171,6 @@ def test_mxfp8_mxfp4_matmul(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, B_TR
             pytest.skip("Float4 matmul packed along M/N unsupported on gfx1250")
         if (BLOCK_M == 256 or BLOCK_N == 256) and BLOCK_K == 256:
             pytest.skip("Config requires too much shared memory")
-    if is_tileir():
-        pytest.skip("skip for tileir, tt.dot_scaled")
     if not PACK_B_ALONG_K and B_DATA_TYPE != "float4":
         pytest.skip("Pack along K can only be False for float4")
     if BLOCK_N == 256 and BLOCK_K == 256:

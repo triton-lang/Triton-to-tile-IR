@@ -513,9 +513,9 @@ def download_and_copy_dependencies(helper_args: BuildHelperArgs):
         f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_tileiras/{system}-{arch}/cuda_tileiras-{system}-{arch}-{version}-archive.tar.xz",
         helper_args=helper_args,
     )
-    # tileiras (13.3.x) invokes ptxas + libnvvm/libdevice from a CUDA_HOME at
+    # tileiras (13.4.x) invokes ptxas + libnvvm/libdevice from a CUDA_HOME at
     # runtime to lower Tile IR -> SASS. The container's system CUDA may be older
-    # (e.g. 13.2) and cannot codegen SM100 tcgen05 MMA. Bundle a matching 13.3
+    # (e.g. 13.2) and cannot codegen SM100 tcgen05 MMA. Bundle a matching 13.4
     # ptxas + libnvvm + libdevice into a self-contained tileir CUDA_HOME
     # (backends/nvidia/tileir_cuda) that conf.py points CUDA_HOME at for the
     # tileiras subprocess only. NOTE: must NOT reuse bin/ (Triton's own ptxas

@@ -83,6 +83,7 @@ class TileIRCodeGenerator(CodeGenerator):
         noinline=False,
         file_name: Optional[str] = None,
         begin_line=0,
+        begin_col=1,
     ):
         super().__init__(
             context=context,
@@ -100,6 +101,7 @@ class TileIRCodeGenerator(CodeGenerator):
             noinline=noinline,
             file_name=file_name,
             begin_line=begin_line,
+            begin_col=begin_col,
         )
     def get_used_vars(self, stmt):
         used_vars = dict()
@@ -152,6 +154,7 @@ class TileIRCodeGenerator(CodeGenerator):
                 noinline=fn.noinline,
                 file_name=file_name,
                 begin_line=begin_line,
+                begin_col=fn.def_file_col_number,
                 options=self.builder.options,
                 codegen_fns=self.builder.codegen_fns,
                 module_map=self.builder.module_map,
@@ -217,6 +220,7 @@ def ast_to_ttir(fn, src, context, options, codegen_fns, module_map, module=None)
         is_kernel=True,
         file_name=file_name,
         begin_line=begin_line,
+        begin_col=fn.def_file_col_number,
         options=options,
         codegen_fns=codegen_fns,
         module_map=module_map,

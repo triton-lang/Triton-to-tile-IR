@@ -1,11 +1,8 @@
 import triton
 import re
 import os
-from triton._internal_testing import is_tileir
-import pytest
 
 
-@pytest.mark.skipif(is_tileir(), reason="Skip for tileir, ttgir")
 def test_triton_reproducer_path(monkeypatch, tmp_path):
     # If we get a cache hit there will be no reproducer generated
     monkeypatch.setenv("TRITON_ALWAYS_COMPILE", "1")

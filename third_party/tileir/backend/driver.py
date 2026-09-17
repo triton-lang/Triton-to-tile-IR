@@ -8,7 +8,6 @@ import shutil
 from pathlib import Path
 import tempfile
 import threading
-import torch
 from triton.backends.nvidia.driver import (
     library_dirs,
     include_dirs,
@@ -527,9 +526,8 @@ class TileIRLauncher(object):
         self.launch_pdl = metadata.launch_pdl
 
     def __call__(self, *args, **kwargs):
-        # TODO: below if branch is for torch 2.8.0a0+5228986c39.nvinternal commit
-        # where constexpr arguments are not passed to the launch function by inductor
-        # remove this after torch
+        # Inductor may omit constexpr arguments from the launcher call.
+        # Restore those values from the compile-time constants when needed.
         # 9 is the number of metadata arguments in `src` defined in `make_launcher`
         num_launch_args = 9
         num_params = len(args) - num_launch_args
@@ -570,14 +568,15 @@ class TileIRDriver(GPUDriver):
 
     @staticmethod
     def is_active():
+        selected = os.environ.get("TRITON_DEFAULT_BACKEND")
+        if selected and selected != "tileir":
+            return False
+        if selected != "tileir" and os.environ.get("ENABLE_TILE", "0") != "1":
+            return False
         try:
             import torch
 
-            return (
-                torch.cuda.is_available()
-                and os.environ.get("ENABLE_TILE", "0") == "1"
-                and (torch.version.hip is None)
-            )
+            return torch.cuda.is_available() and torch.version.hip is None
         except ImportError:
             return False
 
@@ -602,4 +601,15 @@ class TileIRDriver(GPUDriver):
         cache.zero_()
 
 
-GlobalTileIRDriver = TileIRDriver()
+_global_tileir_driver = None
+_global_tileir_driver_lock = threading.Lock()
+
+
+def get_tileir_driver():
+    # Backend discovery imports this module even for explicit NVIDIA dispatch.
+    # Construct the real driver only when selected; retain one shared instance.
+    global _global_tileir_driver
+    with _global_tileir_driver_lock:
+        if _global_tileir_driver is None:
+            _global_tileir_driver = TileIRDriver()
+        return _global_tileir_driver

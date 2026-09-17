@@ -16,7 +16,7 @@ from typing import Callable, Generic, Iterable, Optional, ParamSpec, TypeVar, ov
 from triton.backends import BaseBackend
 from types import ModuleType
 from .. import knobs
-from .driver import driver
+from .driver import driver, _create_driver, _is_tileir_enabled
 from . import _async_compile
 from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dict, is_namedtuple
 
@@ -24,7 +24,7 @@ from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dic
 import os
 from .cache import get_cache_key
 from ..runtime.driver import driver
-from triton.backends.tileir.driver import GlobalTileIRDriver
+from triton.backends.tileir.driver import get_tileir_driver
 from triton.backends.nvidia.driver import GlobalNvidiaDriver
 
 from triton._C.libtriton import get_cache_invalidating_env_vars, native_specialize_impl, ir
@@ -366,63 +366,12 @@ def mangle_type(arg, specialize=False):
     return native_specialize_impl(BaseBackend, arg, is_const, specialize, align)[0]
 
 
-# WORKAROUND (tileir 13.3.x): the tileir compiler can fail to compile warp_specialize=True
-# kernels on SM100 with HEAD_DIM=128. The tileir backend applies warp specialization
-# automatically, so this user-facing flag is effectively a no-op for it; forcing it to False is
-# mathematically lossless and avoids the affected compilation path. This is a temporary
-# workaround — REMOVE this helper and its call in tileir_run once the fix ships in tileir 13.4.
-_TILEIR_WS_FORCED_OFF_WARNED = False
-
-
-def _tileir_force_warp_specialize_off(arg_names, args, kwargs):
-    """Force the `warp_specialize` constexpr to False on the tileir backend (temporary WA)."""
-    global _TILEIR_WS_FORCED_OFF_WARNED
-
-    def _is_on(v):
-        return bool(getattr(v, "value", v))  # handles bare bool and tl.constexpr
-
-    forced = False
-    if "warp_specialize" in kwargs:
-        if _is_on(kwargs["warp_specialize"]):
-            kwargs = {**kwargs, "warp_specialize": False}
-            forced = True
-    elif arg_names is not None and "warp_specialize" in arg_names:
-        i = arg_names.index("warp_specialize")
-        if i < len(args) and _is_on(args[i]):
-            args = args[:i] + (False, ) + args[i + 1:]
-            forced = True
-    if forced and not _TILEIR_WS_FORCED_OFF_WARNED:
-        _TILEIR_WS_FORCED_OFF_WARNED = True
-        logging.warning(
-            "[tileir WORKAROUND] forcing warp_specialize=False: tileir auto-applies warp "
-            "specialization (this flag is a no-op for it) and tileir 13.3.x can fail to compile "
-            "warp_specialize=True on SM100 d128. Remove at tileir 13.4.")
-    return args, kwargs
-
-
 class KernelInterface(Generic[T]):
     run: T
     enable_tile = os.environ.get("ENABLE_TILE", "0") == "1"
 
     def tileir_run(self, *args, grid, warmup, **kwargs):
-        # {WORKAROUND tileir 13.3.x WS+d128 compile failure — REMOVE at 13.4} force warp_specialize=False
-        args, kwargs = _tileir_force_warp_specialize_off(getattr(self, "arg_names", None), args, kwargs)
-        try:
-            driver.set_active(GlobalTileIRDriver)
-            ret = self.run(grid=grid, warmup=False, *args, **kwargs)
-        except RuntimeError:
-            # Fallback TileIR -> native driver on RuntimeError; off unless TRITON_TILEIR_RUNTIME_FALLBACK=1.
-            tileir_runtime_fallback = os.environ.get("TRITON_TILEIR_RUNTIME_FALLBACK", "0") == "1"
-            if not tileir_runtime_fallback:
-                raise
-            os.environ["ENABLE_TILE"] = "0"
-            driver.set_active(GlobalNvidiaDriver)
-            try:
-                ret = self.run(grid=grid, warmup=False, *args, **kwargs)
-            finally:
-                os.environ["ENABLE_TILE"] = "1"
-                driver.set_active(GlobalTileIRDriver)
-        return ret
+        return self.run(*args, grid=grid, warmup=warmup, **kwargs)
 
     def warmup(self, *args, grid, **kwargs):
         return self.run(grid=grid, warmup=True, *map(MockTensor.wrap_dtype, args), **kwargs)
@@ -436,8 +385,6 @@ class KernelInterface(Generic[T]):
         Hence JITFunction.__getitem__ returns a callable proxy that
         memorizes the grid.
         """
-        if os.environ.get("ENABLE_TILE", "0") == "1" or self.enable_tile:
-            return lambda *args, **kwargs: self.tileir_run(grid=grid, warmup=False, *args, **kwargs)
         return lambda *args, **kwargs: self.run(grid=grid, warmup=False, *args, **kwargs)
         # return cast(T, functools.partial(cast(Callable, self.run), grid=grid))
 
@@ -789,6 +736,41 @@ class JITFunction(JITCallable, KernelInterface[T]):
         return options, signature, constexprs, attrs
 
     def run(self, *args, grid, warmup, **kwargs):
+        # Bracket launches, direct run and warmup use the same backend policy.
+        # A process may explicitly switch backend after another kernel ran.
+        if os.environ.get("TRITON_DEFAULT_BACKEND"):
+            driver.set_active(_create_driver())
+        if not _is_tileir_enabled(self.enable_tile):
+            return self.run_internal(*args, grid=grid, warmup=warmup, **kwargs)
+
+        tileir_driver = get_tileir_driver()
+        driver.set_active(tileir_driver)
+        try:
+            return self.run_internal(*args, grid=grid, warmup=warmup, **kwargs)
+        except RuntimeError:
+            if os.environ.get("TRITON_TILEIR_RUNTIME_FALLBACK", "0") != "1":
+                raise
+            previous_enable_tile = os.environ.get("ENABLE_TILE")
+            previous_backend = os.environ.get("TRITON_DEFAULT_BACKEND")
+            os.environ["ENABLE_TILE"] = "0"
+            os.environ["TRITON_DEFAULT_BACKEND"] = "nvidia"
+            driver.set_active(GlobalNvidiaDriver)
+            try:
+                fallback_kwargs = dict(kwargs)
+                fallback_kwargs.pop("occupancy", None)
+                return self.run_internal(*args, grid=grid, warmup=warmup, **fallback_kwargs)
+            finally:
+                if previous_enable_tile is None:
+                    os.environ.pop("ENABLE_TILE", None)
+                else:
+                    os.environ["ENABLE_TILE"] = previous_enable_tile
+                if previous_backend is None:
+                    os.environ.pop("TRITON_DEFAULT_BACKEND", None)
+                else:
+                    os.environ["TRITON_DEFAULT_BACKEND"] = previous_backend
+                driver.set_active(tileir_driver)
+
+    def run_internal(self, *args, grid, warmup, **kwargs):
         kwargs["debug"] = kwargs.get("debug", self.debug) or knobs.runtime.debug
         kwargs["instrumentation_mode"] = knobs.compilation.instrumentation_mode
 

@@ -40,6 +40,19 @@ CUDATILE_CPP_PATH="${REPO_ROOT}/lib/Dialect/CudaTile/IR/CudaTile.cpp"
 
 echo "[patch] repo_root=${REPO_ROOT}"
 
+# The released 13.4 dialect references an MLIR float type absent from public
+# LLVM (including cuda-tile's own pin). Triton has no frontend type for it.
+# Omit only that unsupported type; retain bytecode tags for all supported types.
+if ! grep -q 'Float8E5M3FNUType' "${LLVM_SYSPATH}/include/mlir/IR/BuiltinTypes.h.inc"; then
+  dtype_patch="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cuda_tile_13_4_public_llvm.patch"
+  if git -C "${REPO_ROOT}" apply --reverse --check "${dtype_patch}" 2>/dev/null; then
+    echo "[patch] Public LLVM dtype compatibility already applied"
+  else
+    git -C "${REPO_ROOT}" apply --check "${dtype_patch}"
+    git -C "${REPO_ROOT}" apply "${dtype_patch}"
+  fi
+fi
+
 # 1) Patch BytecodeGenUtilities.cpp for LLVM api changes:
 # Replace "getArgToOperandOrAttribute" with "getArgToOperandAttrOrProp"
 # and "OperandOrAttribute" with "OperandAttrOrProp".
@@ -60,6 +73,14 @@ if [[ -f "${OPS_TD_PATH}" ]]; then
     -e 's/build($_builder, $_state, std::nullopt)/build($_builder, $_state, ::mlir::ValueRange{})/g'
 fi
 
+# Public LLVM represents symbol naming through SymbolOpInterface. The release
+# source also names a SymbolName trait not available in this LLVM revision.
+for symbol_td in "${OPS_TD_PATH}" "${REPO_ROOT}/include/cuda_tile/Dialect/CudaTile/IR/TestingOps.td"; do
+  patch_in_place "${symbol_td}" \
+    -e 's/Symbol, SymbolName/Symbol/g' \
+    -e 's/\bSymbolName\b/Symbol/g'
+done
+
 # 3) Patch CudaTile.cpp for LLVM api changes:
 # replace 'ValueRange(), /*attributes=*/std::nullopt)' with
 # 'ValueRange(), /*attributes=*/llvm::ArrayRef<mlir::NamedAttribute>{})'
@@ -70,15 +91,14 @@ if [[ -f "${CUDATILE_CPP_PATH}" ]]; then
 fi
 
 # 4) Triton 3.7's LLVM renamed DenseIntOrFPElementsAttr to
-# DenseTypedElementsAttr. Keep TileIR 13.3 pinned and bridge the copied build
+# DenseTypedElementsAttr. Keep TileIR 13.4 pinned and bridge the copied build
 # source instead of changing the released TileIR sources.
 echo "[patch] Global rename: DenseIntOrFPElementsAttr → DenseTypedElementsAttr"
 find "${REPO_ROOT}" -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.td" \) \
   -exec sed -i 's/DenseIntOrFPElementsAttr/DenseTypedElementsAttr/g' {} +
 
-# DenseElementsAttr<i1> raw layout differs across the LLVM versions used by
-# Triton and the bundled tileiras. Patch only the copied cuda-tile source tree.
-python3 "$(dirname "${BASH_SOURCE[0]}")/patch_cuda_tile_i1_bytecode_compat.py" "${REPO_ROOT}"
+# CUDA Tile 13.4 provides canonical i1 bytecode encoding and decoding.
+# Keep that upstream implementation intact.
 
 # 5) Patch BytecodeReader.cpp for LLVM api changes:
 # - Triton 3.7's LLVM uses the 2-argument isValidRawBuffer overload.

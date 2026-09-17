@@ -41,6 +41,9 @@ def _get_kernel(kernel_fn, *args):
     kernel = kernel_fn.warmup(*args, grid=(1, ), num_warps=1)
     kernel._init_handles()
     target = getattr(kernel.metadata, "target", None)
+    if target is not None and target.backend == "tileir":
+        # TileIR launches one tile per block; the runtime owns CTA resources.
+        return kernel.function, 1, 0
     warp_size = getattr(target, "warp_size", None)
     if warp_size is None:
         warp_size = driver.active.get_current_target().warp_size

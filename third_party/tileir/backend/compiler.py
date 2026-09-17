@@ -1,3 +1,4 @@
+from triton import knobs
 from triton.runtime.errors import OutOfResources, TileirasError
 from triton.backends.tileir.errors import HitFallback
 from triton.runtime.cache import get_cache_manager
@@ -89,8 +90,10 @@ class TileIROptions:
     cluster_dims: tuple = (1, 1, 1)
     instrumentation_mode: str = ""
     debug: bool = False
+    disable_line_info: bool = False
     sanitize_overflow: bool = True
     extern_libs: dict = None
+    ir_override: Optional[str] = None
     # maxnreg in tileir backend is just for compatibility with other backend
     # tileir use occupancy to control the register usage.
     maxnreg: Optional[int] = None
@@ -113,6 +116,10 @@ class TileIROptions:
         return TileIREnvConf.enable_approx()
 
     def __post_init__(self):
+        # Match the immutable option representation exposed by other backends.
+        # This only normalizes metadata/cache inputs; it does not link libraries.
+        extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
+        object.__setattr__(self, "extern_libs", tuple(extern_libs.items()))
         assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, (
             "num_warps must be a power of 2"
         )
@@ -178,8 +185,28 @@ class TileIRBackend(BaseBackend):
         if "enable_fp_fusion" not in args:
             args["enable_fp_fusion"] = os.getenv("TRITON_DEFAULT_FP_FUSION", "1") == "1"
 
-        args["max_num_imprecise_acc_default"] = 2**30 if capability == 90 else 0
+        if "max_num_imprecise_acc_default" not in args:
+            args["max_num_imprecise_acc_default"] = 2**30 if capability == 90 else 0
+        args.setdefault("disable_line_info", knobs.compilation.disable_line_info)
         return TileIROptions(**args)
+
+    @staticmethod
+    def get_tensor_descriptor_specialization(arg):
+        # A host descriptor is reconstructed as a native view in the compiler.
+        # Both properties must affect the cache key and the native lowering.
+        attrs = []
+        if arg.padding == "nan":
+            attrs.append("padding_nan")
+        if arg.round_f32_to_tf32:
+            attrs.append("round_f32_to_tf32")
+        return "tileir_" + "+".join(attrs) if attrs else None
+
+    @staticmethod
+    def parse_attr(desc):
+        if desc in ("tileir_padding_nan", "tileir_round_f32_to_tf32",
+                    "tileir_padding_nan+round_f32_to_tf32"):
+            return [["tileir." + name, 1] for name in desc[len("tileir_"):].split("+")]
+        return BaseBackend.parse_attr(desc)
 
     def pack_metadata(self, metadata):
         return (
@@ -213,6 +240,8 @@ class TileIRBackend(BaseBackend):
             f"--gpu-name=sm_{capability}",
             f"--opt-level={opt.opt_level}",
         ]
+        if metadata["tileir_line_info"]:
+            tileiras_cmd.append("--lineinfo")
         # Save bytecode to cache
         bytecode = tileir.write_bytecode(mod)
         bytecode_cache_name = f"{name}.bytecode"
@@ -221,7 +250,7 @@ class TileIRBackend(BaseBackend):
         # Scoped CUDA_HOME for the tileiras subprocess only (NOT global os.environ):
         # tileiras locates ptxas + libnvvm + libdevice under $CUDA_HOME for SM100 codegen.
         # Derived from the bundled tileiras location (tileir_cuda) so a stale system
-        # CUDA can never shadow the matching 13.3 toolchain.
+        # CUDA can never shadow the matching 13.4 toolchain.
         tileiras_env = {**os.environ, "CUDA_HOME": TileIREnvConf.get_tileir_cuda_home()}
 
         # Use temp file for cubin output to avoid race conditions.
@@ -298,6 +327,10 @@ class TileIRBackend(BaseBackend):
         pm.enable_debug()
         # Inherit LiftControlflowToSCF from upstream to adapt to `ControlFlow` within `triton.func`
         tileir.passes.add_lift_tt_cf_to_scf(pm)
+        # Control-flow lifting may create helper calls inside SCF regions.
+        # Inline and simplify them before converting Triton operations.
+        passes.common.add_inliner(pm)
+        passes.common.add_canonicalizer(pm)
         # The root IR for ttir is builtin moduleOp and all
         # cuda-tile ir must under tileir_moduleOp.
         # So, we will insert an tileir moduleOp directly at the beginning of TritonToCudaTile pass.
@@ -312,12 +345,22 @@ class TileIRBackend(BaseBackend):
             opt.occupancy,
             metadata["num_stages"],
         )
-        tileir.passes.add_auto_gen_memtoken(pm, opt.enable_autogen_alias_mem_token)
         passes.common.add_inliner(pm)
+        tileir.passes.add_auto_gen_memtoken(pm, opt.enable_autogen_alias_mem_token)
         if opt.enable_fp_fusion:
             tileir.passes.add_fma_fusion(pm)
-        tileir.passes.add_strip_debuginfo(pm)
         pm.run(mod, "make_tileir")
+        # Unknown source locations must not become fabricated <unknown>:1 lines.
+        metadata["tileir_line_info"] = (
+            not opt.disable_line_info and tileir.has_source_locations(mod)
+        )
+        debug_pm = ir.pass_manager(mod.context)
+        debug_pm.enable_debug()
+        if metadata["tileir_line_info"]:
+            tileir.passes.add_synthesize_debug_info_scopes(debug_pm)
+        else:
+            tileir.passes.add_strip_debuginfo(debug_pm)
+        debug_pm.run(mod, "make_tileir_debug")
         if not tileir.only_contain_legal_dialects(mod):
             raise RuntimeError(
                 "Triton ttir to tileir ir failed. Some ttir ops cannot be converted to tileir."
@@ -327,6 +370,7 @@ class TileIRBackend(BaseBackend):
         match = re.findall(pattern, mod.__str__())
         if len(match) != 1:
             raise RuntimeError("Kernel Name matching fail")
+        metadata["name"] = match[0]
         return mod
 
     @staticmethod
