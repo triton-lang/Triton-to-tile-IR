@@ -2,6 +2,65 @@
 
 This document provides a practical tutorial for optimizing Triton scripts to achieve better performance when running with the CUDA Tile IR backend.
 
+## Setup and Tuning Workflow
+
+Enable the backend before importing Triton:
+
+```bash
+ENABLE_TILE=1 python your_kernel.py
+```
+
+Start from a correct kernel and retune for the target GPU and CUDA toolkit.
+A configuration selected for the PTX backend is a starting point, not a measured
+optimum for CUDA Tile IR. Check each configuration against a numerical reference
+before comparing timings.
+
+### Initial Search Space
+
+| Workload | Starting points |
+|----------|-----------------|
+| GEMM and attention | Try `occupancy` 1–2, then vary tile dimensions and `num_stages`; compare tensor descriptors with pointer loads where applicable. |
+| Elementwise, reductions and normalization | Start with `occupancy=4`, then compare 1, 2 and 8; tune tile dimensions against register pressure. |
+| Wide GEMMs | Compare `num_ctas=1` and 2 with larger tiles, subject to the GPU and operation's support. |
+
+These are search heuristics, not guaranteed best configurations. Tensor descriptors
+must satisfy their shape and alignment requirements. On CUDA 13.4, use one CTA for
+kernels affected by the known multi-CTA atomic CAS issue.
+
+Use kernel-specific tile parameter names in `triton.Config`. For a matmul kernel
+whose constexpr arguments are `BLOCK_SIZE_M`, `BLOCK_SIZE_N` and `BLOCK_SIZE_K`,
+a small initial candidate list is:
+
+```python
+import triton
+
+configs = [
+    triton.Config(
+        {"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32,
+         "occupancy": occupancy},
+        num_warps=4, num_stages=stages, num_ctas=1,
+    )
+    for stages in (3, 4, 6)
+    for occupancy in (1, 2, 4)
+]
+```
+
+Pass the list to `triton.autotune`, using the kernel's actual shape arguments as
+its tuning key. Expand one part of the search space at a time. If a kernel writes
+or accumulates into existing outputs, reset or restore those outputs between
+trials. Test `TILEIR_ENABLE_APPROX` and `TILEIR_ENABLE_FTZ` separately and recheck
+numerical accuracy whenever either is enabled.
+
+### Reproducible Timing
+
+Warm up kernels and separate compilation time from execution time. For short
+kernels, CUDA graph timing can reduce launch overhead; Triton provides
+`triton.testing.do_bench_cudagraph`. Keep input shapes, dtypes, cache policy and GPU
+conditions consistent between backend comparisons. Record the GPU, toolkit,
+configuration and timing method alongside results. Cold-cache and warm-cache
+measurements answer different questions; report the policy used. Repeat measurements
+before accepting a performance change.
+
 ## Autotune Configurations
 
 ### New Hints & Configs for CUDA Tile IR Backend

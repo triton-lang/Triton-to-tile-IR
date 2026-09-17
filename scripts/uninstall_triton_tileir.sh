@@ -9,7 +9,7 @@ set -euo pipefail
 INSTALL_DIR="${1:-${HOME}/.local/triton_tileir}"
 
 # Check if triton_tileir is still active in current shell
-if [ -n "${ENABLE_TILE:-}" ] || [ -n "${HELION_BACKEND:-}" ] || echo "${PYTHONPATH:-}" | grep -q "${INSTALL_DIR}"; then
+if [ -n "${ENABLE_TILE:-}" ] || echo "${PYTHONPATH:-}" | grep -q "${INSTALL_DIR}"; then
     echo "Error: triton_tileir is still active. Please deactivate first:"
     echo "  source ${INSTALL_DIR}/deactivate.sh"
     exit 1
