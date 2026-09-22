@@ -588,6 +588,15 @@ public:
 
     // 3. Get gather parameters
     Value xOffsets = adaptor.getXOffsets(); // 1D tile of indices
+    // Preserve signed Triton row offsets in the public i32 coordinate space.
+    // In particular, negative i16 offsets must remain out of bounds.
+    auto indexTy = cast<cuda_tile::TileType>(xOffsets.getType());
+    if (indexTy.getElementType().isInteger(16)) {
+      auto wideTy = cuda_tile::TileType::get(indexTy.getShape(),
+                                            rewriter.getI32Type());
+      xOffsets = cuda_tile::ExtIOp::create(rewriter, loc, wideTy, xOffsets,
+                                         cuda_tile::Signedness::Signed);
+    }
     Value yOffset = adaptor.getYOffset();   // scalar offset
 
     // 4. Get result type information
@@ -710,6 +719,15 @@ public:
     // 3. Get scatter parameters
     Value srcTile = adaptor.getSrc();       // tile to scatter
     Value xOffsets = adaptor.getXOffsets(); // 1D tile of indices
+    // Preserve signed Triton row offsets in the public i32 coordinate space.
+    // In particular, negative i16 offsets must remain out of bounds.
+    auto indexTy = cast<cuda_tile::TileType>(xOffsets.getType());
+    if (indexTy.getElementType().isInteger(16)) {
+      auto wideTy = cuda_tile::TileType::get(indexTy.getShape(),
+                                            rewriter.getI32Type());
+      xOffsets = cuda_tile::ExtIOp::create(rewriter, loc, wideTy, xOffsets,
+                                         cuda_tile::Signedness::Signed);
+    }
     Value yOffset = adaptor.getYOffset();   // scalar offset
 
     // 4. Get source tile type information
@@ -1534,54 +1552,6 @@ public:
                         "cuda_tile lowering: ") +
                 symbol +
                 ". Please add a rewrite in ConvertExternElementwiseOp.");
-  }
-};
-
-class ConvertCatOp : public OpConversionPattern<triton::CatOp> {
-public:
-  using OpConversionPattern<triton::CatOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(triton::CatOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto resTy = cast<ShapedType>(
-        getTypeConverter()->convertType(op.getResult().getType()));
-
-    // This should always be true since SameTypeOperands trait is enforced for
-    // triton::CatOp
-    auto lhsTy = adaptor.getLhs().getType();
-    auto rhsTy = adaptor.getRhs().getType();
-    assert(lhsTy == rhsTy && "Operands must have identical types");
-
-    // Add singleton dimension to operand type to match result rank
-    auto reshapeToMatchResultRank = [&](Value operand) -> Value {
-      auto operandTy = cast<ShapedType>(operand.getType());
-      if (operandTy.getRank() == resTy.getRank())
-        return operand;
-      auto operandShape = llvm::to_vector(operandTy.getShape());
-      operandShape.resize(resTy.getRank(), 1);
-      auto newTy =
-          operandTy.cloneWith(operandShape, operandTy.getElementType());
-      return cuda_tile::ReshapeOp::create(rewriter, op.getLoc(), newTy,
-                                          operand);
-    };
-
-    Value lhs = reshapeToMatchResultRank(adaptor.getLhs());
-    Value rhs = reshapeToMatchResultRank(adaptor.getRhs());
-
-    // Determine concatenation axis (last dimension by default)
-    int64_t concatDim = resTy.getRank() - 1;
-    auto lhsShape = cast<ShapedType>(lhs.getType()).getShape();
-    for (int64_t i = 0; i < resTy.getRank(); i++)
-      if (lhsShape[i] != resTy.getShape()[i]) {
-        concatDim = i;
-        break;
-      }
-
-    rewriter.replaceOpWithNewOp<cuda_tile::CatOp>(
-        op, resTy, lhs, rhs, rewriter.getI64IntegerAttr(concatDim));
-
-    return success();
   }
 };
 
@@ -3063,6 +3033,45 @@ convertRoundingModeToCudaTile(triton::RoundingMode rounding) {
   }
 }
 
+// Atomic loads/stores use the public ordered pointer operations. Their tokens
+// carry the acquire/release ordering across otherwise unrelated memory roots.
+class ConvertAtomicLoadOp : public OpConversionPattern<triton::AtomicLoadOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(triton::AtomicLoadOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto load = cuda_tile::LoadPtrTkoOp::create(
+        rewriter, op.getLoc(), getTypeConverter()->convertType(op.getType()),
+        cuda_tile::TokenType::get(rewriter.getContext()),
+        cuda_tile::MemoryOrderingSemanticsAttr::get(
+            rewriter.getContext(), convertMemorySemToCudaTile(op.getSem())),
+        cuda_tile::MemoryScopeAttr::get(
+            rewriter.getContext(), convertMemoryScopeToCudaTile(op.getScope())),
+        adaptor.getPtr(), adaptor.getMask(), /*paddingValue=*/Value(),
+        /*token=*/Value(), /*optimizationHints=*/nullptr);
+    rewriter.replaceOp(op, load.getResult());
+    return success();
+  }
+};
+
+class ConvertAtomicStoreOp : public OpConversionPattern<triton::AtomicStoreOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(triton::AtomicStoreOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    cuda_tile::StorePtrTkoOp::create(
+        rewriter, op.getLoc(), cuda_tile::TokenType::get(rewriter.getContext()),
+        cuda_tile::MemoryOrderingSemanticsAttr::get(
+            rewriter.getContext(), convertMemorySemToCudaTile(op.getSem())),
+        cuda_tile::MemoryScopeAttr::get(
+            rewriter.getContext(), convertMemoryScopeToCudaTile(op.getScope())),
+        adaptor.getPtr(), adaptor.getValue(), adaptor.getMask(),
+        /*token=*/Value(), /*optimizationHints=*/nullptr);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 class ConvertAtomicRMWOp : public OpConversionPattern<triton::AtomicRMWOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -3496,6 +3505,43 @@ class ConvertKnownNumericInlineAsmToNativeOp
   }
 };
 
+// The packed PTX instruction independently decodes each unsigned scale byte.
+// Public ftof preserves its minimum exponent and NaN encoding natively.
+class ConvertPackedE8M0UpcastInlineAsmToNativeOp
+    : public OpConversionPattern<triton::ElementwiseInlineAsmOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::ElementwiseInlineAsmOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!op.getPure() || op.getPackedElement() != 2 ||
+        op.getNumResults() != 1 || adaptor.getArgs().size() != 1 ||
+        normalizeNativeInlineAsm(op.getConstraints()) != "=r,h" ||
+        normalizeNativeInlineAsm(op.getAsmString()) !=
+            "cvt.rn.bf16x2.ue8m0x2 $0,$1;")
+      return failure();
+
+    auto resultTy = dyn_cast_or_null<cuda_tile::TileType>(
+        getTypeConverter()->convertType(op->getResult(0).getType()));
+    Value input = adaptor.getArgs()[0];
+    auto inputTy = dyn_cast<cuda_tile::TileType>(input.getType());
+    if (!resultTy || !resultTy.getElementType().isBF16() || !inputTy ||
+        !inputTy.getElementType().isSignlessInteger(8) ||
+        inputTy.getShape() != resultTy.getShape() ||
+        inputTy.getNumElements() % 2 != 0)
+      return failure();
+
+    auto loc = op.getLoc();
+    auto scaleTy = cuda_tile::TileType::get(
+        inputTy.getShape(), Float8E8M0FNUType::get(rewriter.getContext()));
+    Value scale = cuda_tile::BitcastOp::create(rewriter, loc, scaleTy, input);
+    auto rn = cuda_tile::RoundingModeAttr::get(
+        rewriter.getContext(), cuda_tile::RoundingMode::NEAREST_EVEN);
+    rewriter.replaceOpWithNewOp<cuda_tile::FToFOp>(op, resultTy, scale, rn);
+    return success();
+  }
+};
+
 // Match only the packed FP4-to-half conversion used by triton_kernels. The
 // caller subsequently extracts the low/high halfwords from this i32 result.
 class ConvertPackedFp4UpcastInlineAsmToNativeOp
@@ -3599,6 +3645,22 @@ class ConvertGdcInlineAsmToNativeOp
   }
 };
 
+// New upstream frontends emit dedicated GDC operations. Preserve the same
+// native token ordering as the legacy inline-assembly helper conversion.
+template <typename TritonOp, typename CudaTileOp>
+class ConvertGridDependencyOp : public OpConversionPattern<TritonOp> {
+  using OpConversionPattern<TritonOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      TritonOp op, typename TritonOp::Adaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
+    auto tokenTy = cuda_tile::TokenType::get(rewriter.getContext());
+    CudaTileOp::create(rewriter, op.getLoc(), tokenTy, /*token=*/Value());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 void populateTTirToCudaTileConversionPatternsAndLegality(
     TypeConverter &typeConverter, RewritePatternSet &patterns,
     ConversionTarget &target, bool approx, bool flushToZero,
@@ -3681,10 +3743,11 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
     ConvertAbsFOp,
     ConvertAssertOp,
     ConvertAtomicCASOp,
+    ConvertAtomicLoadOp,
+    ConvertAtomicStoreOp,
     ConvertAtomicRMWOp,
     ConvertBitcastOp,
     ConvertBroadCastOp,
-    ConvertCatOp,
     ConvertClampFOp,
     ConvertCmpFOp,
     ConvertCmpIOp,
@@ -3695,6 +3758,8 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
     ConvertForOp,
     ConvertFpToFpOp,
     ConvertGatherOp,
+    ConvertGridDependencyOp<triton::GridDependencyWaitOp, cuda_tile::GdcWaitTkoOp>,
+    ConvertGridDependencyOp<triton::GridDependencyLaunchDependentsOp, cuda_tile::GdcLaunchDependentsTkoOp>,
     ConvertGetNumProgramsOp,
     ConvertGetProgramIdOp,
     ConvertJoinOp,
@@ -3723,6 +3788,8 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
 
   patterns.add<ConvertGdcInlineAsmToNativeOp>(typeConverter, context, /*benefit=*/2);
   patterns.add<ConvertPackedFp4UpcastInlineAsmToNativeOp>(
+      typeConverter, context, /*benefit=*/2);
+  patterns.add<ConvertPackedE8M0UpcastInlineAsmToNativeOp>(
       typeConverter, context, /*benefit=*/2);
   patterns.add<ConvertKnownNumericInlineAsmToNativeOp>(typeConverter, context,
                                                        /*benefit=*/2);
