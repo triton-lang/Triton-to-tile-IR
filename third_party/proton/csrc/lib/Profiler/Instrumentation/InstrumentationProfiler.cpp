@@ -1,23 +1,15 @@
 #include "Profiler/Instrumentation/InstrumentationProfiler.h"
-#include "Backend/Backend.h"
-#include "Device.h"
-#include "Runtime/Runtime.h"
 #include "TraceDataIO/CircularLayoutParser.h"
 
 #include "Runtime/CudaRuntime.h"
 #include "Runtime/HipRuntime.h"
-#include "Utility/Errors.h"
 #include "Utility/Numeric.h"
 #include "Utility/String.h"
 #include <algorithm>
 #include <cstdint>
-#include <functional>
-#include <limits>
 #include <map>
 #include <numeric>
 #include <stdexcept>
-#include <string>
-#include <utility>
 
 namespace proton {
 
@@ -55,24 +47,17 @@ void InstrumentationProfiler::doStop() {
 void InstrumentationProfiler::doSetMode(
     const std::vector<std::string> &modeAndOptions) {
   if (modeAndOptions.empty()) {
-    throw makeInvalidArgument("Mode cannot be empty");
+    throw std::runtime_error("Mode cannot be empty");
   }
-
-  const auto requestedDeviceName = proton::toLower(modeAndOptions[0]);
-  const auto runtimes = getRuntimeRegistrations();
-  auto runtimeIt =
-      std::find_if(runtimes.begin(), runtimes.end(),
-                   [&](const RuntimeRegistration &registration) {
-                     return requestedDeviceName ==
-                            proton::toLower(registration.getDeviceName());
-                   });
-  if (runtimeIt == runtimes.end()) {
-    throw makeInvalidArgument(
-        "Unknown or unsupported device type for instrumentation backend: " +
-        modeAndOptions[0]);
+  if (proton::toLower(modeAndOptions[0]) ==
+      proton::toLower(DeviceTraits<DeviceType::CUDA>::name)) {
+    runtime = &CudaRuntime::instance();
+  } else if (proton::toLower(modeAndOptions[0]) ==
+             proton::toLower(DeviceTraits<DeviceType::HIP>::name)) {
+    runtime = &HipRuntime::instance();
+  } else {
+    throw std::runtime_error("Unknown device type: " + modeAndOptions[0]);
   }
-  runtime = runtimeIt->getInstance()();
-
   for (size_t i = 1; i < modeAndOptions.size(); ++i) {
     auto delimiterPos = modeAndOptions[i].find('=');
     if (delimiterPos != std::string::npos) {
@@ -120,7 +105,7 @@ InstrumentationProfiler::getParserConfig(uint64_t functionId,
       functionMetadata.at(functionId).getScratchMemorySize();
   if (!(modeOptions.count("granularity") == 0 ||
         modeOptions.at("granularity") == "GRANULARITY.WARP")) {
-    throw makeInvalidArgument("Only warp granularity is supported for now");
+    throw std::runtime_error("Only warp granularity is supported for now");
   }
   config->totalUnits = functionMetadata.at(functionId).getNumWarps();
   config->numBlocks = bufferSize / config->scratchMemSize;
@@ -129,7 +114,7 @@ InstrumentationProfiler::getParserConfig(uint64_t functionId,
   // Check if the uidVec is valid
   for (auto uid : config->uidVec)
     if (uid >= config->totalUnits) {
-      throw makeOutOfRange(
+      throw std::runtime_error(
           "Invalid sampling warp id: " + std::to_string(uid) + ". We have " +
           std::to_string(config->totalUnits) +
           " warps in total. Please check the proton sampling options.");
@@ -147,7 +132,7 @@ void InstrumentationProfiler::initFunctionMetadata(
     const std::vector<std::pair<size_t, size_t>> &scopeIdParentPairs,
     const std::string &metadataPath) {
   if (functionScopeIdNames.count(functionId)) {
-    throw makeInvalidArgument(
+    throw std::runtime_error(
         "Duplicate function id: " + std::to_string(functionId) +
         " for function " + functionName);
   }
@@ -156,7 +141,7 @@ void InstrumentationProfiler::initFunctionMetadata(
     auto scopeId = pair.first;
     auto scopeName = pair.second;
     if (functionScopeIdNames[functionId].count(scopeId)) {
-      throw makeInvalidArgument(
+      throw std::runtime_error(
           "Duplicate scope id: " + std::to_string(scopeId) + " for function " +
           functionName);
     }
@@ -170,22 +155,16 @@ void InstrumentationProfiler::initFunctionMetadata(
     scopeIdParentMap[scopeId] = parentId;
   }
   for (auto &[scopeId, name] : functionScopeIdNames[functionId]) {
-    std::vector<Context> reversedContexts;
-    reversedContexts.emplace_back(name);
+    std::vector<Context> contexts = {name};
     auto currentId = scopeId;
     while (scopeIdParentMap.count(currentId) > 0) {
       auto parentId = scopeIdParentMap[currentId];
       auto parentName = functionScopeIdNames[functionId].at(parentId);
-      reversedContexts.emplace_back(parentName);
+      contexts.emplace_back(parentName);
       currentId = parentId;
     }
-    std::vector<Context> contexts;
-    contexts.reserve(reversedContexts.size());
-    for (auto iter = reversedContexts.rbegin(); iter != reversedContexts.rend();
-         ++iter) {
-      contexts.push_back(*iter);
-    }
-    functionScopeIdContexts[functionId].emplace(scopeId, std::move(contexts));
+    std::reverse(contexts.begin(), contexts.end());
+    functionScopeIdContexts[functionId][scopeId] = contexts;
   }
   functionMetadata.emplace(functionId, InstrumentationMetadata(metadataPath));
 }
@@ -219,7 +198,7 @@ void InstrumentationProfiler::exitInstrumentedOp(uint64_t streamId,
   }
 
   if (size > MAX_HOST_BUFFER_SIZE) {
-    throw makeLengthError(
+    throw std::runtime_error(
         "Buffer size " + std::to_string(size) + " exceeds the limit " +
         std::to_string(MAX_HOST_BUFFER_SIZE) + ", not supported yet in proton");
   } else if (size > DEFAULT_HOST_BUFFER_SIZE) {
@@ -235,7 +214,8 @@ void InstrumentationProfiler::exitInstrumentedOp(uint64_t streamId,
   auto circularLayoutConfig =
       std::dynamic_pointer_cast<CircularLayoutParserConfig>(config);
   if (!circularLayoutConfig) {
-    throw makeLogicError("Only circular layout parser is supported for now");
+    throw std::runtime_error(
+        "Only circular layout parser is supported for now");
   }
 
   int64_t timeShiftCost = 0;
@@ -274,27 +254,6 @@ void InstrumentationProfiler::exitInstrumentedOp(uint64_t streamId,
                     timeShiftCost, blockTrace.initTime, blockTrace.preFinalTime,
                     blockTrace.postFinalTime));
               }
-            }
-          }
-          for (auto &link : blockTrace.asyncLinks) {
-            auto &start = link.first;
-            auto &end = link.second;
-            auto &contexts = scopeIdContexts[start.entry->scopeId];
-            auto duration = end.entry->cycle - start.entry->cycle;
-            auto normalizedDuration = static_cast<double>(duration) /
-                                      (circularLayoutConfig->totalUnits *
-                                       circularLayoutConfig->numBlocks);
-            for (const auto &[data, baseEntry] : dataToEntryMap) {
-              auto kernelId = baseEntry.id;
-              auto entry = data->addOp(baseEntry.phase, kernelId, contexts);
-              entry.upsertMetric(std::make_unique<CycleMetric>(
-                  start.entry->cycle, end.entry->cycle, duration,
-                  normalizedDuration, kernelId, functionName,
-                  blockTrace.blockId, blockTrace.procId, start.uid,
-                  static_cast<uint64_t>(reinterpret_cast<uintptr_t>(device)),
-                  static_cast<uint64_t>(runtime->getDeviceType()),
-                  timeShiftCost, blockTrace.initTime, blockTrace.preFinalTime,
-                  blockTrace.postFinalTime, /*isAsync=*/true, end.uid));
             }
           }
         }

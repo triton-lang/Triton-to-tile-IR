@@ -21,7 +21,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
-#include "triton/Tools/Sys/GetEnv.h"
+#include "triton/Tools/Sys/GetEnv.hpp"
 #include <list>
 #include <unordered_set>
 
@@ -34,10 +34,9 @@ namespace mlir {
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
-namespace {
-
-bool enclosingAChannel(Operation *ctrlOp,
-                       const DenseSet<Operation *> &regionsWithChannels) {
+static bool
+enclosingAChannel(Operation *ctrlOp,
+                  const DenseSet<Operation *> &regionsWithChannels) {
   for (auto *op : regionsWithChannels) {
     if (ctrlOp == op)
       return true;
@@ -49,6 +48,16 @@ bool enclosingAChannel(Operation *ctrlOp,
         return true;
   }
   return false;
+}
+
+unsigned getLoopDepth(Operation *op) {
+  unsigned depth = 0;
+  auto pOp = op->getParentOfType<scf::ForOp>();
+  while (pOp) {
+    ++depth;
+    pOp = pOp->getParentOfType<scf::ForOp>();
+  }
+  return depth;
 }
 
 // Update preOrderOps with a list of region Ops nested under ctrlOp that will
@@ -142,7 +151,8 @@ scf::IfOp rewriteIfOp(scf::IfOp ifOp, SmallVector<Operation *> &taskTopOps,
 
   // Go through region ops in the thenBlock. updateAccumLoopCount takes current
   // accumCnt value and returns the value at the end of the thenBlock.
-  updateAccumLoopCount(opList, taskTopOps, regionsWithChannels, prevAccum);
+  Value endAccum =
+      updateAccumLoopCount(opList, taskTopOps, regionsWithChannels, prevAccum);
 
   SmallVector<Value> ifYieldOperands = newIfOp.thenYield().getOperands();
 
@@ -337,8 +347,6 @@ scf::ForOp createNewLoop(scf::ForOp forOp, scf::ForOp &parentForOp,
   return newForOp;
 }
 
-} // namespace
-
 // Here we assume the source and destination ops are in the same region op.
 // Go through channels, and get a set of region ops containing channels.
 void collectRegionsWithChannels(const SmallVector<Channel *> &channels,
@@ -354,8 +362,6 @@ void collectRegionsWithChannels(const SmallVector<Channel *> &channels,
       regionsWithChannels.insert(pOp);
   }
 }
-
-namespace {
 
 // Go through a list of operations in opList, recursively call into
 // createNewLoopWrapper or rewriteIfOp.
@@ -481,7 +487,8 @@ scf::ForOp createNewLoopWrapper(scf::ForOp origForOp,
     if (auto tOp = dyn_cast<scf::IfOp>(&op))
       opList.push_back(&op);
   }
-  updateAccumLoopCount(opList, taskTopOps, regionsWithChannels, prevAccum);
+  Value endAccum =
+      updateAccumLoopCount(opList, taskTopOps, regionsWithChannels, prevAccum);
   LLVM_DEBUG({
     LDBG("-- before replacing yieldOp ");
     newForOp.dump();
@@ -556,8 +563,6 @@ scf::ForOp createNewLoopWrapper(scf::ForOp origForOp,
   });
   return newForOp;
 }
-
-} // namespace
 
 void appendAccumCntsForOps(SmallVector<Operation *> &taskTopOps,
                            const SmallVector<Channel *> &channels,

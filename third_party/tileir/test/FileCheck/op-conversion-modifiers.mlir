@@ -687,30 +687,3 @@ module {
     tt.return
   }
 }
-
-// -----
-
-module {
-  tt.func public @asm_e8m0_to_bf16(%input: !tt.ptr<i8>, %output: !tt.ptr<bf16>) {
-    %ip = tt.splat %input : !tt.ptr<i8> -> tensor<256x!tt.ptr<i8>>
-    %op = tt.splat %output : !tt.ptr<bf16> -> tensor<256x!tt.ptr<bf16>>
-    %bytes = tt.load %ip : tensor<256x!tt.ptr<i8>>
-    %result = tt.elementwise_inline_asm "cvt.rn.bf16x2.ue8m0x2 $0, $1;" {constraints = "=r,h", packed_element = 2 : i32, pure = true} %bytes : tensor<256xi8> -> tensor<256xbf16>
-    tt.store %op, %result : tensor<256x!tt.ptr<bf16>>
-    tt.return
-  }
-}
-// ASM-LABEL: entry @asm_e8m0_to_bf16
-// ASM: bitcast {{.*}} : tile<256xi8> -> tile<256xf8E8M0FNU>
-// ASM: ftof {{.*}} : tile<256xf8E8M0FNU> -> tile<256xbf16>
-// ASM-NOT: elementwise_inline_asm
-
-// -----
-
-module {
-  tt.func public @asm_e8m0_unsupported_modifier(%input: tensor<2xi8>) {
-    // expected-error@+1 {{failed to legalize operation 'tt.elementwise_inline_asm'}}
-    %result = tt.elementwise_inline_asm "cvt.rz.bf16x2.ue8m0x2 $0, $1;" {constraints = "=r,h", packed_element = 2 : i32, pure = true} %input : tensor<2xi8> -> tensor<2xbf16>
-    tt.return
-  }
-}

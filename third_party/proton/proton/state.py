@@ -1,10 +1,8 @@
-from functools import wraps
-
 from triton._C.libproton import proton as libproton
 from .flags import flags
+from functools import wraps
 
-COMPUTE_METADATA_SCOPE_NAME = libproton.metadata_scope_name
-COMPUTE_METADATA_SCOPE_PREFIX = libproton.metadata_scope_prefix
+COMPUTE_METADATA_SCOPE_NAME = "__proton_launch_metadata"
 
 
 class state:
@@ -59,8 +57,8 @@ class state:
 
 class metadata_state(state):
 
-    def __init__(self, kernel_name=None) -> None:
-        super().__init__(get_metadata_state_name(kernel_name))
+    def __init__(self) -> None:
+        super().__init__(COMPUTE_METADATA_SCOPE_NAME)
 
 
 def enter_state(name: str) -> None:
@@ -69,9 +67,3 @@ def enter_state(name: str) -> None:
 
 def exit_state() -> None:
     libproton.exit_state()
-
-
-def get_metadata_state_name(kernel_name=None) -> str:
-    if not kernel_name:
-        return COMPUTE_METADATA_SCOPE_NAME
-    return f"{COMPUTE_METADATA_SCOPE_PREFIX}{kernel_name}"

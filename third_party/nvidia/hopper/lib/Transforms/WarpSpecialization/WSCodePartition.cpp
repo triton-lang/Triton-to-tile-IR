@@ -32,9 +32,7 @@ namespace mlir {
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
-namespace {
-
-unsigned getNumBuffersOrDefault(scf::ForOp forOp, unsigned numBuffers) {
+static unsigned getNumBuffersOrDefault(scf::ForOp forOp, unsigned numBuffers) {
   // Use the attribute attached to the loop if it exists otherwise use the
   // global control.
   if (!forOp->hasAttr(mlir::triton::kNumStagesAttrName))
@@ -102,10 +100,10 @@ void getTransitiveUsers(Value root,
 
 // When traversing gen5, producerOp can be either the defining op of operand
 // A or the accumulator.
-void createChannel(Operation *producerOp, Operation *op,
-                   mlir::DominanceInfo &dom,
-                   SmallVector<std::unique_ptr<Channel>> &channels,
-                   bool opndAOfGen5, unsigned producerNumBuffers) {
+static void createChannel(Operation *producerOp, Operation *op,
+                          mlir::DominanceInfo &dom,
+                          SmallVector<std::unique_ptr<Channel>> &channels,
+                          bool opndAOfGen5, unsigned producerNumBuffers) {
   // For TMEM channels, op is Gen5 op, producerOp can be either A operand
   // or accumulator.
   auto producerTaskIds = getAsyncTaskIds(opndAOfGen5 ? producerOp : op);
@@ -218,7 +216,7 @@ void collectAsyncChannels(SmallVector<std::unique_ptr<Channel>> &channels,
 // When the consumer is a local_alloc loading from shared memory to registers,
 // look ahead for the actual consumers, usually dot ops, that can directly
 // use shared memory. The local_alloc will be removed later.
-SmallVector<Operation *> getActualConsumers(Operation *consumerOp) {
+static SmallVector<Operation *> getActualConsumers(Operation *consumerOp) {
   if (isa<ttg::LocalAllocOp>(consumerOp)) {
     DenseSet<Operation *> users;
     for (auto user : consumerOp->getUsers()) {
@@ -251,12 +249,13 @@ SmallVector<Operation *> getActualConsumers(Operation *consumerOp) {
   return {consumerOp};
 }
 
-Operation *getUniqueActualConsumer(Operation *consumerOp) {
+static Operation *getUniqueActualConsumer(Operation *consumerOp) {
   auto consumers = getActualConsumers(consumerOp);
   return consumers.size() == 1 ? consumers[0] : consumerOp;
 }
 
-Operation *getUniqueActualConsumer(Operation *consumerOp, AsyncTaskId taskId) {
+static Operation *getUniqueActualConsumer(Operation *consumerOp,
+                                          AsyncTaskId taskId) {
   auto consumers = getActualConsumers(consumerOp);
   if (consumers.size() == 1)
     return consumers[0];
@@ -487,8 +486,6 @@ void reorderProducerOps(SmallVector<Channel *> &channels) {
   });
 }
 
-} // namespace
-
 // Find top-level ops which contain at least one channel. If a channel's
 // getSrcOp() and getDstOp() belong to the inner loop, the outer loop will be
 // part of asyncTaskOps.
@@ -535,9 +532,7 @@ getTaskTopRegion(triton::FuncOp funcOp,
 }
 
 // Create an allocation to hold the mbarriers.
-namespace {
-
-Value createBarrierAlloc(triton::FuncOp funcOp, unsigned distance) {
+static Value createBarrierAlloc(triton::FuncOp funcOp, unsigned distance) {
   OpBuilder builder(funcOp);
   builder.setInsertionPointToStart(&(funcOp.getBody().front()));
   Attribute sharedMemorySpace =
@@ -692,9 +687,9 @@ void createToken(
   });
 }
 
-ttng::TMEMAllocOp createTMemAlloc(OpBuilder &builder,
-                                  ttng::TMEMAllocOp oldTMemAllocOp,
-                                  int numBuffers) {
+static ttng::TMEMAllocOp createTMemAlloc(OpBuilder &builder,
+                                         ttng::TMEMAllocOp oldTMemAllocOp,
+                                         int numBuffers) {
   auto oldRetType = oldTMemAllocOp.getType();
   SmallVector<int64_t> shape = {oldRetType.getShape().begin(),
                                 oldRetType.getShape().end()};
@@ -1222,8 +1217,6 @@ void foldLocalLoads(triton::FuncOp funcOp) {
     mlir::triton::replaceUsesAndPropagateType(builder, kv.getFirst(),
                                               kv.getSecond());
 }
-
-} // namespace
 
 void doCodePartition(triton::FuncOp &funcOp, unsigned numBuffers) {
   // Step 1: collect all communications between producers and consumers.

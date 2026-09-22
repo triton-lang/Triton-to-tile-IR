@@ -31,19 +31,6 @@ static std::string mangleFunctionName(StringRef name) {
   return (name + "_ws").str();
 }
 
-static LogicalResult
-lowerBarrierHandle(Operation *op, std::optional<unsigned> partitionIdx,
-                   WarpSpecializeBarrierHelper &barrierHelper) {
-  TritonLLVMIRRewriter b(op->getLoc(), op);
-  FailureOr<Value> handle = barrierHelper.getBarrierHandle(b, partitionIdx);
-  if (failed(handle))
-    return failure();
-  assert(op->getNumResults() == 1 && "barrier handle op must have one result");
-  op->getResult(0).replaceAllUsesWith(*handle);
-  op->erase();
-  return success();
-}
-
 static LogicalResult lowerBarrier(Operation *op, unsigned numWarps,
                                   std::optional<unsigned> partitionIdx,
                                   WarpSpecializeBarrierHelper &barrierHelper) {
@@ -84,10 +71,6 @@ lowerKernelBarriers(LLVM::LLVMFuncOp func,
       wsOps.push_back(wsOp.getParentOp());
       return WalkResult::skip();
     }
-    if (barrierHelper.isBarrierHandleOp(op)) {
-      auto result = lowerBarrierHandle(op, /*partitionIdx=*/{}, barrierHelper);
-      return succeeded(result) ? WalkResult::skip() : WalkResult::interrupt();
-    }
     if (barrierHelper.isBarrierOp(op)) {
       auto barRes =
           lowerBarrier(op, defaultNumWarps, /*partitionIdx=*/{}, barrierHelper);
@@ -112,8 +95,6 @@ lowerKernelBarriers(LLVM::LLVMFuncOp func,
     for (auto [idx, partition] : llvm::enumerate(op.getPartitionRegions())) {
       unsigned numWarps = op.getPartitionNumWarps()[idx];
       WalkResult result = partition->walk([&, idx = idx](Operation *op) {
-        if (barrierHelper.isBarrierHandleOp(op))
-          return WalkResult(lowerBarrierHandle(op, idx, barrierHelper));
         if (barrierHelper.isBarrierOp(op)) {
           return WalkResult(lowerBarrier(op, numWarps, idx, barrierHelper));
         }
@@ -161,12 +142,7 @@ lowerInnerFunctionBarriers(LLVM::LLVMFuncOp func,
   unsigned numWarps = numWarpsAttr.getInt();
 
   func.walk([&](Operation *op) {
-    if (barrierHelper.isBarrierHandleOp(op)) {
-      assert(op->getNumResults() == 1 &&
-             "barrier handle op must have one result");
-      op->getResult(0).replaceAllUsesWith(handle);
-      op->erase();
-    } else if (barrierHelper.isBarrierOp(op)) {
+    if (barrierHelper.isBarrierOp(op)) {
       TritonLLVMIRRewriter b(op->getLoc(), op);
       barrierHelper.createBarrier(b, numWarps, handle);
       op->erase();
@@ -198,17 +174,8 @@ LogicalResult mlir::triton::lowerWarpSpecializeBarriers(
     wsKernels.push_back(func);
   }
   // No warp specialization found.
-  if (wsKernels.empty()) {
-    WalkResult result = module.walk([&](Operation *op) {
-      if (!barrierHelper.isBarrierHandleOp(op))
-        return WalkResult::advance();
-      return WalkResult(
-          lowerBarrierHandle(op, /*partitionIdx=*/{}, barrierHelper));
-    });
-    if (result.wasInterrupted())
-      return failure();
+  if (wsKernels.empty())
     return success();
-  }
 
   DenseSet<StringAttr> innerFunctions;
   for (LLVM::LLVMFuncOp func : module.getOps<LLVM::LLVMFuncOp>()) {
@@ -525,7 +492,7 @@ LogicalResult mlir::triton::lowerWarpSpecializeCommon(
     WarpSpecializeOp ws = wsOps[i];
     auto &stateMap = warpToState[i];
     Block *before = ws->getBlock();
-    Block *after = before->splitBlock(ws->getIterator());
+    Block *after = b.splitBlock(before, ws->getIterator());
     TritonLLVMIRRewriter b(ws.getLoc(), OpBuilder::atBlockEnd(before));
     Type int8Type = b.getIntegerType(8);
     Value statePtrWs =

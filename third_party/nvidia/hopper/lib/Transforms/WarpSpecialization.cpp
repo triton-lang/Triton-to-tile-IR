@@ -7,7 +7,7 @@
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
-#include "triton/Tools/Sys/Dump.h"
+#include "triton/Tools/Sys/Dump.hpp"
 
 #define DEBUG_TYPE "nvgpu-warp-specialization"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -49,7 +49,9 @@ public:
     bool hasElse = false;
     funcOp->walk([&](scf::IfOp ifOp) {
       if (ifOp.elseBlock()) {
-        hasElse = true;
+        for (Operation &op : ifOp.elseBlock()->getOperations()) {
+          hasElse = true;
+        }
       }
     });
     if (hasElse)

@@ -2,6 +2,8 @@ import torch
 
 import triton
 
+from triton.language.core import _aggregate as aggregate
+
 from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
 from triton.experimental.gluon.language.nvidia.hopper import mbarrier
@@ -71,7 +73,7 @@ def ensure_tma_compatible_strides(tensor, alignment_bytes=16):
     return tensor
 
 
-@gluon.aggregate
+@aggregate
 class Counter:
     index: gl.tensor
     phase: gl.tensor
@@ -91,7 +93,7 @@ class Counter:
         return Counter(index, phase, self.num_barriers)
 
 
-@gluon.aggregate
+@aggregate
 class PersistentTileScheduler:
     pid_start: gl.tensor
     pid_end: gl.tensor

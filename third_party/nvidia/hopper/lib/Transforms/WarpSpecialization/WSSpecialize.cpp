@@ -22,7 +22,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
-#include "triton/Tools/Sys/GetEnv.h"
+#include "triton/Tools/Sys/GetEnv.hpp"
 #include <list>
 #include <unordered_set>
 
@@ -35,14 +35,12 @@ namespace mlir {
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
-namespace {
-
-bool isWarpSpecializeBarrierAlloc(Value value) {
+static bool isWarpSpecializeBarrierAlloc(Value value) {
   auto alloc = dyn_cast_or_null<ttg::LocalAllocOp>(value.getDefiningOp());
   return alloc && alloc->hasAttr(kWarpSpecializeGeneratedBarrierAttrName);
 }
 
-void invalidateBarrierAlloc(OpBuilder &builder, Value barrierAlloc) {
+static void invalidateBarrierAlloc(OpBuilder &builder, Value barrierAlloc) {
   auto barrierType = cast<ttg::MemDescType>(barrierAlloc.getType());
   int64_t numBarriers = barrierType.getShape().front();
   assert(numBarriers > 0 && "expected at least one barrier");
@@ -65,8 +63,8 @@ unsigned scanRegUsage(Block *block, AsyncTaskId asyncTaskId,
 }
 
 // Collect argument indices that are used by the specific taskId.
-SmallVector<unsigned> collectBlockArgsForTask(scf::ForOp forOp,
-                                              int asyncTaskId) {
+static SmallVector<unsigned> collectBlockArgsForTask(scf::ForOp forOp,
+                                                     int asyncTaskId) {
 
   // Collect argument indices that can be reached along the definition chain.
   SetVector<unsigned> argIndices;
@@ -369,8 +367,6 @@ Operation *SpecializeOp(Operation *op, IRMapping &mapping,
 
   return nullptr;
 }
-
-} // namespace
 
 void specializeRegion(triton::FuncOp funcOp, unsigned requestedRegisters) {
 

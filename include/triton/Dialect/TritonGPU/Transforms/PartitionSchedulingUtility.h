@@ -24,7 +24,6 @@ enum Flags : uint8_t {
   TMEM = 1 << 4,
   SFU = 1 << 5,
   VIEW = 1 << 6,
-  CLC = 1 << 7,
 };
 
 inline Flags &operator|=(Flags &lhs, Flags rhs) {
@@ -321,21 +320,16 @@ public:
   }
 
   bool inLoopBody() {
-    if (op) {
-      return op->getParentOfType<scf::ForOp>() ||
-             op->getParentOfType<scf::WhileOp>();
-    }
+    if (op)
+      return op->getParentOfType<scf::ForOp>();
     if (auto blockArg = dyn_cast<BlockArgument>(value)) {
       auto parentOp = blockArg.getOwner()->getParentOp();
-      return isa<scf::ForOp, scf::WhileOp>(parentOp) ||
-             parentOp->getParentOfType<scf::ForOp>() ||
-             parentOp->getParentOfType<scf::WhileOp>();
+      return isa<scf::ForOp>(parentOp) ||
+             parentOp->getParentOfType<scf::ForOp>();
     }
     auto result = cast<OpResult>(value);
     auto op = result.getOwner();
-    return isa<scf::ForOp, scf::WhileOp>(op) ||
-           op->getParentOfType<scf::ForOp>() ||
-           op->getParentOfType<scf::WhileOp>();
+    return isa<scf::ForOp>(op) || op->getParentOfType<scf::ForOp>();
   }
 
   bool containsLoopBody() {
@@ -359,12 +353,6 @@ public:
         if (blockArg.getArgNumber() == 0)
           return "ind var";
         return "iter arg " + std::to_string(blockArg.getArgNumber() - 1);
-      }
-      if (auto whileOp = dyn_cast<scf::WhileOp>(parentOp)) {
-        StringRef region = blockArg.getParentRegion() == &whileOp.getBefore()
-                               ? "before"
-                               : "after";
-        return region.str() + " arg " + std::to_string(blockArg.getArgNumber());
       }
       return "?";
     }

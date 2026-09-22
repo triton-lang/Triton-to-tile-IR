@@ -53,12 +53,6 @@ struct GluonInferLayoutInterface : public triton::DialectInferLayoutInterface {
   }
 
   LogicalResult
-  verifyBroadcastOpEncoding(RankedTensorType srcType,
-                            RankedTensorType dstType) const override {
-    return success(srcType.getEncoding() == dstType.getEncoding());
-  }
-
-  LogicalResult
   inferDotOpEncoding(Attribute operandEncoding, unsigned opIdx,
                      Attribute resultEncoding,
                      std::optional<Location> location) const override {
@@ -71,10 +65,14 @@ struct GluonInferLayoutInterface : public triton::DialectInferLayoutInterface {
     return success();
   }
 
-  LogicalResult verifyLayoutsAreEqual(ArrayRef<int64_t> shape,
-                                      Attribute expected, Attribute got,
-                                      std::optional<Location> loc,
-                                      bool ignoreRegBroadcast) const override {
+  LogicalResult verifyCatOpEncodingCompatibility(Operation *op) const override {
+    return success();
+  }
+
+  LogicalResult
+  verifyLayoutsAreEqual(ArrayRef<int64_t> shape, Attribute expected,
+                        Attribute got,
+                        std::optional<Location> loc) const override {
     return success(expected == got);
   }
 

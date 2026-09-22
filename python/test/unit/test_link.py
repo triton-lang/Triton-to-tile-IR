@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 import torch
 import triton
@@ -22,20 +24,22 @@ def add_one_indirect(x_ptr, SQRT: tl.constexpr) -> None:
 
 @pytest.mark.parametrize("use_libdevice", (False, True))
 @pytest.mark.parametrize("kernel", (add_one, add_one_indirect))
-def test_link_extern_libs(use_libdevice, kernel, monkeypatch):
+def test_link_extern_libs(use_libdevice, kernel):
     link_called: bool = False
 
-    link_extern_libs = llvm.link_extern_libs
-
-    def link_extern_libs_wrapper(*args, **kwargs):
+    def callback(frame, event, arg):
         nonlocal link_called
-        link_called = True
-        return link_extern_libs(*args, **kwargs)
+        if event == "c_call" and arg is llvm.link_extern_libs:
+            link_called = True
 
-    monkeypatch.setattr(llvm, "link_extern_libs", link_extern_libs_wrapper)
     x = torch.ones((1, ), device="cuda")
-    with (compilation := triton.knobs.compilation).scope():
-        compilation.always_compile = True
-        kernel[(1, )](x, SQRT=use_libdevice)
+    prior_callback = sys.getprofile()
+    try:
+        sys.setprofile(callback)
+        with (compilation := triton.knobs.compilation).scope():
+            compilation.always_compile = True
+            kernel[(1, )](x, SQRT=use_libdevice)
+    finally:
+        sys.setprofile(prior_callback)
 
     assert (link_called == use_libdevice)

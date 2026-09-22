@@ -68,6 +68,7 @@ import triton.experimental.gluon as gluon
 import triton.experimental.gluon.language as gl
 from dataclasses import replace
 from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor
+from triton.language.core import _aggregate as aggregate
 from triton.experimental.gluon.nvidia.hopper import TensorDescriptor
 from triton.experimental.gluon.language.nvidia.blackwell import (
     TensorMemoryLayout,
@@ -235,7 +236,7 @@ def simple_mma_scaled_kernel(a_desc, b_desc, c_desc, a_scale_ptr, a_scale_stride
     acc_smem = gl.allocate_shared_memory(c_desc.dtype, c_desc.block_type.shape, c_desc.layout)
     acc_smem.store(acc)
     fence_async_shared()
-    tma.async_store(c_desc, [off_m, off_n], acc_smem)
+    tma.async_copy_shared_to_global(c_desc, [off_m, off_n], acc_smem)
     tma.store_wait(0)
 
 
@@ -531,7 +532,7 @@ def mma_scaled_contig_kernel(a_desc, b_desc, c_desc, a_scale_ptr, b_scale_ptr, V
     acc_smem = gl.allocate_shared_memory(c_desc.dtype, c_desc.block_type.shape, c_desc.layout)
     acc_smem.store(acc)
     fence_async_shared()
-    tma.async_store(c_desc, [off_m, off_n], acc_smem)
+    tma.async_copy_shared_to_global(c_desc, [off_m, off_n], acc_smem)
     tma.store_wait(0)
     # ======= End unchanged code from `simple_mma_scaled_kernel` =======
 
@@ -770,7 +771,7 @@ def mma_scaled_packed_block_kernel(a_desc, b_desc, c_desc, a_scale_desc, b_scale
     acc_smem = gl.allocate_shared_memory(c_desc.dtype, c_desc.block_type.shape, c_desc.layout)
     acc_smem.store(acc)
     fence_async_shared()
-    tma.async_store(c_desc, [off_m, off_n], acc_smem)
+    tma.async_copy_shared_to_global(c_desc, [off_m, off_n], acc_smem)
     tma.store_wait(0)
     # ======= End unchanged code from `simple_mma_scaled_kernel` =======
 
@@ -1039,7 +1040,7 @@ def mma_scaled_tcgen05_copy_kernel(a_desc, b_desc, c_desc, a_scale_desc, b_scale
     acc_smem = gl.allocate_shared_memory(c_desc.dtype, c_desc.block_type.shape, c_desc.layout)
     acc_smem.store(acc)
     fence_async_shared()
-    tma.async_store(c_desc, [off_m, off_n], acc_smem)
+    tma.async_copy_shared_to_global(c_desc, [off_m, off_n], acc_smem)
     tma.store_wait(0)
     # ======= End unchanged code from `mma_scaled_packed_block_kernel` =======
 
@@ -1318,7 +1319,7 @@ def mma_scaled_pipelined_kernel(a_desc, b_desc, c_desc, a_scale_desc, b_scale_de
         tma.store_wait(0)
         acc_smem.store(acc)
         fence_async_shared()
-        tma.async_store(c_desc, [epilogue_pid_m * BLOCK_M, epilogue_pid_n * BLOCK_N], acc_smem)
+        tma.async_copy_shared_to_global(c_desc, [epilogue_pid_m * BLOCK_M, epilogue_pid_n * BLOCK_N], acc_smem)
 
     # Wait for the last store.
     tma.store_wait(0)
@@ -1333,7 +1334,7 @@ def mma_scaled_pipelined_kernel(a_desc, b_desc, c_desc, a_scale_desc, b_scale_de
 # wrote simplify writing the warp-specialized code.
 
 
-@gluon.aggregate
+@aggregate
 class PartitionArgs:
     a_desc: tma.tensor_descriptor
     b_desc: tma.tensor_descriptor
@@ -1403,7 +1404,7 @@ def mma_scaled_epilogue_partition(p):
         tma.store_wait(0)
         acc_smem.store(acc.to(p.c_desc.dtype))
         fence_async_shared()
-        tma.async_store(p.c_desc, [pid_m * p.BLOCK_M, pid_n * p.BLOCK_N], acc_smem)
+        tma.async_copy_shared_to_global(p.c_desc, [pid_m * p.BLOCK_M, pid_n * p.BLOCK_N], acc_smem)
     tma.store_wait(0)
 
 

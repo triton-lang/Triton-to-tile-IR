@@ -1,4 +1,4 @@
-// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1250 | FileCheck %s
+// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=arch=gfx1250 | FileCheck %s
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>
 #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 8, order = [1, 0]}>
@@ -310,12 +310,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.shar
     // CHECK-NEXT: %[[OOB_LDS:.*]] = llvm.inttoptr %[[NEG1]] :
     // CHECK-NEXT: %[[LDS_PTR:.*]] = llvm.select %{{.*}}, %{{.*}}, %[[OOB_LDS]]
     // CHECK-NEXT: rocdl.global.load.async.to.lds{{.*}} %{{.*}}, %[[LDS_PTR]],
-
-    // CHECK: %[[INV_MASK:.*]] = llvm.icmp "ne" %{{.*}}, %{{.*}} : i1
-    // CHECK: %[[OTHER_NEG1:.*]] = llvm.mlir.constant(2147483647 : i32)
-    // CHECK-NEXT: %[[OTHER_OOB_LDS:.*]] = llvm.inttoptr %[[OTHER_NEG1]] :
-    // CHECK-NEXT: %[[OTHER_LDS_PTR:.*]] = llvm.select %[[INV_MASK]], %{{.*}}, %[[OTHER_OOB_LDS]]
-    // CHECK: llvm.store %{{.*}}, %[[OTHER_LDS_PTR]]
+    // CHECK: llvm.cond_br
+    // CHECK: llvm.store
+    // CHECK-NEXT: llvm.br
     %2 = ttg.async_copy_global_to_local %1, %arg2 mask %67 other %cst_0 : tensor<4x32x!tt.ptr<f32>, #blocked> -> <4x32xf32, #shared, #smem, mutable>
     tt.return
   }

@@ -31,31 +31,16 @@ bool isWriteLike(Operation *op) {
 
 bool isReadOnly(Operation *op) { return getEffectKind(op) == EffectKind::Read; }
 
-static cuda_tile::MemoryOrderingSemantics getOrdering(Operation *op) {
-  return llvm::TypeSwitch<Operation *, cuda_tile::MemoryOrderingSemantics>(op)
-      .Case<cuda_tile::LoadPtrTkoOp, cuda_tile::StorePtrTkoOp,
-            cuda_tile::LoadViewTkoOp, cuda_tile::StoreViewTkoOp,
-            cuda_tile::AtomicRMWTkoOp, cuda_tile::AtomicCASTkoOp,
-            cuda_tile::AtomicRedViewTkoOp>(
-          [](auto o) { return o.getMemoryOrderingSemantics(); })
-      .Default(cuda_tile::MemoryOrderingSemantics::WEAK);
-}
-
 bool isAcquireFence(Operation *op) {
   // GDC wait is modeled as acquire: its output orders later local memory ops
   // after predecessor completion. gpu.barrier is a total fence, so it has both
   // acquire and release sides.
-  auto ordering = getOrdering(op);
-  return isa<cuda_tile::GdcWaitTkoOp, mlir::gpu::BarrierOp>(op) ||
-         ordering == cuda_tile::MemoryOrderingSemantics::ACQUIRE ||
-         ordering == cuda_tile::MemoryOrderingSemantics::ACQ_REL;
+  return isa<cuda_tile::GdcWaitTkoOp, mlir::gpu::BarrierOp>(op);
 }
 
 bool isReleaseFence(Operation *op) {
-  auto ordering = getOrdering(op);
-  return isa<mlir::gpu::BarrierOp>(op) ||
-         ordering == cuda_tile::MemoryOrderingSemantics::RELEASE ||
-         ordering == cuda_tile::MemoryOrderingSemantics::ACQ_REL;
+  // gpu.barrier is a total fence, so it has both acquire and release sides.
+  return isa<mlir::gpu::BarrierOp>(op);
 }
 
 bool isDependentLaunchSignal(Operation *op) {

@@ -111,40 +111,30 @@ static int minNumInterleavedCommitOps(Operation *waitOp) {
     return 0;
   };
 
-  if (waitOp->getNumOperands() == 0)
+  if (waitOp->getNumOperands() != 1)
     return 0;
-  // Multi-token waits: take the min of minOverHistories across operands. Both
-  // the captured `minCommitNumber` and the returned bailout-0s are folded in.
-  int minCommits = INT_MAX;
-  for (Value val : waitOp->getOperands()) {
-    Operation *anchor = waitOp;
-    // If the value resides in a region other than the region of the wait op,
-    // then the wait op must be in some nested region. Measure the number of
-    // commits between the definition value and the parent op.
-    // TODO: We could measure commits in nested regions along the path if
-    // necessary.
-    while (anchor->getParentRegion() != val.getParentRegion())
-      anchor = anchor->getParentOp();
-    minCommits = std::min(minCommits, minOverHistories(val, anchor, 0));
-  }
+  Value val = waitOp->getOperand(0);
+  // If the value resides in a region other than the region of the wait op, then
+  // the wait op must be in some nested region. Measure the number of commits
+  // between the definition value and the parent op.
+  // TODO: We could measure commits in nested regions along the path if
+  // necessary.
+  while (waitOp->getParentRegion() != val.getParentRegion())
+    waitOp = waitOp->getParentOp();
+  int minCommits = minOverHistories(val, waitOp, 0);
   return minCommits;
 }
 
 /// Update wait op number by analyzing the number of async_commit_group ops
 /// along all paths.
 void mlir::triton::updateWaits(ModuleOp module) {
-  llvm::SmallSetVector<Operation *, 8> waitOps;
+  llvm::SmallSetVector<ttg::AsyncWaitOp, 8> waitOps;
   module.walk([&](ttg::AsyncWaitOp waitOp) {
     int minNumCommits = minNumInterleavedCommitOps(waitOp);
     waitOp.setNum(minNumCommits);
     waitOps.insert(waitOp);
   });
-  tt::combineRedundantWaitOps(
-      waitOps, [](Operation *op) { return isa<ttg::AsyncCommitGroupOp>(op); },
-      [](OpBuilder &b, Location loc, ValueRange operands,
-         unsigned num) -> Operation * {
-        return ttg::AsyncWaitOp::create(b, loc, operands, num);
-      });
+  tt::combineRedundantWaitOps(waitOps);
 }
 
 // Add the given values as operands of the given wait, and replace all uses of
@@ -221,8 +211,7 @@ static void threadValuesThroughWait(ttng::WarpGroupDotWaitOp wait,
   // We can't use replaceWithNewOp because we're changing the number of return
   // values in the operation.
   auto newWait = ttng::WarpGroupDotWaitOp::create(
-      builder, wait.getLoc(), llvm::to_vector(newOperands),
-      wait.getPendingsAttr(), wait.getWarpGroupLocalAttr());
+      builder, wait.getLoc(), llvm::to_vector(newOperands), wait.getPendings());
 
   auto dominatedByNewWait = [&](OpOperand &operand) {
     auto opInThisBlock =
@@ -241,8 +230,6 @@ static void threadValuesThroughWait(ttng::WarpGroupDotWaitOp wait,
   }
   wait->erase();
 }
-
-namespace {
 
 // Split the LHS of a RSWGMMADot operation into multiple
 // tensors of size MxnewK via SplitOps
@@ -387,8 +374,6 @@ splitRSDots(const llvm::MapVector<Operation *, int> &dots) {
   }
   return ret;
 }
-
-} // namespace
 
 // Determines whether a given MMAv3 dot op, represented as ttng.warp_group_dot,
 // needs a wait immediately after it.
@@ -656,8 +641,7 @@ static void insertAsyncWarpGroupDotWaitInLoop(
 
       OpBuilder builder((*firstUse)->getOwner());
       auto newWait = ttng::WarpGroupDotWaitOp::create(
-          builder, asyncDot->getLoc(), ArrayRef<Value>{}, 0,
-          /*warpGroupLocal=*/true);
+          builder, asyncDot->getLoc(), ArrayRef<Value>{}, 0);
 
       SmallVector<Value> users;
       for (; firstUse != uses.end(); ++firstUse) {

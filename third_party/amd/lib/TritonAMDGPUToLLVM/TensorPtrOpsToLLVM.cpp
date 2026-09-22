@@ -43,6 +43,34 @@ LogicalResult validateStridesAndSharedOrder(triton::MakeTensorDescOp op,
   return success();
 }
 
+// Collects all users of the value beyond the basic block boundaries
+// defining a given value.
+void collectUsers(Value value, llvm::SetVector<Operation *> &users) {
+  for (OpOperand &use : value.getUses()) {
+    Operation *userOp = use.getOwner();
+    if (users.contains(userOp)) {
+      // stop recursion; avoid loops
+      return;
+    }
+    users.insert(userOp);
+    const unsigned argIdx = use.getOperandNumber();
+
+    if (auto unrealCast = dyn_cast<mlir::UnrealizedConversionCastOp>(userOp)) {
+      collectUsers(unrealCast->getResult(argIdx), users);
+    }
+
+    if (auto branch = dyn_cast<mlir::BranchOpInterface>(userOp)) {
+      auto successors = branch->getSuccessors();
+      for (auto [idx, successor] : llvm::enumerate(successors)) {
+        auto operands = branch.getSuccessorOperands(idx);
+        if (argIdx < operands.size()) {
+          collectUsers(successor->getArgument(argIdx), users);
+        }
+      }
+    }
+  }
+}
+
 struct MakeTensorDescOpConversion
     : public ConvertOpToLLVMPattern<triton::MakeTensorDescOp> {
   using ConvertOpToLLVMPattern<
@@ -51,11 +79,6 @@ struct MakeTensorDescOpConversion
   LogicalResult
   matchAndRewrite(triton::MakeTensorDescOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (op.getPadding() != PaddingOption::PAD_ZERO) {
-      return op.emitError()
-             << "Padding with non-zero in TDM is not supported on GFX1250.";
-    }
-
     auto loc = op.getLoc();
     auto basePtr = adaptor.getBase();
     auto tensorShape = adaptor.getShape();
@@ -81,6 +104,7 @@ struct MakeTensorDescOpConversion
     Type elementType =
         getTypeConverter()->convertType(tensorDescTy.getElementType());
     SmallVector<int64_t> blockShape = to_vector(tensorDescTy.getShape());
+    int numWarps = lookupNumWarps(op);
     auto shapePerCTA = triton::gpu::getShapePerCTA(sharedEnc, blockShape);
 
     if (failed(validateStridesAndSharedOrder(op, sharedEnc, shapePerCTA,
@@ -89,61 +113,18 @@ struct MakeTensorDescOpConversion
     }
     auto sharedOrder = triton::gpu::getOrder(
         cast<triton::gpu::SharedEncodingTrait>(sharedEnc), shapePerCTA);
-    // Lower the tensor descriptor to a base TDM descriptor.  The final hardware
-    // descriptor is completed at each TDM op site because pred, LDS address,
-    // barrier, and tile_dim* are op-local.
-    // Returns 2 (2D) or 4 (3D-5D) vector groups; scalarize into 12 or 20
-    // i32 scalars to match the flat MLIR struct type from
-    // `convertTensorDescType` (matches the host-side TDMDescriptor ABI).
-    SmallVector<Value> groups = LLVM::AMD::createTDMDescriptor(
-        rewriter, loc, getTypeConverter(), elementType, blockShape.size(),
-        padInterval, padAmount, tensorShape, tensorStride, basePtr);
-    SmallVector<Value> scalars =
-        mlir::LLVM::AMD::scalarizeTDMDescriptor(rewriter, loc, groups);
+    bool isRowMajor = sharedOrder[0] == (sharedOrder.size() - 1);
+    // Create TDM descriptor for 2D-5D tensors
+    auto tdmDesc = LLVM::AMD::createTDMDescriptor(
+        rewriter, loc, getTypeConverter(), elementType, shapePerCTA, numWarps,
+        padInterval, padAmount, tensorShape, tensorStride, basePtr, sharedEnc);
 
-    auto desc = packLLElements(loc, getTypeConverter(), scalars, rewriter,
-                               tensorDescTy);
+    SmallVector<Value> groups = tdmDesc.getAllGroups();
+
+    auto desc =
+        packLLElements(loc, getTypeConverter(), groups, rewriter, tensorDescTy);
 
     rewriter.replaceOp(op, desc);
-    return success();
-  }
-};
-
-struct UpdateTensorDescriptorOpConversion
-    : public ConvertOpToLLVMPattern<triton::amdgpu::UpdateTensorDescriptorOp> {
-  using ConvertOpToLLVMPattern<
-      triton::amdgpu::UpdateTensorDescriptorOp>::ConvertOpToLLVMPattern;
-
-  LogicalResult
-  matchAndRewrite(triton::amdgpu::UpdateTensorDescriptorOp op,
-                  OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto tensorDescTy = op.getDesc().getType();
-    Type elementType =
-        getTypeConverter()->convertType(tensorDescTy.getElementType());
-    SmallVector<int64_t> blockShape = to_vector(tensorDescTy.getShape());
-
-    // Unpack the input descriptor into vector groups: 2 (1D-2D) or 4 (3D-5D).
-    SmallVector<Value> groups =
-        mlir::LLVM::AMD::unpackTDMDescriptor(rewriter, loc, adaptor.getDesc());
-
-    SmallVector<Value> addOffsets = llvm::to_vector(adaptor.getAddOffsets());
-    SmallVector<Value> setBounds = llvm::to_vector(adaptor.getSetBounds());
-    Value pred = adaptor.getPred();
-
-    mlir::LLVM::AMD::updateTensorDescriptor(
-        rewriter, loc, elementType, blockShape, groups, addOffsets, setBounds,
-        pred, op.getClampBounds());
-
-    // Re-pack the mutated groups back into the flat MLIR struct that
-    // matches convertTensorDescType / the host-side TDMDescriptor ABI.
-    SmallVector<Value> scalars =
-        mlir::LLVM::AMD::scalarizeTDMDescriptor(rewriter, loc, groups);
-    Value newDesc = packLLElements(loc, getTypeConverter(), scalars, rewriter,
-                                   tensorDescTy);
-
-    rewriter.replaceOp(op, newDesc);
     return success();
   }
 };
@@ -153,6 +134,5 @@ void mlir::triton::AMD::populateTensorPtrOpsToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     PatternBenefit benefit) {
   patterns.add<MakeTensorDescOpConversion>(typeConverter, benefit);
-  patterns.add<UpdateTensorDescriptorOpConversion>(typeConverter, benefit);
   return;
 }

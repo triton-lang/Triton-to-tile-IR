@@ -15,7 +15,7 @@ class GluonASTSource(ASTSource):
     def __init__(self, fn, signature, constexprs=None, attrs=None) -> None:
         super().__init__(fn, signature, constexprs, attrs)
         self.language = Language.GLUON
-        self.ext = "glir"
+        self.ext = "ttgir"
 
     def make_ir(self, target, options, codegen_fns, module_map, context):
         from triton.compiler.compiler import make_backend
@@ -102,6 +102,7 @@ def jit(
     """
 
     def decorator(fn: T) -> JITFunction[T]:
+        assert callable(fn)
         return GluonJITFunction(
             fn,
             version=version,

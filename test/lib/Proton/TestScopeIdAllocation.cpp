@@ -36,16 +36,14 @@ struct TestScopeIdAllocationPass
            moduleScopeIdAllocation.getScopeIdParents(funcOp)) {
         parentScopeIdMap.insert({childId, parentId});
       }
-      funcOp.walk([&](Operation *op) {
-        if (!isa<RecordOp, AllocateEventOp>(op))
-          return;
-        auto scopeId = moduleScopeIdAllocation.getOpScopeId(op);
-        mlir::emitRemark(op->getLoc()) << "scope id = " << scopeId;
+      funcOp.walk([&](RecordOp recordOp) {
+        auto scopeId = moduleScopeIdAllocation.getOpScopeId(recordOp);
+        mlir::emitRemark(recordOp.getLoc()) << "scope id = " << scopeId;
         int64_t parentId = -1;
         if (auto parentIt = parentScopeIdMap.find(scopeId);
             parentIt != parentScopeIdMap.end())
           parentId = parentIt->second;
-        mlir::emitRemark(op->getLoc()) << "scope parent id = " << parentId;
+        mlir::emitRemark(recordOp.getLoc()) << "scope parent id = " << parentId;
       });
     });
   }

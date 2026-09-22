@@ -10,8 +10,7 @@ namespace hip {
 struct ExternLibHip : public ExternLibBase {
   using RetType = hipError_t;
   static constexpr const char *name = "libamdhip64.so";
-  static constexpr const char *pathEnv = nullptr;
-  static constexpr const char *libraryEnv = "TRITON_LIBHIP_PATH";
+  static constexpr const char *defaultDir = "";
   static constexpr RetType success = hipSuccess;
   static void *lib;
 };
@@ -62,12 +61,6 @@ DEFINE_DISPATCH(ExternLibHip, streamSynchronize, hipStreamSynchronize,
                 hipStream_t)
 
 DEFINE_DISPATCH(ExternLibHip, streamDestroy, hipStreamDestroy, hipStream_t)
-
-DEFINE_DISPATCH(ExternLibHip, graphGetNodes, hipGraphGetNodes, hipGraph_t,
-                hipGraphNode_t *, size_t *)
-
-DEFINE_DISPATCH(ExternLibHip, graphNodeGetType, hipGraphNodeGetType,
-                hipGraphNode_t, hipGraphNodeType *)
 
 DEFINE_DISPATCH(ExternLibHip, memcpyDToHAsync, hipMemcpyDtoHAsync, void *,
                 hipDeviceptr_t, size_t, hipStream_t)

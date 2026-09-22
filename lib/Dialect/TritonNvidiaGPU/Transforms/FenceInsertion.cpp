@@ -1,10 +1,9 @@
-#include "triton/Analysis/BufferRegion.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
-#include "triton/Tools/Sys/GetEnv.h"
+#include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/Support/Debug.h"
 
 //===----------------------------------------------------------------------===//
@@ -38,13 +37,11 @@ public:
       return;
     ModuleOp mod = getOperation();
     mod.walk([&](DotOpInterface dotOp) {
-      SmallVector<Operation *> copyRegToSharedOps;
-      for (const auto &access : getMemoryAccesses(
-               dotOp.getOperation(), ttg::SharedKind::Async, RW::Read)) {
-        llvm::append_range(copyRegToSharedOps,
-                           findCopyRegToSharedOps(access.value));
-      }
-      if (copyRegToSharedOps.empty())
+      Value a = dotOp.getA();
+      Value b = dotOp.getB();
+      SmallVector<Operation *> copyRegToSharedOpsA = findCopyRegToSharedOps(a);
+      SmallVector<Operation *> copyRegToSharedOpsB = findCopyRegToSharedOps(b);
+      if (copyRegToSharedOpsA.empty() && copyRegToSharedOpsB.empty())
         return WalkResult::advance();
 
       OpBuilder builder(dotOp);
@@ -53,7 +50,12 @@ public:
       // If there is all the dependencies are outside of the loop try to hoist
       // the fence.
       while (auto loopOp = fence->getParentOfType<LoopLikeOpInterface>()) {
-        if (llvm::any_of(copyRegToSharedOps,
+        if (!copyRegToSharedOpsA.empty() &&
+            llvm::any_of(copyRegToSharedOpsA,
+                         [&](Operation *op) { return loopOp->isAncestor(op); }))
+          break;
+        if (!copyRegToSharedOpsB.empty() &&
+            llvm::any_of(copyRegToSharedOpsB,
                          [&](Operation *op) { return loopOp->isAncestor(op); }))
           break;
         loopOp.moveOutOfLoop(fence);
@@ -102,7 +104,7 @@ private:
                  user->hasTrait<OpTrait::MemDescViewTrait>()) {
             user = *user->getUsers().begin();
           }
-          if (hasSharedAccess(user, ttg::SharedKind::Generic, RW::Write)) {
+          if (isa<ttg::LocalStoreOp>(user)) {
             result.insert(user);
             return;
           }

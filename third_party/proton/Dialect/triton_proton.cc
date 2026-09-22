@@ -10,29 +10,29 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/Pass/PassManager.h"
 #include "passes.h"
-#include <nanobind/nanobind.h>
-#include <nanobind/stl/pair.h>
-#include <nanobind/stl/string.h>
-#include <nanobind/stl/vector.h>
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+#include <pybind11/stl_bind.h>
 
-namespace py = nanobind;
+namespace py = pybind11;
 using namespace mlir::triton;
 
-void init_triton_proton(py::module_ &m) {
+void init_triton_proton(py::module &&m) {
   m.doc() = "Python bindings to the Proton backend";
 
   // Proton enums
-  py::enum_<proton::MetricType>(m, "METRIC_TYPE")
+  py::enum_<proton::MetricType>(m, "METRIC_TYPE", py::module_local())
       .value("CYCLE", proton::MetricType::CYCLE)
       .export_values();
 
-  py::enum_<proton::SamplingStrategy>(m, "SAMPLING_STRATEGY")
+  py::enum_<proton::SamplingStrategy>(m, "SAMPLING_STRATEGY",
+                                      py::module_local())
       .value("NONE", proton::SamplingStrategy::NONE)
       .value("SELECTIVE", proton::SamplingStrategy::SELECTIVE)
       .export_values();
 
   // ProtonGPU enums
-  py::enum_<proton::gpu::Granularity>(m, "GRANULARITY")
+  py::enum_<proton::gpu::Granularity>(m, "GRANULARITY", py::module_local())
       .value("CTA", proton::gpu::Granularity::CTA)
       .value("WARP", proton::gpu::Granularity::WARP)
       .value("WARP_2", proton::gpu::Granularity::WARP_2)
@@ -44,12 +44,13 @@ void init_triton_proton(py::module_ &m) {
       .value("WARP_GROUP_8", proton::gpu::Granularity::WARP_GROUP_8)
       .export_values();
 
-  py::enum_<proton::gpu::BufferStrategy>(m, "BUFFER_STRATEGY")
+  py::enum_<proton::gpu::BufferStrategy>(m, "BUFFER_STRATEGY",
+                                         py::module_local())
       .value("CIRCULAR", proton::gpu::BufferStrategy::CIRCULAR)
       .value("FLUSH", proton::gpu::BufferStrategy::FLUSH)
       .export_values();
 
-  py::enum_<proton::gpu::BufferType>(m, "BUFFER_TYPE")
+  py::enum_<proton::gpu::BufferType>(m, "BUFFER_TYPE", py::module_local())
       .value("SHARED", proton::gpu::BufferType::SHARED)
       .value("GLOBAL", proton::gpu::BufferType::GLOBAL)
       .export_values();
@@ -79,22 +80,6 @@ void init_triton_proton(py::module_ &m) {
                                                 llvm::StringRef(name));
           opBuilder.create<proton::RecordOp>(isStart, nameAttr);
         });
-
-  m.def(
-      "create_proton_allocate_event",
-      [](TritonOpBuilder &opBuilder, const std::string &name) -> mlir::Value {
-        auto nameAttr = mlir::StringAttr::get(opBuilder.getContext(), name);
-        auto op = opBuilder.create<proton::AllocateEventOp>(
-            mlir::TypeRange{mlir::IntegerType::get(opBuilder.getContext(), 32)},
-            nameAttr);
-        return op.getEvent();
-      });
-
-  m.def(
-      "create_proton_event",
-      [](TritonOpBuilder &opBuilder, bool isStart, mlir::Value event) -> void {
-        opBuilder.create<proton::EventOp>(isStart, event);
-      });
 
   m.def("add_convert_proton_to_protongpu",
         [](mlir::PassManager &pm, proton::MetricType &metricType,

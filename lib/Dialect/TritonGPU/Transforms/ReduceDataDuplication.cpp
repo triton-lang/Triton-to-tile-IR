@@ -42,7 +42,7 @@ public:
           dyn_cast<triton::gpu::DotOperandEncodingAttr>(dstType.getEncoding());
       if (!dstDotOp)
         return;
-      if (!cvtNeedsSharedMemory(cvtOp))
+      if (!cvtNeedsSharedMemory(srcType, dstType))
         return;
       auto order = getOrderForMemory(srcType);
       auto sharedMemorySpace =

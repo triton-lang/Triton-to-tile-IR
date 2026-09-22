@@ -10,11 +10,8 @@ using namespace mlir::triton::nvidia_gpu;
 namespace mlir::triton::nvws {
 
 Operation *createAlloc(OpBuilder &builder, Location loc,
-                       MemDescType memDescType, Value src,
-                       std::optional<int32_t> alignment) {
+                       MemDescType memDescType, Value src) {
   if (isa<SharedMemorySpaceAttr>(memDescType.getMemorySpace())) {
-    if (alignment)
-      return LocalAllocOp::create(builder, loc, memDescType, src, *alignment);
     return LocalAllocOp::create(builder, loc, memDescType, src);
   } else {
     assert(isa<TensorMemorySpaceAttr>(memDescType.getMemorySpace()));
@@ -57,10 +54,10 @@ MemDescType getArefMultiBufferedType(MemDescType bufTy, int depth) {
                                /*mutableMemory*/ true);
 }
 
-LoopLikeOpInterface getOuterWSLoop(LoopLikeOpInterface loop) {
-  auto wsLoop = loop;
+scf::ForOp getOuterWSLoop(scf::ForOp innerFor) {
+  auto wsLoop = innerFor;
   while (wsLoop && !wsLoop->hasAttr(triton::kWarpSpecializeAttrName)) {
-    wsLoop = wsLoop->getParentOfType<LoopLikeOpInterface>();
+    wsLoop = wsLoop->getParentOfType<scf::ForOp>();
   }
   return wsLoop;
 }

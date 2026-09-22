@@ -4,10 +4,9 @@
 include "mlir/IR/OpBase.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 
-def CastFpOpInterface : OpInterface<"CastFpOpInterface"> {
+def UpcastFpOpInterface : OpInterface<"UpcastFpOpInterface"> {
     let description = [{
-        This interface is for operations that cast floating-point numbers,
-        either upcasting or downcasting.
+        This interface is for operations that upcast floating-point numbers.
     }];
 
     let cppNamespace = "::mlir::triton::gpu";
@@ -48,10 +47,6 @@ def MBarrierOpInterface : OpInterface<"MBarrierOpInterface"> {
     Interface for operations that use mbarrier synchronization primitives.
     Returns the barrier memdesc operand (or null if absent), allowing
     backend-agnostic barrier identification without direct dialect dependencies.
-  }];
-
-  let verify = [{
-    return ::mlir::triton::gpu::verifyMBarrierOpInterface($_op);
   }];
 
   let cppNamespace = "::mlir::triton::gpu";

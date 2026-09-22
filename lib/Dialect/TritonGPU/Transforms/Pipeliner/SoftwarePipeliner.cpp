@@ -16,7 +16,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Schedule.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
-#include "triton/Tools/Sys/Dump.h"
+#include "triton/Tools/Sys/Dump.hpp"
 //===----------------------------------------------------------------------===//
 // This file will create a schedule that will be handed over to the pipeline
 // expander.
@@ -210,20 +210,15 @@ struct PipelinePass : public impl::TritonGPUPipelineBase<PipelinePass> {
       return signalPassFailure();
 
     {
-      SmallVector<LoopLikeOpInterface> loops;
+      SmallVector<scf::ForOp> loops;
       getOperation()->walk([&](scf::ForOp forOp) {
         // Bail out for loops with num_stage <= 1.
         if (getNumStagesOrDefault(forOp, numStages) > 1)
           loops.push_back(forOp);
       });
 
-      if (numStages > 1) {
-        getOperation()->walk(
-            [&](scf::WhileOp whileOp) { loops.push_back(whileOp); });
-      }
-
-      for (auto loopOp : loops) {
-        mlir::triton::pipelineTMAStores(loopOp);
+      for (scf::ForOp forOp : loops) {
+        mlir::triton::pipelineTMAStores(forOp);
       }
     }
   }

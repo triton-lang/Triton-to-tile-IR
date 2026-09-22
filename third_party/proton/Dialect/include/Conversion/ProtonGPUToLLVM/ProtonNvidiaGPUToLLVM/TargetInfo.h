@@ -25,8 +25,6 @@ public:
 
   int getAddressSpace(Attribute addressSpace) const override;
 
-  unsigned getPtrAddressSpace(triton::PtrAddrSpace space) const override;
-
   int getIndexPtrAddrSpace() const override;
 
   ~TargetInfo() {}

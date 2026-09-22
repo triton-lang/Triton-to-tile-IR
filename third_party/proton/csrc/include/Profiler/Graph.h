@@ -12,14 +12,13 @@
 #include <optional>
 #include <set>
 #include <shared_mutex>
-#include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace proton {
 
 class Data;
-class PendingGraphPool;
 class Runtime;
 
 struct NodeStatus {
@@ -47,7 +46,7 @@ struct GraphState {
   // Capture tag to identify captured call paths
   static constexpr const char *captureTag = "<captured_at>";
   static constexpr const char *metricTag = "<metric>";
-
+  static constexpr const char *metadataTag = "__proton_launch_metadata";
   struct NodeState {
     // The graph node id for this node
     uint64_t nodeId{};
@@ -64,59 +63,52 @@ struct GraphState {
     }
   };
   using NodeIdToStateMap = std::map<uint64_t, NodeState>;
-  // Data objects that were active for at least one node during graph capture.
-  std::set<Data *> capturedData;
+  // Precomputed per-Data launch links maintained on graph node
+  // create/clone/destroy callbacks.
+  // data -> (static_entry_id -> graph-node metadata pointers)
+  std::map<Data *, std::unordered_map<size_t, std::set<NodeState *>>>
+      dataToEntryIdToNodeStates;
   // Mapping from node id to node state, has to be ordered based on node id
   // which is the order of node creation.
   NodeIdToStateMap nodeIdToState;
-  struct MetricNodeState {
-    uint64_t seqId{};
-    uint64_t metricId{};
-    size_t numWords{};
-    // Attributing flexible metrics written by metric kernels.
-    std::map<Data *, size_t> dataToEntryId;
-  };
-  // Metric nodes and their CPU-side metric state, ordered by node id.
-  std::map<uint64_t, MetricNodeState> metricNodeIdToState;
-  // Maps the sequence id captured in the metric record back to the graph node
-  // id.
-  std::unordered_map<uint64_t, uint64_t> metricSeqIdToNodeId;
+  // Metric nodes and their per-node metric words, ordered by node id.
+  std::map<uint64_t, size_t> metricNodeIdToNumWords;
   // If the graph is launched after profiling started,
   // we need to throw an error and this error is only thrown once
   bool captureStatusChecked{};
   // Total number of uint64 words written by all metric nodes in this graph.
   size_t numMetricWords{};
-
-  void recordNode(uint64_t nodeId, const std::string &name,
-                  std::optional<MetricNodeState> metricNodeState,
-                  const std::set<Data *> &dataSet, bool isApiExternOp);
-
-  void buildLaunchEntries(const DataToEntryMap &dataToEntry,
-                          DataToEntryMap &dataToGraphEntry) const;
-
-  void queueMetrics(PendingGraphPool *pendingGraphPool,
-                    const DataToEntryMap *dataToGraphEntry,
-                    bool flushIfNeeded) const;
 };
 
 struct PendingGraphQueue {
-  struct MetricNodeState {
-    uint64_t metricId{};
-    std::map<Data *, DataEntry> dataToEntry;
+  struct PendingGraph {
+    size_t numNodes;
+    size_t numWords;
+    // Metric target entries grouped per Data sink and aligned with
+    // graph metric-node order.
+    std::map<Data *, std::vector<DataEntry>> dataToEntries;
   };
-  using SeqIdToStateMap = std::map<uint64_t, MetricNodeState>;
 
-  SeqIdToStateMap seqIdToState;
+  std::vector<PendingGraph> pendingGraphs;
   // The start buffer offset in the metric buffer for this queue
   size_t startBufferOffset{};
+  // Total number of metric nodes in the pending graphs
+  size_t numNodes{};
   // Total number of uint64 words written by all nodes in this queue
   size_t numWords{};
+  // Device where the pending graphs are recorded
+  void *device{};
+  // Phase
+  size_t phase{};
 
-  explicit PendingGraphQueue(size_t startBufferOffset)
-      : startBufferOffset(startBufferOffset) {}
+  explicit PendingGraphQueue(size_t startBufferOffset, size_t phase,
+                             void *device)
+      : startBufferOffset(startBufferOffset), phase(phase), device(device) {}
 
-  void push(size_t numWords, SeqIdToStateMap &&seqIdToState) {
-    this->seqIdToState.merge(std::move(seqIdToState));
+  void push(size_t numNodes, size_t numWords,
+            const std::map<Data *, std::vector<DataEntry>> &dataToEntries) {
+    pendingGraphs.emplace_back(PendingGraph{numNodes, numWords, dataToEntries});
+    this->numNodes += numNodes;
     this->numWords += numWords;
   }
 };
@@ -126,8 +118,9 @@ public:
   explicit PendingGraphPool(MetricBuffer *metricBuffer)
       : metricBuffer(metricBuffer), runtime(metricBuffer->getRuntime()) {}
 
-  void push(size_t phase, size_t numWords,
-            PendingGraphQueue::SeqIdToStateMap &&seqIdToState);
+  void push(size_t phase,
+            const std::map<Data *, std::vector<DataEntry>> &dataToEntries,
+            size_t numNodes, size_t numWords);
 
   // No GPU synchronization, No CPU locks
   void peek(size_t phase);
