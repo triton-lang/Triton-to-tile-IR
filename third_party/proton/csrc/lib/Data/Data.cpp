@@ -1,10 +1,11 @@
 #include "Data/Data.h"
-#include "Utility/Errors.h"
 #include "Utility/String.h"
 
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+
+#include <shared_mutex>
 
 namespace proton {
 
@@ -60,6 +61,14 @@ void DataEntry::upsertLinkedFlexibleMetric(const std::string &metricName,
                                     FlexibleMetric(metricName, metricValue));
   } else {
     it->second.updateValue(metricValue);
+  }
+}
+
+void DataEntry::upsertLinkedFlexibleMetrics(
+    const std::map<std::string, MetricValueType> &metrics,
+    size_t linkedId) const {
+  for (const auto &[metricName, metricValue] : metrics) {
+    upsertLinkedFlexibleMetric(metricName, metricValue, linkedId);
   }
 }
 
@@ -164,7 +173,7 @@ OutputFormat parseOutputFormat(const std::string &outputFormat) {
   } else if (toLower(outputFormat) == "chrome_trace") {
     return OutputFormat::ChromeTrace;
   } else {
-    throw makeInvalidArgument("Unknown output format: " + outputFormat);
+    throw std::runtime_error("Unknown output format: " + outputFormat);
   }
 }
 
@@ -176,8 +185,8 @@ const std::string outputFormatToString(OutputFormat outputFormat) {
   } else if (outputFormat == OutputFormat::ChromeTrace) {
     return "chrome_trace";
   }
-  throw makeInvalidArgument("Unknown output format: " +
-                            std::to_string(static_cast<int>(outputFormat)));
+  throw std::runtime_error("Unknown output format: " +
+                           std::to_string(static_cast<int>(outputFormat)));
 }
 
 } // namespace proton

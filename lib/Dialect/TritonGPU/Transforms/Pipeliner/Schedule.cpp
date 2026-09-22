@@ -105,21 +105,17 @@ void tt::CoarseSchedule::shrinkToFit() {
 // split if the op is the first operation in the cluster.
 tt::CoarseSchedule::Cluster
 tt::CoarseSchedule::splitClusterBefore(Operation *op, scf::ForOp forOp) {
-  auto it = opToStageAndCluster.find(op);
-  assert(it != opToStageAndCluster.end() &&
-         "Operation must be in the schedule!");
-  auto cluster = it->second.second;
+  auto cluster = opToStageAndCluster[op].second;
   std::optional<tt::CoarseSchedule::Cluster> newCluster = std::nullopt;
   for (auto &_op : forOp.getBody()->without_terminator()) {
     if (&_op == op) {
       break;
     }
-    auto it_op = opToStageAndCluster.find(&_op);
-    if (it_op != opToStageAndCluster.end() && it_op->second.second == cluster) {
+    if (opToStageAndCluster[&_op].second == cluster) {
       if (!newCluster) {
         newCluster = clusters.newBefore(cluster);
       }
-      it_op->second.second = *newCluster;
+      opToStageAndCluster[&_op].second = *newCluster;
     }
   }
   return cluster;

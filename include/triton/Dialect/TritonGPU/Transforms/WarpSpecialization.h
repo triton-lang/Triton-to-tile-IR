@@ -4,7 +4,6 @@
 #include "mlir/Support/LogicalResult.h"
 
 namespace mlir {
-class LoopLikeOpInterface;
 namespace scf {
 class ForOp;
 } // namespace scf
@@ -18,7 +17,7 @@ LogicalResult rewritePartitionDependencies(scf::ForOp &loop);
 // rewritten to be reference semantic, partitiong the loop into a
 // `ttg.warp_specialize` by duplicating the loop for each partition and
 // rematerializing, as necessary, operations in the root partition.
-LogicalResult partitionLoop(LoopLikeOpInterface loop);
+LogicalResult partitionLoop(scf::ForOp loop);
 } // namespace triton::gpu
 } // namespace mlir
 

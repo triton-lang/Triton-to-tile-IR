@@ -1,19 +1,4 @@
-import os
-
 import pytest
-
-_RUNTIME_SELECTION_ENV = (
-    "TRITON_LIBHIP_PATH",
-    "TRITON_HSA_RUNTIME_PATH",
-    "TRITON_HSA_RUNTIME_LIBRARY",
-    "TRITON_ROCPROFILER_SDK_INCLUDE_PATH",
-    "TRITON_ROCPROFILER_SDK_LIB_PATH",
-    "TRITON_ROCPROFILER_SDK_LIBRARY",
-    "TRITON_ROCTRACER_LIB_PATH",
-    "TRITON_ROCTRACER_LIBRARY",
-    "TRITON_ROCTX_LIB_PATH",
-    "TRITON_ROCTX_LIBRARY",
-)
 
 
 def pytest_addoption(parser):
@@ -29,15 +14,9 @@ def device(request):
 def fresh_knobs():
     from triton._internal_testing import _fresh_knobs_impl
 
-    # TheRock installs ROCm libraries outside the system loader paths. Proton
-    # selects their absolute paths at import time, so keep those selections
-    # while resetting mutable test knobs such as TRITON_PROTON_DISABLE.
-    runtime_selection_env = {key: os.environ[key] for key in _RUNTIME_SELECTION_ENV if key in os.environ}
     fresh_function, reset_function = _fresh_knobs_impl()
     try:
-        fresh = fresh_function()
-        os.environ.update(runtime_selection_env)
-        yield fresh
+        yield fresh_function()
     finally:
         reset_function()
 
@@ -65,8 +44,6 @@ def pytest_collection_modifyitems(items):
         "test_jit", "test_select_ids", "test_trace", "test_multi_session",
         "test_autotune", "test_warp_spec", "test_timeline", "test_globaltime",
         "test_overhead", "test_gmem_buffer", "test_event_args", "test_threaded_kernel_call",
-        "test_event", "test_gluon_event", "test_gluon_warp_specialized_event",
-        "test_gluon_warp_specialized_dynamic_event", "test_no_scope_zero_scratch",
     }
     for item in items:
         params = item.callspec.params if hasattr(item, "callspec") else {}

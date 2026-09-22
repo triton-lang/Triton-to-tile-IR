@@ -1,4 +1,3 @@
-#include "Dialect/NVGPU/IR/Dialect.h"
 #include "TargetInfo.h"
 #include "Utility.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
@@ -46,11 +45,7 @@ public:
       : numThreadsPerWarp(numThreadsPerWarp) {}
 
   bool isBarrierOp(Operation *op) const override {
-    return isa<NVVM::BarrierOp>(op);
-  }
-
-  bool isBarrierHandleOp(Operation *op) const override {
-    return isa<mlir::triton::nvgpu::WarpGroupBarrierIdOp>(op);
+    return isa<NVVM::Barrier0Op>(op);
   }
 
   Type getBarrierHandleType(MLIRContext *ctx) const override {
@@ -81,10 +76,8 @@ public:
     if (numThreads == 32) {
       LLVM::NVIDIA::createSyncWarp(b.getLoc(), b);
     } else {
-      // Only this warp partition participates, so the barrier is not
-      // CTA-aligned.
-      NVVM::BarrierOp::create(b, b.getLoc(), handle, b.i32_val(numThreads),
-                              /*aligned=*/false);
+      NVVM::BarrierOp::create(b, b.getLoc(), TypeRange{}, handle,
+                              b.i32_val(numThreads), {}, Value{});
     }
   }
 

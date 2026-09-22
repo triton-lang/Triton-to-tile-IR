@@ -80,9 +80,9 @@ Operation *wrapInMaskOp(RewriterBase &rewriter, Operation *op, Value pred);
 // lowering to predicated operations
 void resolveMaskOp(ModuleOp moduleOp);
 
-// Return true if the given loop has the attribute
+// Return true if the given ForOp has the attribute
 // `tt.disallow_acc_multi_buffer` set to true.
-bool getDisallowAccMultiBuffer(LoopLikeOpInterface loop);
+bool getDisallowAccMultiBuffer(scf::ForOp forOp);
 
 // Return the definition of the given value. If the value is a loop-carried
 // dependency, return the definition and the distance to it.
@@ -128,24 +128,12 @@ inline bool isTMALoad(Operation *op) {
   return isa<DescriptorLoadLikeOpInterface>(op);
 }
 
-// Return true if Tensor Descriptor load can satisfy TMA's
-// shared-memory address alignment requirement.
-bool canPipelineTMALoad(Operation *op);
-
 // Determine if the operation can be lowered to an async load.
 bool canBeAsyncLoad(Operation *op);
 
-// Fold consecutive wait ops of the same kind into a single wait.
-// `isCounterBarrier` returns true on ops that act as a hard boundary while
-// scanning forward (typically the producers whose tokens a later wait
-// consumes). `createWait` builds the merged wait from the union of operand
-// tokens and the minimum `num`.
+// Look for consecutive wait ops and combine them into a single wait op.
 void combineRedundantWaitOps(
-    llvm::SmallSetVector<Operation *, 8> &waitOps,
-    llvm::function_ref<bool(Operation * /*candidate*/)> isCounterBarrier,
-    llvm::function_ref<Operation *(OpBuilder &, Location,
-                                   ValueRange /*operands*/, unsigned /*num*/)>
-        createWait);
+    llvm::SmallSetVector<gpu::AsyncWaitOp, 8> &waitOps);
 
 // Get the type of the view of a multi-buffered tensor value.
 gpu::MemDescType getBufferViewType(gpu::MemDescType allocTy,
@@ -178,20 +166,19 @@ Value createIncrementModulo(OpBuilder &builder, Location loc, Value counter,
                             Value modulus, Value zero, Value one,
                             Value *outWrapCond = nullptr);
 
-LoopLikeOpInterface lowerTMADescriptors(LoopLikeOpInterface loop,
-                                        CoarseSchedule &schedule);
+scf::ForOp lowerTMADescriptors(scf::ForOp forOp, CoarseSchedule &schedule);
 
 DenseSet<Operation *>
 getTopLevelUsersInLoop(Operation *op, scf::ForOp forOp,
                        std::function<bool(Operation *)> filter = nullptr);
 
-// Return the "first" op in terms of the stage and cluster ordering
+// Return the "first" op in terms of the stage and cluser ordering
 Operation *
 getFirstUseOfPipelinedOp(ArrayRef<Operation *> ops, scf::ForOp forOp,
                          CoarseSchedule &schedule,
                          std::function<bool(Operation *)> filterUse = nullptr);
 
-// Return the "last" op in terms of the stage and cluster ordering
+// Return the "last" op in terms of the stage and cluser ordering
 Operation *
 getLastUseOfPipelinedOp(ArrayRef<Operation *> ops, scf::ForOp forOp,
                         CoarseSchedule &schedule,

@@ -18,7 +18,7 @@ namespace triton::proton::gpu {
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/ProtonAMDGPUToLLVM/Passes.h.inc"
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertProtonAMDGPUToLLVMPass(std::string gfxArch = "");
+createConvertProtonAMDGPUToLLVMPass(std::string arch = "");
 
 #define GEN_PASS_REGISTRATION
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/ProtonAMDGPUToLLVM/Passes.h.inc"

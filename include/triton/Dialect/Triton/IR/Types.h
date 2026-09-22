@@ -9,12 +9,7 @@
 #define GET_TYPEDEF_CLASSES
 #include "triton/Dialect/Triton/IR/TypeInterfaces.h.inc"
 
-// clang-format off
-// TypesEnums.h.inc must precede Types.h.inc: the generated PointerType
-// declarations reference PtrAddrSpace.
-#include "triton/Dialect/Triton/IR/TypesEnums.h.inc"
 #include "triton/Dialect/Triton/IR/Types.h.inc"
-// clang-format on
 
 namespace mlir {
 
@@ -24,10 +19,9 @@ unsigned getPointeeBitWidth(Type type);
 
 Type getPointeeType(Type type);
 
-Type getPointerType(Type type,
-                    PtrAddrSpace addressSpace = PtrAddrSpace::Global);
+Type getPointerType(Type type, int addressSpace = 1);
 
-PtrAddrSpace getAddressSpace(Type type);
+int getAddressSpace(Type type);
 
 Type getI1SameShape(Type type);
 
@@ -35,7 +29,7 @@ Type getI32SameShape(Type type);
 
 Type getPointerTypeSameShape(Type type);
 
-bool elementTypeMatchesPointee(Type valueTy, Type ptrTy);
+Type getPointerTypeToElement(Type type);
 
 } // namespace triton
 

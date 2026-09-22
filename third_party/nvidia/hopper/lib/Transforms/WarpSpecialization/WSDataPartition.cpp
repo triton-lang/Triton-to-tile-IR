@@ -814,8 +814,8 @@ static Operation *sliceOp(Operation *op, int offset, IRMapping &mappings,
                     builder.getContext(),
                     dim == 0 ? tmem.getBlockM() / 2 : tmem.getBlockM(),
                     dim == 1 ? tmem.getBlockN() / 2 : tmem.getBlockN(),
-                    tmem.getColStride(), tmem.getCGALayout(), tmem.getTwoCTAs(),
-                    tmem.getFp4Padded());
+                    tmem.getColStride(), tmem.getCGALayout(),
+                    tmem.getTwoCTAs());
             auto newType = MemDescType::get(shape, type.getElementType(),
                                             accEncoding, type.getMemorySpace(),
                                             type.getMutableMemory());
@@ -921,8 +921,7 @@ static Operation *sliceOp(Operation *op, int offset, IRMapping &mappings,
           builder.getContext(),
           dim == 0 ? tmem.getBlockM() / 2 : tmem.getBlockM(),
           dim == 1 ? tmem.getBlockN() / 2 : tmem.getBlockN(),
-          tmem.getColStride(), tmem.getCGALayout(), tmem.getTwoCTAs(),
-          tmem.getFp4Padded());
+          tmem.getColStride(), tmem.getCGALayout(), tmem.getTwoCTAs());
       auto newType = MemDescType::get(shape, retType.getElementType(),
                                       accEncoding, retType.getMemorySpace(),
                                       retType.getMutableMemory());
@@ -1081,7 +1080,8 @@ static Operation *sliceOp(Operation *op, int offset, IRMapping &mappings,
     for (unsigned i = 0; i < forOp.getInitArgs().size(); i++) {
       auto initArg = forOp.getInitArgs()[i];
       Value newInitArg;
-      sliceOp(initArg, offset, mappings, reverseMappings, partitionScheme);
+      auto newInitArgOp =
+          sliceOp(initArg, offset, mappings, reverseMappings, partitionScheme);
       if (auto bbArg = dyn_cast<BlockArgument>(initArg)) {
         // find the corresponding new block argument
         Block *parentBlock = bbArg.getOwner();
@@ -1095,6 +1095,8 @@ static Operation *sliceOp(Operation *op, int offset, IRMapping &mappings,
         assert(argIndex < parentBlock->getNumArguments() &&
                "new init argment not found");
         Region *parentRegion = parentBlock->getParent();
+        Region &newParentRegion =
+            newInitArgOp->getRegion(parentRegion->getRegionNumber());
         newInitArg = parentRegion->getArgument(argIndex);
       } else {
         newInitArg = mappings.lookupOrNull(initArg);

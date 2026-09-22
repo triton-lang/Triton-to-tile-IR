@@ -91,10 +91,9 @@ usePermlaneSwapToOptimizeStore(PatternRewriter &rewriter, Value ptr, Value val,
                                                    newMaskType, mask);
   }
 
-  auto newStore = triton::StoreOp::create(
-      rewriter, oldStoreOp.getLoc(), newPtr, newVal, newMask,
-      oldStoreOp.getCachePolicyAttr(), oldStoreOp.getIgnoreCta());
-  return newStore;
+  return triton::StoreOp::create(rewriter, oldStoreOp.getLoc(), newPtr, newVal,
+                                 newMask, oldStoreOp.getCache(),
+                                 oldStoreOp.getEvict());
 }
 
 // convert(val) : xmma -> blocked
@@ -188,9 +187,9 @@ public:
     triton::StoreOp newStoreOp =
         usePermlaneSwapToOptimizeStore(rewriter, newPtr, newVal, newMask, stOp);
     if (!newStoreOp) {
-      newStoreOp = triton::StoreOp::create(
-          rewriter, stOp.getLoc(), newPtr, newVal, newMask,
-          stOp.getCachePolicyAttr(), stOp.getIgnoreCta());
+      newStoreOp =
+          triton::StoreOp::create(rewriter, stOp.getLoc(), newPtr, newVal,
+                                  newMask, stOp.getCache(), stOp.getEvict());
     }
 
     rewriter.replaceOp(stOp, newStoreOp);

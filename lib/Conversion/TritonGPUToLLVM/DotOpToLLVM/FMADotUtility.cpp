@@ -44,12 +44,11 @@ namespace {
 using ValueTableFMA = std::unordered_map<OperandValueKey, Value>;
 
 ValueTableFMA getValueTableFromStructFMA(
-    Value val, RankedTensorType tensorTy, ArrayRef<unsigned> perRepShape,
-    ArrayRef<unsigned> repetitions, unsigned kDim, unsigned nonKDim,
-    ConversionPatternRewriter &rewriter, Location loc,
-    ArrayRef<unsigned> inRepOrder, ArrayRef<unsigned> repOrder) {
+    Value val, ArrayRef<unsigned> perRepShape, ArrayRef<unsigned> repetitions,
+    unsigned kDim, unsigned nonKDim, ConversionPatternRewriter &rewriter,
+    Location loc, ArrayRef<unsigned> inRepOrder, ArrayRef<unsigned> repOrder) {
   ValueTableFMA res;
-  auto elems = unpackTensorElements(loc, val, rewriter, tensorTy);
+  auto elems = unpackLLElements(loc, val, rewriter);
   assert(perRepShape.size() == 3);
   auto numElemsRep = product(perRepShape);
   assert(elems.size() == numElemsRep * product(repetitions));
@@ -82,11 +81,9 @@ LogicalResult parametricConvertFMADot(DotOp op, DotOp::Adaptor adaptor,
   auto loc = op.getLoc();
 
   auto A = op.getA();
-  auto B = op.getB();
   auto D = op.getResult();
 
   auto aTensorTy = cast<RankedTensorType>(A.getType());
-  auto bTensorTy = cast<RankedTensorType>(B.getType());
   auto dTensorTy = cast<RankedTensorType>(D.getType());
 
   SmallVector<int64_t> aShapePerCTA =
@@ -99,7 +96,7 @@ LogicalResult parametricConvertFMADot(DotOp op, DotOp::Adaptor adaptor,
   // TODO process A and B operand separately
   auto inRepOrder = expandMatrixOrderWithBatch(dLayout.getOrder());
   auto repOrder = expandMatrixOrderWithBatch(dLayout.getRepOrder());
-  auto cc = unpackTensorElements(loc, adaptor.getC(), rewriter, dTensorTy);
+  auto cc = unpackLLElements(loc, adaptor.getC(), rewriter);
 
   Value llA = adaptor.getA();
   Value llB = adaptor.getB();
@@ -124,11 +121,11 @@ LogicalResult parametricConvertFMADot(DotOp op, DotOp::Adaptor adaptor,
   }
 
   auto has = getValueTableFromStructFMA(
-      llA, aTensorTy, {sizePerThread[0], sizePerThread[1], K},
+      llA, {sizePerThread[0], sizePerThread[1], K},
       {repetitions[0], repetitions[1], 1},
       /*kDim*/ 2, /*nonKDim*/ 1, rewriter, loc, inRepOrder, repOrder);
   auto hbs = getValueTableFromStructFMA(
-      llB, bTensorTy, {sizePerThread[0], K, sizePerThread[2]},
+      llB, {sizePerThread[0], K, sizePerThread[2]},
       {repetitions[0], 1, repetitions[2]},
       /*kDim*/ 1, /*nonKDim*/ 2, rewriter, loc, inRepOrder, repOrder);
 
@@ -161,7 +158,7 @@ LogicalResult parametricConvertFMADot(DotOp op, DotOp::Adaptor adaptor,
                   aOpVector, bOpVector, acc[linearAccumIdx]);
             }
 
-  auto res = packTensorElements(loc, typeConverter, acc, rewriter, dTensorTy);
+  auto res = packLLElements(loc, typeConverter, acc, rewriter, dTensorTy);
   rewriter.replaceOp(op, res);
 
   return success();

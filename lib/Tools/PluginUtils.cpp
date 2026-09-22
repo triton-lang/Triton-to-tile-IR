@@ -1,5 +1,5 @@
 #include "triton/Tools/PluginUtils.h"
-#include "triton/Tools/Sys/GetEnv.h"
+#include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Error.h"
 

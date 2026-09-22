@@ -12,7 +12,6 @@ add_triton_library(GluonTransforms
   LINK_LIBS PUBLIC
   TritonIR
   TritonGPUIR
-  TritonNvidiaGPUIR
   GluonIR
   MLIRTransformUtils
 )

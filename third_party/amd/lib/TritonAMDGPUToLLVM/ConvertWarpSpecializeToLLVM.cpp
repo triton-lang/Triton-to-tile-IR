@@ -148,7 +148,9 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
   b.setInsertionPointToStart(header);
 
   // This is the absolute warp ID.
-  Value wid = ROCDL::WaveId::create(b, b.getLoc(), i32_ty);
+  auto warpIdOp = LLVM::createLLVMIntrinsicCallOp(
+      b, b.getLoc(), "llvm.amdgcn.wave.id", {i32_ty}, ValueRange{});
+  Value wid = warpIdOp.getResult(0);
   Value isDefault = b.icmp_ult(wid, b.i32_val(defaultNumWarps));
   LLVM::CondBrOp::create(b, b.getLoc(), isDefault, entry, switchLoop);
 
@@ -181,10 +183,10 @@ struct TritonAMDGPUConvertWarpSpecializeToLLVM
     : public mlir::triton::impl::TritonAMDGPUConvertWarpSpecializeToLLVMBase<
           TritonAMDGPUConvertWarpSpecializeToLLVM> {
 
-  TritonAMDGPUConvertWarpSpecializeToLLVM(StringRef gfxArch)
+  TritonAMDGPUConvertWarpSpecializeToLLVM(StringRef arch)
       : TritonAMDGPUConvertWarpSpecializeToLLVMBase<
             TritonAMDGPUConvertWarpSpecializeToLLVM>() {
-    this->gfxArch = gfxArch;
+    this->arch = arch;
   }
 
   void runOnOperation() override {
@@ -201,7 +203,7 @@ struct TritonAMDGPUConvertWarpSpecializeToLLVM
       return;
 
     // Use the arch parameter if provided, otherwise get from module
-    std::string archStr = this->gfxArch;
+    std::string archStr = this->arch;
     if (archStr.empty()) {
       auto arch = getAMDArch(mod);
       if (!arch.has_value()) {
@@ -212,12 +214,12 @@ struct TritonAMDGPUConvertWarpSpecializeToLLVM
       archStr = arch->str();
     }
 
-    AMD::TargetInfo targetInfo(archStr.c_str());
-    if (targetInfo.getISAFamily() != triton::amdgpu::ISAFamily::GFX1250) {
+    if (archStr != "gfx1250") {
       mod.emitError("Warp specialization is only supported on gfx1250, got ")
           << archStr;
       return signalPassFailure();
     }
+    AMD::TargetInfo targetInfo(archStr.c_str());
 
     // Convert types and cleanup unrealized conversions.
     mlir::LowerToLLVMOptions option(&getContext());
@@ -251,8 +253,8 @@ struct TritonAMDGPUConvertWarpSpecializeToLLVM
 namespace mlir::triton::AMD {
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createTritonAMDGPUConvertWarpSpecializeToLLVMPass(StringRef gfxArch) {
-  return std::make_unique<TritonAMDGPUConvertWarpSpecializeToLLVM>(gfxArch);
+createTritonAMDGPUConvertWarpSpecializeToLLVMPass(StringRef arch) {
+  return std::make_unique<TritonAMDGPUConvertWarpSpecializeToLLVM>(arch);
 }
 
 } // namespace mlir::triton::AMD

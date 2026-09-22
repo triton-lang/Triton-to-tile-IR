@@ -45,17 +45,17 @@
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
-#include "triton/Tools/Sys/GetEnv.h"
-#include <nanobind/nanobind.h>
-#include <nanobind/stl/optional.h>
-#include <nanobind/stl/string.h>
+#include "triton/Tools/Sys/GetEnv.hpp"
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+#include <pybind11/stl_bind.h>
 #include "triton/Dialect/Triton/IR/Types.h"
 
-namespace py = nanobind;
+namespace py = pybind11;
 using namespace mlir;
 using namespace triton;
 
-void init_triton_to_cudatile_passes(py::module_ &m) {
+void init_triton_to_cudatile_passes(py::module &&m) {
   using namespace mlir::triton;
   // TODO: it is weird to pass mlir::triton::NVVM here since the conversion is
   // nvidia-specificontext
@@ -64,9 +64,7 @@ void init_triton_to_cudatile_passes(py::module_ &m) {
                                     int simt_num_warps, int occupancy, std::optional<int> num_stages) {
     pm.addPass(mlir::triton::createConvertTritonToCudaTilePass(
         approx, ftz, capability, num_ctas, simt_num_warps, occupancy, num_stages));
-  }, py::arg("pm"), py::arg("approx"), py::arg("ftz"),
-     py::arg("capability"), py::arg("num_ctas"), py::arg("simt_num_warps"),
-     py::arg("occupancy"), py::arg("num_stages").none());
+  });
   m.def("add_fma_fusion", [](mlir::PassManager &pm) {
     // Add FMA fusion pass to cuda tile entry operations
     auto &mpm = pm.nest<cuda_tile::ModuleOp>();
@@ -104,9 +102,8 @@ void init_triton_to_cudatile_passes(py::module_ &m) {
   });
 }
 
-void init_triton_tileir(py::module_ &m) {
-  auto passes = m.def_submodule("passes");
-  init_triton_to_cudatile_passes(passes);
+void init_triton_tileir(py::module &&m) {
+  init_triton_to_cudatile_passes(m.def_submodule("passes"));
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;

@@ -13,9 +13,7 @@ namespace ttng = mlir::triton::nvidia_gpu;
 
 namespace mlir::triton::gpu {
 
-namespace {
-
-SmallVector<int64_t> expandToRank(ArrayRef<int64_t> shape, int rank) {
+static SmallVector<int64_t> expandToRank(ArrayRef<int64_t> shape, int rank) {
   SmallVector<int64_t> result(rank, 1);
   assert(shape.size() <= rank);
   auto rankDiff = rank - shape.size();
@@ -39,7 +37,7 @@ CGAEncodingAttr updateCGALayoutForShape(CGAEncodingAttr cgaLayout,
     }
     return CGAEncodingAttr::get(ctx, std::move(ll));
   }
-  // For rank-reducing loads, we need to rank-increase the CGA layout.
+  // For rank-reducing loads, we need to rank-increase the CTA Layout
   auto rankDiff = rank - cgaLayout.getRank();
   for (unsigned i = 0; i < rankDiff; ++i) {
     assert(shape[i] == 1 && "Should only happen for rank-reducing loads");
@@ -52,16 +50,13 @@ CGAEncodingAttr updateCGALayoutForShape(CGAEncodingAttr cgaLayout,
     ll = LinearLayout::identity1D(1, kBlock, standardOuts[i]) * ll;
   }
   // Rename out dims to dim0..dimn-1
-  SmallVector<std::pair<StringAttr, StringAttr>> renames;
-  for (auto [oldDim, newDim] :
-       llvm::zip_equal(ll.getOutDimNames(), standardOuts)) {
-    renames.push_back({oldDim, newDim});
+  auto dimSizes = ll.getOutDims();
+  for (auto [i, dim] : llvm::enumerate(standardOuts)) {
+    dimSizes[i].first = dim;
   }
-  ll = renameLinearLayoutDims(ll, {}, renames);
+  ll = LinearLayout(ll.getBases(), dimSizes, false);
   return CGAEncodingAttr::get(ctx, std::move(ll));
 }
-
-} // namespace
 
 SharedEncodingTrait updateEncodingForShape(Operation *op,
                                            SharedEncodingTrait encoding,
@@ -126,9 +121,9 @@ SharedEncodingTrait updateEncodingForShape(Operation *op,
 
 // Build shared encoding for a tensor descriptor by applying callback to adjust
 // for block shape of the descriptor
-static TensorDescType getTensorDescTypeWithEncoding(Operation *op,
-                                                    RankedTensorType existingTy,
-                                                    Attribute encoding) {
+TensorDescType getTensorDescTypeWithEncoding(Operation *op,
+                                             RankedTensorType existingTy,
+                                             Attribute encoding) {
   auto sharedEnc = cast<SharedEncodingTrait>(encoding);
   encoding = updateEncodingForShape(op, sharedEnc, existingTy);
   return TensorDescType::get(existingTy.getShape(), existingTy.getElementType(),
@@ -255,36 +250,23 @@ EncodingInfo AssignDescriptorMemoryLayouts::combineEncodings(
 
 Attribute
 AssignDescriptorMemoryLayouts::findLoadEncodingFromUsers(Operation *op) {
-  auto getCompatibleEncodingForType = [&](Type type) -> Attribute {
-    if (auto memDescTy = dyn_cast<MemDescType>(type)) {
-      return getCompatibleSharedEncoding(memDescTy.getEncoding(),
-                                         memDescTy.getShape(),
-                                         memDescTy.getElementType());
-    }
-    if (auto tensorTy = dyn_cast<RankedTensorType>(type)) {
-      return getCompatibleSharedEncoding(tensorTy.getEncoding(),
-                                         tensorTy.getShape(),
-                                         tensorTy.getElementType());
-    }
-    return {};
-  };
-
   // Check if there are any desired encodings available on the op
   if (auto attr = op->getDiscardableAttr("tt.desired_encoding")) {
-    if (auto resultTy = dyn_cast<RankedTensorType>(op->getResult(0).getType()))
-      if (auto compatible = getCompatibleSharedEncoding(
-              attr, resultTy.getShape(), resultTy.getElementType()))
-        return compatible;
+    if (auto enc = dyn_cast<ttg::SharedEncodingTrait>(attr)) {
+      if (isCompatibleSharedEncoding(enc))
+        return enc;
+    }
   }
   // Ignore multiple users and just pick the first compatible layout
   for (auto use : op->getUsers()) {
     if (auto alloc = dyn_cast<ttg::LocalAllocOp>(use)) {
-      if (auto compatible = getCompatibleEncodingForType(alloc.getType()))
-        return compatible;
+      auto enc = alloc.getType().getEncoding();
+      if (isCompatibleSharedEncoding(enc))
+        return enc;
     } else if (auto store = dyn_cast<ttg::LocalStoreOp>(use)) {
-      if (auto compatible =
-              getCompatibleEncodingForType(store.getDst().getType()))
-        return compatible;
+      auto enc = store.getDst().getType().getEncoding();
+      if (isCompatibleSharedEncoding(enc))
+        return enc;
     }
   }
   return {};
@@ -450,9 +432,7 @@ void AssignDescriptorMemoryLayouts::runOnFunction(FuncOp &func) {
   auto ctx = func.getContext();
   auto numCTAs = triton::gpu::lookupNumCTAs(func);
   for (auto &[desc, einfo] : valueToEncodingInfo) {
-    auto descTy = desc.getType();
-    auto existingTy =
-        RankedTensorType::get(descTy.getShape(), descTy.getElementType());
+    auto existingTy = desc.getType().getBlockType();
     Attribute newEncoding;
     if (einfo->desiredEncoding) {
       newEncoding = einfo->desiredEncoding;
@@ -470,11 +450,10 @@ void AssignDescriptorMemoryLayouts::runOnFunction(FuncOp &func) {
   SmallVector<Type> resultTys(func.getResultTypes());
   for (auto [i, resultTy] : llvm::enumerate(resultTys)) {
     if (auto descTy = dyn_cast<TensorDescType>(resultTy)) {
-      auto existingTy =
-          RankedTensorType::get(descTy.getShape(), descTy.getElementType());
-      auto encoding = getFallbackSharedEncoding(existingTy, {}, {}, numCTAs);
-      resultTys[i] =
-          getTensorDescTypeWithEncoding(nullptr, existingTy, encoding);
+      auto encoding =
+          getFallbackSharedEncoding(descTy.getBlockType(), {}, {}, numCTAs);
+      resultTys[i] = getTensorDescTypeWithEncoding(
+          nullptr, descTy.getBlockType(), encoding);
     }
   }
   func.setFunctionType(FunctionType::get(ctx, argTys, resultTys));

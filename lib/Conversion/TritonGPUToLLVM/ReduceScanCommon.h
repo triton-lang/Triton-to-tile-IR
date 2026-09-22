@@ -82,7 +82,8 @@ inline SmallVector<Value> applyCombineOp(Location loc,
   //    yield undef
   // }
   // #thenBlock
-  Block *thenBlock = currentBlock->splitBlock(rewriter.getInsertionPoint());
+  Block *thenBlock =
+      rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
 
   auto returnOp = newCombine.getTerminator();
   auto results = SmallVector<Value>(returnOp->getOperands());

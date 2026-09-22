@@ -5,18 +5,16 @@
 
 namespace proton {
 
-class RoctracerProfiler final : public GPUProfiler<RoctracerProfiler> {
+class RoctracerProfiler : public GPUProfiler<RoctracerProfiler> {
 public:
-  ~RoctracerProfiler() override;
+  RoctracerProfiler();
+  virtual ~RoctracerProfiler();
 
 private:
-  friend class Singleton<RoctracerProfiler>;
-
-  RoctracerProfiler();
-
   struct RoctracerProfilerPimpl;
 
-  void doSetMode(const std::vector<std::string> &modeAndOptions) override;
+  virtual void
+  doSetMode(const std::vector<std::string> &modeAndOptions) override;
 };
 
 } // namespace proton

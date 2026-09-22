@@ -1,10 +1,58 @@
-import os
 import pytest
+import tempfile
+import os
+
+
+def pytest_addoption(parser):
+    parser.addoption("--device", action="store", default="cuda")
+
+
+@pytest.fixture
+def device(request):
+    return request.config.getoption("--device")
+
+
+@pytest.fixture
+def fresh_knobs():
+    """
+    Default fresh knobs fixture that preserves library path
+    information from the environment as these are typically
+    needed to successfully compile kernels.
+    """
+    from triton._internal_testing import _fresh_knobs_impl
+    fresh_function, reset_function = _fresh_knobs_impl(skipped_attr={"build", "nvidia", "amd"})
+    try:
+        yield fresh_function()
+    finally:
+        reset_function()
+
+
+@pytest.fixture
+def fresh_knobs_including_libraries():
+    """
+    A variant of `fresh_knobs` that resets ALL knobs including
+    library paths. Use this only for tests that need complete
+    environment isolation.
+    """
+    from triton._internal_testing import _fresh_knobs_impl
+    fresh_function, reset_function = _fresh_knobs_impl()
+    try:
+        yield fresh_function()
+    finally:
+        reset_function()
+
+
+@pytest.fixture
+def fresh_triton_cache():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from triton import knobs
+
+        with knobs.cache.scope(), knobs.runtime.scope():
+            knobs.cache.dir = tmpdir
+            yield tmpdir
 
 
 def pytest_configure(config):
-    if os.environ.get("TRITON_TEST_NUM_GPUS"):
-        return
     worker_id = os.environ.get("PYTEST_XDIST_WORKER")
     if worker_id is not None and worker_id.startswith("gw"):
         import torch
@@ -38,40 +86,10 @@ def pytest_collection_modifyitems(items):
         ("float8_e5m2", "mxfloat4_e2m1"),
         ("float8_e5m2", "mxfloat8_e4m3fn"),
         ("mxfloat8_e4m3fn", "mxfloat4_e2m1"),
-        ("mxfloat8_e4m3fn", "bfloat16"),
-        ("mxfloat8_e4m3fn", "float16"),
-        ("mxfloat4_e2m1", "bfloat16"),
-        ("mxfloat4_e2m1", "float16"),
-        ("nvfp4_e2m1", "bfloat16"),
-        ("nvfp4_e2m1", "float16"),
-        ("nvfp4_e2m1_fiber", "bfloat16"),
-        ("bfloat16", "nvfp4_e2m1"),
-        ("bfloat16", "nvfp4_e2m1_fiber"),
-        ("float8_e5m2", "nvfp4_e2m1"),
-        ("float8_e5m2", "nvfp4_e2m1_fiber"),
     }
     for item in items:
         params = item.callspec.params if hasattr(item, "callspec") else {}
         reason = None
-        if (item.path.resolve() == root / "test_matmul.py"
-                and item.originalname == "test_matmul_mixed_fp8_matches_upcast"
-                and params.get("use_fpsan") is True):
-            reason = "CTK 13.4 TileIR: FPSan uses Gluon and compiler instrumentation, neither supported by this backend"
-        elif (item.path.resolve() == root / "test_matmul.py"
-              and item.originalname == "test_k_ragged_mxfp8_act_scale_swizzling"):
-            reason = "CTK 13.4 TileIR: native scaled MMA does not support mixed MXFP8 and BF16 operands"
-        elif (item.path.resolve() == root / "test_tensor.py"
-              and item.originalname == "test_fpsan_embed_unembed_torch_tensor"):
-            reason = "CTK 13.4 TileIR: FPSan embedding uses the unsupported Gluon frontend"
-        elif (item.path.resolve() == root / "test_tensor.py"
-              and item.originalname == "test_keyed_add_large_key_no_int_overflow"):
-            reason = "CTK 13.4 TileIR: scan regions require pure operations; overflow checks insert device assertions"
-        elif (item.path.resolve() == root / "test_reduce.py"
-              and item.originalname == "test_unpadded_batch_size_rowidxs_subtile"):
-            reason = "CTK 13.4 TileIR: this test forces the bitmap optimization requiring libdevice.ffs; normal mask reduction remains supported"
-        elif (item.path.resolve() == root / "test_matmul_details/test_opt_flags_nvidia.py"
-              and item.originalname == "test_matmul_clc"):
-            reason = "CTK 13.4 TileIR: CLC scheduling is unsupported"
         if (item.path.resolve() == root / "test_matmul_details/test_opt_flags_nvidia.py"
                 and item.originalname in ("test_matmul_blackwell_scale_small_n",
                                           "test_matmul_blackwell_shuffled_mxfp4_weight")
@@ -79,8 +97,7 @@ def pytest_collection_modifyitems(items):
             reason = "CTK 13.4 TileIR: native scaled MMA requires matching FP4/FP8 types and both scales"
         elif (item.path.resolve() == root / "test_tensor_details/test_layout_hopper.py"
               and item.originalname == "test_upcast_mxfp4_to_bf16"
-              and set(params) == {"mx_axis", "num_warps", "all_scales"}
-              and type(params["all_scales"]) is bool
+              and set(params) == {"mx_axis", "num_warps"}
               and type(params["mx_axis"]) is int and params["mx_axis"] in (0, 1)
               and type(params["num_warps"]) is int and params["num_warps"] in (4, 8)):
             reason = "CTK 13.4 TileIR: Hopper MXFP4 unpacking requires unsupported packed BF16 inline assembly"
@@ -108,35 +125,3 @@ def pytest_collection_modifyitems(items):
             run=False, strict=True,
             reason="CTK 13.4 TileIR: native scaled MMA requires matching FP4/FP8 types and both scales",
         ))
-
-
-@pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_makereport(item, call):
-    outcome = yield
-    if (not _tileir_134_profile() or call.when != "call"
-            or item.path.name != "test_mxfp.py"
-            or item.originalname != "test_ue8m0_scale_upcast"):
-        return
-    error = call.excinfo.value if call.excinfo is not None else None
-    if type(error) is not KeyError or error.args not in (("ptx",), ("Unknown key: 'ptx'",)):
-        return
-    # The original test checks every decoded value before inspecting PTX.
-    # Only that final inspection is unavailable on TileIR.
-    from pathlib import Path
-    if not any(Path(str(frame.path)).resolve() == item.path.resolve()
-               and 'kernel.asm["ptx"]' in str(frame.statement)
-               for frame in call.excinfo.traceback):
-        return
-    report = outcome.get_result()
-    if not report.failed:
-        return
-    import torch
-    try:
-        torch.cuda.synchronize()
-    except Exception:
-        report.longrepr = item.repr_failure(pytest.ExceptionInfo.from_current())
-        return
-    reason = "CTK 13.4 TileIR has no PTX inspection stage; original scale value assertions completed"
-    report.outcome = "skipped"
-    report.wasxfail = reason
-    report.longrepr = (str(item.path), item.location[1], reason)

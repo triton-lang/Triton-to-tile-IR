@@ -3,16 +3,12 @@ import torch
 import triton
 import triton.language as tl
 from triton import knobs
+import sys
 
 from typing import NamedTuple
 import custom_stages
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
-
-# Extend dialects and passes with the passed plugin.
-LIB = 'python/triton/plugins/libMLIRDialectPlugin.so'
-triton._C.libtriton.ir.extend_dialects_with(LIB)
-triton._C.libtriton.passes.plugin.extend_with(LIB)
 
 
 def metadata_fn(grid: tuple, metadata: NamedTuple, args: dict):
@@ -38,7 +34,7 @@ def add_kernel(x_ptr,  # *Pointer* to first input vector.
     tl.store(output_ptr + offsets, output, mask=mask)
 
 
-def add(x: torch.Tensor, y: torch.Tensor):
+def add(x: torch.Tensor, y: torch.Tensor, path):
     output = torch.empty_like(x)
     assert x.device == DEVICE and y.device == DEVICE and output.device == DEVICE
     n_elements = output.numel()
@@ -52,4 +48,4 @@ size = 98432
 x = torch.rand(size, device=DEVICE)
 y = torch.rand(size, device=DEVICE)
 output_torch = x + y
-output_triton = add(x, y)
+output_triton = add(x, y, sys.argv[-1])

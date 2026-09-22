@@ -13,7 +13,6 @@
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "triton/Dialect/TritonNvidiaGPU/Transforms/ClusterBarrierMbarAllocator.h"
 #include "triton/Tools/LayoutUtils.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -43,7 +42,13 @@ public:
     // Remove block as we don't currently support it
     LinearLayout regLl = triton::gpu::toLinearLayout(helper.getSrcTy());
     // Remove broadcasting in registers as SliceLayout removes them
-    regLl = regLl.removeZeroBasesAlongDim(str_attr("register"));
+    auto removeBroadcast = actionRemoveBroadcastedRegs(regLl);
+    if (!removeBroadcast.isIdentity()) {
+      regLl = removeBroadcast.apply(regLl);
+      for (auto &vals : accs) {
+        vals = removeBroadcast.apply(vals);
+      }
+    }
 
     // First reduce all the values along axis within each thread.
     std::tie(regLl, accs) =
@@ -74,7 +79,7 @@ public:
 
       // Emit a barrier if we are reusing the shmem
       if (i > 0) {
-        sync(rewriter, loc, lastCvtCrossesCTAs, op);
+        sync(rewriter, loc, lastCvtCrossesCTAs);
       }
       accs = convertLayoutValues(loc, rewriter, op, regLl, tmpLl, accs);
       lastCvtCrossesCTAs = !mlir::isCvtDimSync(regLl, tmpLl, kBlock);
@@ -94,7 +99,7 @@ public:
       auto outputLayout = triton::gpu::toLinearLayout(resultTy);
       if (regLl != outputLayout) {
         // Reuse the shmem
-        sync(rewriter, loc, lastCvtCrossesCTAs, op);
+        sync(rewriter, loc, lastCvtCrossesCTAs);
         accs =
             convertLayoutValues(loc, rewriter, op, regLl, outputLayout, accs);
       }
@@ -153,15 +158,15 @@ private:
     auto operands = adaptor.getOperands();
     SmallVector<SmallVector<Value>> srcValues(op.getNumOperands());
     for (unsigned i = 0; i < op.getNumOperands(); ++i) {
-      srcValues[i] = unpackUniqueTensorElements(loc, operands[i], rewriter);
+      srcValues[i] = unpackLLElements(loc, operands[i], rewriter);
     }
     return srcValues;
   }
 
-  void sync(ConversionPatternRewriter &rewriter, Location loc, bool crossCTA,
-            Operation *sourceOp) const {
+  void sync(ConversionPatternRewriter &rewriter, Location loc,
+            bool crossCTA) const {
     if (crossCTA) {
-      targetInfo.clusterBarrier(loc, rewriter, sourceOp);
+      targetInfo.clusterBarrier(loc, rewriter);
     } else {
       targetInfo.barrier(loc, rewriter, triton::gpu::AddrSpace::Local);
     }
@@ -312,7 +317,7 @@ private:
 
     // Update layout killing the axis bases along registers
     layout = ReduceOpHelper::zeroBasesAlongDimAndReorder(layout, axis, kReg);
-    layout = layout.removeZeroBasesAlongDim(kReg);
+    layout = actionRemoveBroadcastedRegs(layout).apply(layout);
     return {std::move(layout), std::move(accs)};
   }
 
@@ -388,9 +393,13 @@ private:
     Location loc = op.getLoc();
     SmallVector<Value> results(op.getNumOperands());
     for (unsigned i = 0; i < op.getNumOperands(); ++i) {
-      results[i] =
-          packUniqueTensorElements(loc, getTypeConverter(), accs[i], rewriter,
-                                   op.getResult()[i].getType());
+      if (auto resultTy =
+              dyn_cast<RankedTensorType>(op.getResult()[i].getType())) {
+        results[i] = packLLElements(loc, getTypeConverter(), accs[i], rewriter,
+                                    resultTy);
+      } else {
+        results[i] = accs[i].front();
+      }
     }
     rewriter.replaceOp(op, results);
   }
@@ -417,21 +426,20 @@ private:
       auto elemTy = op.getElementTypes()[i];
       auto srcTy = RankedTensorType::get(shape, elemTy, srcEnc);
       auto dstTy = RankedTensorType::get(shape, elemTy, dstEnc);
-      Value packed = packUniqueTensorElements(loc, getTypeConverter(),
-                                              inVals[i], rewriter, srcTy);
+      Value packed =
+          packLLElements(loc, getTypeConverter(), inVals[i], rewriter, srcTy);
       auto srcTensor =
           UnrealizedConversionCastOp::create(rewriter, loc, srcTy, packed)
               .getResult(0);
       auto cvt =
           triton::gpu::ConvertLayoutOp::create(rewriter, loc, dstTy, srcTensor);
-      triton::nvidia_gpu::copyClusterBarrierMbarOffset(op, cvt);
       cvt->setAttr("allocation.offset",
                    IntegerAttr::get(offsetTy, baseOffset + smemBaseOffsets[i]));
       Type packedDstTy = getTypeConverter()->convertType(dstTy);
       auto packedDst = UnrealizedConversionCastOp::create(
                            rewriter, loc, packedDstTy, cvt.getResult())
                            .getResult(0);
-      outVals[i] = unpackUniqueTensorElements(loc, packedDst, rewriter);
+      outVals[i] = unpackLLElements(loc, packedDst, rewriter);
     }
     return outVals;
   }
@@ -466,17 +474,12 @@ private:
     });
     SmallVector<int64_t> offsets(op.getNumOperands());
     int64_t offset = 0;
-    int numBanks = targetInfo.getSharedMemoryBanks();
     for (unsigned i = 0; i < op.getNumOperands(); ++i) {
       unsigned idx = indices[i];
       offsets[idx] = offset;
       auto inputTy = op.getInputTypes()[idx];
-      auto vecBitwidth = triton::gpu::getVecBitwidthLdSt(srcLayout, dstLayout,
-                                                         getBitwidth(inputTy));
-      auto [dstTile, srcTile] = targetInfo.getSharedLdStTiles(vecBitwidth);
       auto bytes = getNumScratchElemsSwizzledCvt(srcLayout, dstLayout,
-                                                 getBitwidth(inputTy), numBanks,
-                                                 srcTile, dstTile) *
+                                                 getBitwidth(inputTy)) *
                    (getBitwidth(inputTy) / 8);
       offset += bytes;
     }

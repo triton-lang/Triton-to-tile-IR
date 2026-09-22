@@ -42,17 +42,15 @@ public:
 struct ConvertProtonAMDGPUToLLVM
     : public mlir::triton::proton::gpu::impl::ConvertProtonAMDGPUToLLVMBase<
           ConvertProtonAMDGPUToLLVM> {
-  explicit ConvertProtonAMDGPUToLLVM(std::string gfxArch) {
-    this->gfxArch = gfxArch;
-  }
+  explicit ConvertProtonAMDGPUToLLVM(std::string arch) { this->arch = arch; }
 
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
     ModuleOp mod = getOperation();
-    auto tritonTargetInfo = mlir::triton::AMD::TargetInfo(gfxArch);
+    auto tritonTargetInfo = mlir::triton::AMD::TargetInfo(arch);
     auto protonTargetInfo =
-        mlir::triton::proton::gpu::AMD::TargetInfo(tritonTargetInfo);
+        mlir::triton::proton::gpu::AMD::TargetInfo(tritonTargetInfo, arch);
     mlir::LowerToLLVMOptions option(context);
     TritonGPUToLLVMTypeConverter typeConverter(context, option,
                                                tritonTargetInfo);
@@ -66,10 +64,10 @@ struct ConvertProtonAMDGPUToLLVM
     mlir::arith::populateArithToLLVMConversionPatterns(typeConverter, patterns);
 
     FailureOr<mlir::amdgpu::Chipset> maybeChipset =
-        mlir::amdgpu::Chipset::parse(this->gfxArch);
+        mlir::amdgpu::Chipset::parse(this->arch);
     if (failed(maybeChipset)) {
       emitError(UnknownLoc::get(&getContext()),
-                "Invalid AMDGPU chipset name: " + this->gfxArch);
+                "Invalid AMDGPU chipset name: " + this->arch);
       return signalPassFailure();
     }
     mlir::populateGpuToROCDLConversionPatterns(
@@ -77,10 +75,7 @@ struct ConvertProtonAMDGPUToLLVM
     mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
                                                           patterns);
     auto convTarget = ProtonLLVMConversionTarget(*context);
-    ConversionConfig config;
-    config.allowPatternRollback = false;
-    if (failed(applyPartialConversion(mod, convTarget, std::move(patterns),
-                                      config)))
+    if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();
   }
 };
@@ -94,8 +89,8 @@ namespace triton::proton {
 namespace gpu {
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertProtonAMDGPUToLLVMPass(std::string gfxArch) {
-  return std::make_unique<ConvertProtonAMDGPUToLLVM>(gfxArch);
+createConvertProtonAMDGPUToLLVMPass(std::string arch) {
+  return std::make_unique<ConvertProtonAMDGPUToLLVM>(arch);
 }
 
 } // namespace gpu

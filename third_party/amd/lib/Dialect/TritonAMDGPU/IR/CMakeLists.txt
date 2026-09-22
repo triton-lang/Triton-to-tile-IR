@@ -1,6 +1,5 @@
 add_triton_library(TritonAMDGPUIR
   Dialect.cpp
-  TargetFeatures.cpp
 
   DEPENDS
   TritonAMDGPUTableGen

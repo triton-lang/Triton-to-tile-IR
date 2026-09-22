@@ -1,10 +1,60 @@
 import pytest
+import tempfile
 
 
 def pytest_configure(config):
     # If pytest-sugar is not active, enable instafail
     if not config.pluginmanager.hasplugin("sugar"):
         config.option.instafail = True
+
+
+def pytest_addoption(parser):
+    parser.addoption("--device", action="store", default="cuda")
+
+
+@pytest.fixture
+def device(request):
+    return request.config.getoption("--device")
+
+
+@pytest.fixture
+def fresh_triton_cache():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from triton import knobs
+
+        with knobs.cache.scope(), knobs.runtime.scope(), knobs.compilation.scope():
+            # This fixture tests an empty cache and its subsequent reuse.
+            knobs.compilation.always_compile = False
+            knobs.cache.dir = tmpdir
+            yield tmpdir
+
+
+@pytest.fixture
+def fresh_knobs():
+    """
+    Resets all knobs except ``build``, ``nvidia``, and ``amd`` (preserves
+    library paths needed to compile kernels).
+    """
+    from triton._internal_testing import _fresh_knobs_impl
+    fresh_function, reset_function = _fresh_knobs_impl(skipped_attr={"build", "nvidia", "amd"})
+    try:
+        yield fresh_function()
+    finally:
+        reset_function()
+
+
+@pytest.fixture
+def fresh_knobs_including_libraries():
+    """
+    Resets ALL knobs including ``build``, ``nvidia``, and ``amd``.
+    Use for tests that verify initial values of these knobs.
+    """
+    from triton._internal_testing import _fresh_knobs_impl
+    fresh_function, reset_function = _fresh_knobs_impl()
+    try:
+        yield fresh_function()
+    finally:
+        reset_function()
 
 
 @pytest.fixture
@@ -40,14 +90,9 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_compile_only.py', 'test_compile_only_dot_mxfp'): {'ptx', 'ttgir'},
  ('unit/language/test_compile_only.py', 'test_compile_only_k_loop'): {'ptx', 'ttgir'},
  ('unit/language/test_compile_only.py', 'test_compile_only_sm100'): {'ptx'},
- ('unit/language/test_compile_only.py', 'test_compile_only_sort_keeps_comparisons_boolean'): {'ttgir'},
  ('unit/language/test_core.py', 'test_assume'): {'llir', 'ttgir'},
  ('unit/language/test_core.py', 'test_atomic_cas'): {'ptx'},
  ('unit/language/test_core.py', 'test_atomic_rmw'): {'ptx'},
- ('unit/language/test_core.py', 'test_atomic_load_store'): {'ptx'},
- ('unit/language/test_core.py', 'test_cast'): {'ptx'},
- ('unit/language/test_core.py', 'test_umulhi'): {'ptx'},
- ('unit/language/test_core.py', 'test_umulhi_known_bits'): {'ptx'},
  ('unit/language/test_core.py', 'test_disable_licm'): {'llir'},
  ('unit/language/test_core.py', 'test_dot'): {'ptx'},
  ('unit/language/test_core.py', 'test_dot_max_num_imprecise_acc'): {'ptx'},
@@ -80,9 +125,6 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_pipeliner.py', 'test_pipeline_matmul'): {'ttgir'},
  ('unit/language/test_pipeliner.py', 'test_pipeline_vecadd'): {'ttgir'},
  ('unit/language/test_pipeliner.py', 'test_scatter_pipeline'): {'ttgir'},
- ('unit/language/test_pipeliner.py', 'test_tma_load_unaligned_stage_size'): {'ttgir'},
- ('unit/language/test_compile_only.py', 'test_maxnreg_instrumentation_mode'): {'ptx'},
- ('unit/test_knobs.py', 'test_nvidia_short_pointer_option'): {'llir'},
  ('unit/language/test_tensor_descriptor.py', 'test_host_tensor_descriptor_matmul'): {'ptx'},
  ('unit/language/test_tensor_descriptor.py', 'test_make_tensor_descriptor_loop_carried'): {'ptx'},
  ('unit/language/test_tensor_descriptor.py', 'test_make_tensor_descriptor_matmul'): {'ptx'},
@@ -93,30 +135,12 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_warp_specialization.py', 'test_warp_specialize_tma_matmul_persistent'): {'ttgir'},
  ('unit/test_debuginfo.py', 'test_triton_debuginfo_on'): {'llir'}}
 
-_TILEIR_134_UNSUPPORTED = {
- ('unit/language/test_compile_only.py', 'test_compile_only_packed_arith_chains'): 'handwritten TTGIR is not a TileIR input stage',
- ('unit/language/test_compile_only.py', 'test_compile_only_ws_cluster_barrier_shared_memory'): 'handwritten TTGIR is not a TileIR input stage',
- ('unit/language/test_compile_only.py', 'test_compile_only_expect_zero'): 'this combined compile-only test explicitly requests unsupported FPSan instrumentation; ordinary expect_zero has separate runtime coverage',
- ('unit/language/test_libdevice.py', 'test_clz'): 'libdevice integer count-leading-zero has no public13.4 native lowering',
- ('unit/language/test_libdevice.py', 'test_popc'): 'libdevice integer population-count has no public13.4 native lowering',
- ('unit/language/test_matmul.py', 'test_dot_scaled_unscaled_lhs_fp4_rhs'): 'native scaled MMA does not support mixed BF16 and FP4 operands',
- ('unit/test_debug_dump.py', 'test_version_info'): 'this version-info test requires an LLVM IR dump; TileIR emits TileIR and cubin',
- ('unit/tools/test_aot.py', 'test_aot_target_parsing_with_explicit_target'): 'TileIR has no AOT compile/link templates for this CUDA C launcher interface',
- ('unit/tools/test_irsource.py', 'test_gluon_ir_file'): 'Gluon is a separate frontend unsupported by the TileIR backend',
- ('unit/cuda/test_denorm_cuda.py', 'test_linked_function_preserves_denorms'): 'custom LLVM external libraries are not linked by the TileIR pipeline',
- ('unit/cuda/test_libdevice_cuda.py', 'test_fpsan_libdevice_unary_equivalence'): 'FPSan instrumentation is not connected to the TileIR pipeline',
- ('unit/cuda/test_libdevice_cuda.py', 'test_fpsan_libdevice_div_rn_equivalence'): 'FPSan instrumentation is not connected to the TileIR pipeline',
- ('unit/cuda/test_libdevice_cuda.py', 'test_fpsan_libdevice_fma_equivalence'): 'FPSan instrumentation is not connected to the TileIR pipeline',
- ('unit/cuda/test_libdevice_cuda.py', 'test_fpsan_distinguishes_approximate_libdevice'): 'FPSan instrumentation is not connected to the TileIR pipeline',
- ('unit/language/test_core.py', 'test_atomic_poll'): 'atomic_poll has no public13.4 lowering; native timeout/poll support is unavailable',
- ('unit/language/test_core.py', 'test_atomic_poll_tensor_results'): 'atomic_poll has no public13.4 lowering; native timeout/poll support is unavailable',
- ('unit/language/test_core.py', 'test_atomic_poll_no_timeout_uses_no_shared_memory'): 'atomic_poll has no public13.4 lowering; native timeout/poll support is unavailable',
- ('unit/language/test_core.py', 'test_atomic_poll_timeout'): 'atomic_poll has no public13.4 lowering; native timeout/poll support is unavailable',
- ('unit/language/test_core.py', 'test_atomic_poll_waits_for_remote_cta'): 'atomic_poll has no public13.4 lowering; native timeout/poll support is unavailable',
- ('unit/instrumentation/test_gpuhello.py', 'test_op'): 'LLVM GPU instruction instrumentation is not connected to '
+_TILEIR_134_UNSUPPORTED = {('unit/instrumentation/test_gpuhello.py', 'test_op'): 'LLVM GPU instruction instrumentation is not connected to '
                                                        'the TileIR compiler pipeline',
-
-
+ ('unit/language/test_block_pointer.py', 'test_block_copy'): 'block pointer make_tensor_ptr/advance lowering is '
+                                                             'unavailable',
+ ('unit/language/test_block_pointer.py', 'test_block_ptr_matmul_no_scf'): 'block pointer make_tensor_ptr/advance '
+                                                                          'lowering is unavailable',
  ('unit/language/test_compile_errors.py', 'test_min_dot_size'): 'TileIR accepts dot dimensions below the NVIDIA '
                                                                 'diagnostic minimum',
  ('unit/language/test_compile_only.py', 'test_fp8_compiles_for_multiple_architectures_cuda'): 'this test includes '
@@ -130,8 +154,6 @@ _TILEIR_134_UNSUPPORTED = {
                                                      'helper forms are recognized',
  ('unit/language/test_core.py', 'test_histogram'): 'histogram lowering is not implemented for the public backend',
  ('unit/language/test_core.py', 'test_histogram_mask'): 'histogram lowering is not implemented for the public backend',
- ('unit/language/test_core.py', 'test_histogram_out_of_range'): 'histogram lowering is not implemented for the public backend',
- ('unit/language/test_core.py', 'test_histogram_compare_mask'): 'histogram lowering is not implemented for the public backend',
  ('unit/language/test_core.py', 'test_histogram_silent_data_corruption'): 'generic tt.histogram has no public '
                                                                           'lowering',
  ('unit/language/test_core.py', 'test_inline_asm'): 'generic inline assembly is unavailable; only native GDC '
@@ -162,7 +184,7 @@ _TILEIR_134_UNSUPPORTED = {
                                                              'effect in the scan body',
  ('unit/language/test_core.py', 'test_smid'): 'generic inline assembly is unavailable; only native GDC helper '
                                               'forms are recognized',
-
+ ('unit/language/test_core.py', 'test_trans_reshape'): 'this kernel requires unavailable block pointer lowering',
  ('unit/language/test_core.py', 'test_unroll_attr'): 'this test requires frontend TTIR unrolling; TileIR unrolling '
                                                      'occurs downstream',
  ('unit/language/test_libdevice.py', 'test_bessel'): 'j0/j1/y0/y1/cyl_bessel_i0/cyl_bessel_i1 have no public '
@@ -232,20 +254,6 @@ _TILEIR_134_UNSUPPORTED = {
  ('unit/tools/test_irsource.py', 'test_mlir_attribute_parsing'): 'this test compiles handwritten TTGIR, which is '
                                                                  'not a TileIR input stage'}
 
-for _path, _names in {
-    'unit/language/test_clc.py': (
-        'test_clc_no_pending_work', 'test_clc_exactly_once_program_id_multicta',
-        'test_clc_multicta_loop_reuse_consan', 'test_clc_pointer_matmul_num_ctas',
-        'test_clc_descriptor_matmul_num_ctas', 'test_clc_ws_tma_matmul_1cta', 'test_clc_ws_consan_1cta',
-    ),
-    'unit/language/test_warp_specialization.py': (
-        'test_warp_specialize_tma_matmul_clc', 'test_warp_specialize_attention_clc_forward',
-        'test_warp_specialize_attention_clc_aref_phi',
-    ),
-}.items():
-    for _name in _names:
-        _TILEIR_134_UNSUPPORTED[(_path, _name)] = 'CLC scheduling has no public13.4 TileIR lowering'
-
 def _tileir_134_profile():
     import os
     from pathlib import Path
@@ -276,16 +284,6 @@ def pytest_collection_modifyitems(items):
         key = _tileir_test_key(item)
         params = item.callspec.params if hasattr(item, "callspec") else {}
         reason = _TILEIR_134_UNSUPPORTED.get(key)
-        if (key == ('unit/language/test_compile_only.py', 'test_maxnreg_instrumentation_mode')
-                and params.get('instrumentation_mode') in {'consan', 'gsan', 'iisan', 'fpsan', 'gsan,consan'}):
-            reason = 'compiler instrumentation modes are not connected to the TileIR pipeline'
-        if (key == ("unit/language/test_core.py", "test_tensor_atomic_cas_multicta_result")
-                and set(params) == {"size"}
-                and type(params["size"]) is int and params["size"] in {4, 16, 128}):
-            item.add_marker(pytest.mark.xfail(
-                strict=True, raises=AssertionError,
-                reason="CTK 13.4 TileIR: multi-CTA atomic CAS returns incorrect values for these small tensor shapes",
-            ))
         if key == ("unit/language/test_core.py", "test_scaled_dot"):
             known_params = (
                 set(params) == {"M", "N", "K", "col_a", "col_b", "rhs_scale",
@@ -305,11 +303,6 @@ def pytest_collection_modifyitems(items):
                 and params["mxfp_type"] in {"e4m3", "e5m2"}
             ):
                 reason = "single-scale native MMA supports matching FP8; FP4 and mixed input types remain unsupported"
-        elif (key in {("unit/language/test_core.py", "test_scaled_dot_minimum_scale"),
-                      ("unit/language/test_core.py", "test_scaled_dot_zero_scale")}
-              and params.get("normal_type") in {"bf16", "fp16"}
-              and type(params.get("rhs_scale")) is bool):
-            reason = "native scaled MMA requires matching operand types; these cases mix FP8 with FP16/BF16"
         elif key == ("unit/language/test_core.py", "test_tensor_atomic_cas") and params.get("dtype_str") in {"float16", "bfloat16"}:
             reason = "public atomic CAS accepts 32/64-bit elements, not 16-bit elements"
         elif (key == ("unit/language/test_core.py", "test_tensor_atomic_use_result")
@@ -347,13 +340,16 @@ def pytest_collection_modifyitems(items):
             "device_print_large", "print_multiple_args", "device_print_multiple_args",
             "device_print_hex", "device_print_pointer", "device_print_negative",
             "device_print_uint", "device_print_uint_cast", "device_print_2d_tensor",
-            "device_print_hex_fp32_canonical",
         }:
             reason = "device print formatting differs from the NVIDIA pid/idx and precision contract"
         line_reason = None
         if key == ("unit/language/test_line_info.py", "test_line_info"):
             if params.get("func") == "call_noinline":
                 line_reason = "public backend inlines device helpers; separate callee source-line coverage is not preserved"
+            elif params.get("func") == "autotune":
+                line_reason = "public13.4 compiler omits the optimized loop-header line while preserving load/store lines"
+        elif key == ("unit/language/test_line_info.py", "test_line_info_ir_source") and params.get("status") == "":
+            line_reason = "public13.4 cubin omits the original TTIR load source line retained in input TileIR"
         if line_reason:
             # Re-execute these compile-only diagnostics so new compiler support is visible.
             item.add_marker(pytest.mark.xfail(strict=True, raises=AssertionError,
@@ -367,28 +363,6 @@ def pytest_runtest_makereport(item, call):
     outcome = yield
     if not _tileir_134_profile() or call.when != "call":
         return
-    key = _tileir_test_key(item)
-    params = item.callspec.params if hasattr(item, "callspec") else {}
-    if (key in {('unit/test_debug.py', 'test_sanitize_int_add_overflow'),
-                ('unit/test_debug.py', 'test_sanitize_int_mul_overflow'),
-                ('unit/test_debug.py', 'test_sanitize_int_sub_overflow')}
-            and params.get('debug') is True and params.get('should_overflow') is True
-            and call.excinfo is not None and call.excinfo.type is AssertionError):
-        from pathlib import Path
-        # The upstream helper first asserts that an actual device trap occurred.
-        # Gate only its subsequent stderr-channel assertion, never a missing trap.
-        frames = [frame for frame in call.excinfo.traceback
-                  if Path(str(frame.path)).resolve() == item.path.resolve()
-                  and frame.name == '_assert_overflow_result'
-                  and 'in result.driver_stderr_output' in str(frame.statement)]
-        if frames:
-            report = outcome.get_result()
-            if report.failed:
-                reason = 'CTK 13.4 TileIR traps on overflow but does not return assertion text through the CUDA driver stderr callback'
-                report.outcome = 'skipped'
-                report.wasxfail = reason
-                report.longrepr = (str(item.path), item.location[1], reason)
-            return
     stages = _TILEIR_STAGE_TESTS.get(_tileir_test_key(item), set())
     error = call.excinfo.value if call.excinfo is not None else None
     if type(error) is not KeyError or len(error.args) != 1:

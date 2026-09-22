@@ -1,3 +1,4 @@
+import os
 from contextlib import contextmanager
 
 import pytest
@@ -9,9 +10,11 @@ from triton._internal_testing import is_cuda, is_hip
 
 @contextmanager
 def enable_diagnostics_context(value):
-    with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setenv("MLIR_ENABLE_DIAGNOSTICS", value)
+    try:
+        os.environ["MLIR_ENABLE_DIAGNOSTICS"] = value
         yield
+    finally:
+        os.environ["MLIR_ENABLE_DIAGNOSTICS"] = ""
 
 
 def test_mma_remark(capfd, fresh_triton_cache):

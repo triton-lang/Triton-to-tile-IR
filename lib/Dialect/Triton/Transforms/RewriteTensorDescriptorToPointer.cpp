@@ -82,9 +82,16 @@ Descriptor unpackDescriptor(TensorDescType type, ValueRange pack) {
 
 Value expandOffsets(OpBuilder &builder, Location loc,
                     ArrayRef<int64_t> blockShape, Value offsets, unsigned dim) {
-  SmallVector<int64_t> shape(blockShape.size(), 1);
-  shape[dim] = blockShape[dim];
-  return triton::ReshapeOp::create(builder, loc, shape, offsets);
+  Value expandedResult = offsets;
+  for (size_t j = 0; j < blockShape.size(); ++j) {
+    if (j == dim) {
+      continue;
+    }
+    expandedResult =
+        triton::ExpandDimsOp::create(builder, loc, expandedResult, j);
+  }
+
+  return expandedResult;
 }
 
 Value getExpandedOffsetWithRange(OpBuilder &builder, const Location &loc,
@@ -329,9 +336,8 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
     auto newLoad = triton::LoadOp::create(
         rewriter, loc, generatePtr(rewriter, loc, blockShape, desc, offsets),
         generateMask(rewriter, loc, blockShape, desc, offsets), other,
-        op.getCachePolicyAttr());
-    auto attrs = filterSegmentSizes(op->getAttrs());
-    newLoad->setAttrs(attrs);
+        triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL, false);
+    newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
 
     Value result = newLoad.getResult();
     if (descTy.getElementType().isF32()) {
@@ -365,14 +371,11 @@ struct RewriteStorePattern : OpConversionPattern<triton::DescriptorStoreOp> {
     auto desc = unpackDescriptor(descTy, adaptor.getDesc());
     auto offsets = castToI64(rewriter, op.getIndices());
 
-    // Save attrs before replaceOpWithNewOp, which may erase op immediately
-    // when allowPatternRollback is false.
-    auto attrs = filterSegmentSizes(op->getAttrs());
-
     auto newStore = rewriter.replaceOpWithNewOp<triton::StoreOp>(
         op, generatePtr(rewriter, loc, blockShape, desc, offsets), op.getSrc(),
-        generateMask(rewriter, loc, blockShape, desc, offsets));
-    newStore->setAttrs(attrs);
+        generateMask(rewriter, loc, blockShape, desc, offsets),
+        triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL);
+    newStore->setAttrs(filterSegmentSizes(op->getAttrs()));
 
     return llvm::success();
   }
@@ -414,7 +417,9 @@ struct RewriteGatherPattern : OpConversionPattern<triton::DescriptorGatherOp> {
     auto other = generateOther(rewriter, loc,
                                descTy.getSignlessBlockType().getElementType(),
                                blockShape, desc.paddingOption);
-    auto newLoad = triton::LoadOp::create(rewriter, loc, ptr, mask, other);
+    auto newLoad = triton::LoadOp::create(
+        rewriter, loc, ptr, mask, other, triton::CacheModifier::NONE,
+        triton::EvictionPolicy::NORMAL, false);
     newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
 
     Value result = newLoad.getResult();
@@ -442,14 +447,10 @@ struct RewriteScatterPattern
     auto desc = unpackDescriptor(descTy, adaptor.getDesc());
     auto [ptr, mask] = generateGatherScatterPtrMask(
         rewriter, loc, blockShape, desc, op.getXOffsets(), op.getYOffset());
-
-    // Save attrs before replaceOpWithNewOp, which may erase op immediately
-    // when allowPatternRollback is false.
-    auto attrs = filterSegmentSizes(op->getAttrs());
-
     auto newStore = rewriter.replaceOpWithNewOp<triton::StoreOp>(
-        op, ptr, op.getSrc(), mask);
-    newStore->setAttrs(attrs);
+        op, ptr, op.getSrc(), mask, triton::CacheModifier::NONE,
+        triton::EvictionPolicy::NORMAL);
+    newStore->setAttrs(filterSegmentSizes(op->getAttrs()));
 
     return llvm::success();
   }
@@ -611,7 +612,6 @@ class TritonRewriteTensorDescriptorToPointerPass
 
     ConversionConfig config;
     config.buildMaterializations = false;
-    config.allowPatternRollback = false;
 
     if (mlir::failed(mlir::applyPartialConversion(
             op, target, std::move(patterns), config))) {

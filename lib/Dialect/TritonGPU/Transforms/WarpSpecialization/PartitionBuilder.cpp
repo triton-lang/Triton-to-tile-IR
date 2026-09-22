@@ -7,7 +7,7 @@ using namespace triton;
 using namespace triton::gpu;
 
 Value PartitionBuilder::intCst(int value, unsigned width) {
-  return arith::ConstantIntOp::create(*this, value, width);
+  return create<arith::ConstantIntOp>(value, width);
 }
 
 Value PartitionBuilder::boolCst(bool value) {

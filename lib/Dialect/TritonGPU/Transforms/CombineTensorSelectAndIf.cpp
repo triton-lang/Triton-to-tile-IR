@@ -81,6 +81,7 @@ class CombineTensorSelectAndIfPass
           CombineTensorSelectAndIfPass> {
 public:
   void runOnOperation() override {
+    MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
     canonicalizeSelectUsersInSCFIf(m);
 

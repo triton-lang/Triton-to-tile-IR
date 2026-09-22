@@ -7,37 +7,16 @@
 #include <mutex>
 #include <optional>
 #include <string>
-#include <string_view>
-#include <utility>
 #include <vector>
 
 namespace proton {
 
-inline constexpr std::string_view kMetadataScopeName =
-    "__proton_launch_metadata";
-inline constexpr std::string_view kMetadataScopePrefix =
-    "__proton_launch_metadata:";
-
 /// A context is a named object.
 struct Context {
-private:
-  static bool isMetadataStateName(std::string_view name) {
-    return name == kMetadataScopeName ||
-           (name.size() > kMetadataScopePrefix.size() &&
-            name.substr(0, kMetadataScopePrefix.size()) ==
-                kMetadataScopePrefix);
-  }
-
-  const bool state{};
-  const bool metadataState{};
-
-public:
-  const std::string name{};
+  std::string name{};
 
   Context() = default;
-  Context(std::string name, bool isState = false)
-      : state(isState), metadataState(isState && isMetadataStateName(name)),
-        name(std::move(name)) {}
+  Context(const std::string &name) : name(name) {}
   virtual ~Context() = default;
 
   bool operator==(const Context &other) const { return name == other.name; }
@@ -46,10 +25,6 @@ public:
   bool operator>(const Context &other) const { return name > other.name; }
   bool operator<=(const Context &other) const { return !(*this > other); }
   bool operator>=(const Context &other) const { return !(*this < other); }
-
-  bool isState() const { return state; }
-
-  bool isMetadataState() const { return metadataState; }
 };
 
 /// A context source is an object that can provide a list of contexts.
@@ -58,40 +33,15 @@ public:
   ContextSource() = default;
   virtual ~ContextSource() = default;
 
-  std::vector<Context> getContexts(bool withState = true) {
+  std::vector<Context> getContexts() {
     auto contexts = getContextsImpl();
-    if (withState && state.has_value()) {
-      auto splitMetadataStateName = [](std::string_view name,
-                                       std::string_view &rawName) {
-        if (name.size() <= kMetadataScopePrefix.size() ||
-            name.substr(0, kMetadataScopePrefix.size()) !=
-                kMetadataScopePrefix) {
-          return false;
-        }
-        rawName = name.substr(kMetadataScopePrefix.size());
-        return true;
-      };
-      std::string_view rawName;
-      if (splitMetadataStateName(state->name, rawName)) {
-        contexts.reserve(contexts.size() + 2);
-        contexts.emplace_back(std::string(kMetadataScopeName),
-                              /*isState=*/true);
-        contexts.emplace_back(std::string(rawName));
-      } else {
-        contexts.reserve(contexts.size() + 1);
-        contexts.push_back(state.value());
-      }
+    if (state.has_value()) {
+      contexts.push_back(state.value());
     }
     return contexts;
   }
 
-  void setState(std::optional<Context> state) {
-    if (state.has_value()) {
-      ContextSource::state.emplace(state->name, /*isState=*/true);
-    } else {
-      ContextSource::state.reset();
-    }
-  }
+  void setState(std::optional<Context> state) { ContextSource::state = state; }
 
   virtual void clear() { ContextSource::state = std::nullopt; }
 

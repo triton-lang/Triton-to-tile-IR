@@ -19,7 +19,7 @@ Getting Started
    getting-started/tutorials/index
 
 
-Triton API
+Python API
 ----------
 
 - :doc:`triton <python-api/triton>`
@@ -40,26 +40,8 @@ Triton API
    python-api/triton-semantics
 
 
-Gluon
------
-
-- Learn about Gluon's lower-level programming model in the :doc:`Gluon overview <gluon/index>`.
-- Browse the :doc:`Gluon tutorials <getting-started/tutorials/gluon/index>`,
-  :doc:`examples <getting-started/examples/gluon/index>`, and :doc:`API reference <gluon/api/index>`.
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Gluon
-   :hidden:
-
-   Overview <gluon/index>
-   Tutorials <getting-started/tutorials/gluon/index>
-   Examples <getting-started/examples/gluon/index>
-   API Reference <gluon/api/index>
-
-
 Triton MLIR Dialects and Ops
-----------------------------
+--------------------
 
 - :doc:`Triton MLIR Dialects and Ops <dialects/dialects>`
 
@@ -77,8 +59,7 @@ Check out the following documents to learn more about Triton and how it compares
 
 - Chapter 1: :doc:`Introduction <programming-guide/chapter-1/introduction>`
 - Chapter 2: :doc:`Related Work <programming-guide/chapter-2/related-work>`
-- Chapter 3: :doc:`Debugging <programming-guide/chapter-3/debugging>` and
-  :doc:`Floating-Point Sanitizer (FpSan) <programming-guide/chapter-3/fpsan>`
+- Chapter 3: :doc:`Debugging <programming-guide/chapter-3/debugging>`
 
 .. toctree::
    :maxdepth: 1
@@ -88,6 +69,5 @@ Check out the following documents to learn more about Triton and how it compares
    programming-guide/chapter-1/introduction
    programming-guide/chapter-2/related-work
    programming-guide/chapter-3/debugging
-   programming-guide/chapter-3/fpsan
 
 .. _Triton: https://github.com/triton-lang/triton

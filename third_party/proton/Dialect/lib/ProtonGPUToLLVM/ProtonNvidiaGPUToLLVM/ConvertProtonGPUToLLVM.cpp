@@ -70,10 +70,7 @@ struct ConvertProtonNvidiaGPUToLLVM
     mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
                                                           patterns);
     auto convTarget = ProtonLLVMConversionTarget(*context);
-    ConversionConfig config;
-    config.allowPatternRollback = false;
-    if (failed(applyPartialConversion(mod, convTarget, std::move(patterns),
-                                      config)))
+    if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();
 
     OpPassManager pm;

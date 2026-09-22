@@ -1,5 +1,4 @@
 #include "Dialect/TritonAMDGPU/IR/Dialect.h"
-#include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "TritonAMDGPUTransforms/Passes.h"
 #include "amd/lib/TritonAMDGPUTransforms/Utility.h"
 #include "mlir/Pass/PassManager.h"
@@ -10,7 +9,6 @@
 
 namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
-using mlir::triton::amdgpu::TargetFeatures;
 
 #define DEBUG_TYPE "tritonamdgpu-optimize-descriptor-encoding"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -22,8 +20,8 @@ namespace {
 // the same dot operand encoding, return true and get the shared encoding that
 // needs to be used to be compatible with users' layouts.
 static std::optional<ttg::PaddedSharedEncodingAttr>
-getSharedEncIfAllUsersAreDotEncPadded(Value loadedValue,
-                                      const TargetFeatures &targetFeatures) {
+getSharedEncIfAllUsersAreDotEncPadded(
+    Value loadedValue, const triton::AMD::TargetInfo &targetInfo) {
   ttg::PaddedSharedEncodingAttr attr;
   for (Operation *user : loadedValue.getUsers()) {
     LDBG(" getSharedEncIfAllUsersAreDotEnc current user: " << *user);
@@ -37,8 +35,8 @@ getSharedEncIfAllUsersAreDotEncPadded(Value loadedValue,
       // First time we find a shared encoding in the chain, save it and try to
       // use it if it is compatible with the other users.
       tempAttr = cast<ttg::PaddedSharedEncodingAttr>(memDesc.getEncoding());
-      auto newAttr = getSharedEncIfAllUsersAreDotEncPadded(user->getResult(0),
-                                                           targetFeatures);
+      auto newAttr =
+          getSharedEncIfAllUsersAreDotEncPadded(user->getResult(0), targetInfo);
 
       if (!newAttr.has_value())
         return std::nullopt;
@@ -81,7 +79,7 @@ getSharedEncIfAllUsersAreDotEncPadded(Value loadedValue,
       if (auto dotOpEnc = dyn_cast<ttg::DotOperandEncodingAttr>(userResEnc)) {
         // For async descriptor loads, enable padding.
         tempAttr =
-            composePaddedLayout(targetFeatures, dotOpEnc.getOpIdx(),
+            composePaddedLayout(targetInfo, dotOpEnc.getOpIdx(),
                                 dotOpEnc.getKWidth(), srcTy, sharedOrder);
       } else if (auto llEnc = dyn_cast<ttg::LinearEncodingAttr>(userResEnc)) {
         // We use linear layout directly for scaled dot fp8 operands. For such
@@ -92,7 +90,7 @@ getSharedEncIfAllUsersAreDotEncPadded(Value loadedValue,
         if (auto dotEnc = getDotEncoding<ttg::AMDWmmaEncodingAttr>(
                 userResult, &opIdx, &vecSize)) {
           tempAttr =
-              composePaddedLayout(targetFeatures, opIdx, vecSize, srcTy, order);
+              composePaddedLayout(targetInfo, opIdx, vecSize, srcTy, order);
         }
       }
     }
@@ -111,11 +109,12 @@ namespace mlir {
 // Attach the desired encoding as a discardable attribute to descriptor loads.
 // assignMemoryLayouts will propagate this attribute to rest of the descriptors
 static void computeDesiredEncodingAttr(mlir::ModuleOp &m) {
-  auto targetFeatures = TargetFeatures::fromModuleOp(m);
+  auto arch = getAMDArch(m);
+  auto targetInfo = tt::AMD::TargetInfo(arch.value_or("").str());
   for (auto f : m.getOps<tt::FuncOp>()) {
     f.walk([&](tt::DescriptorLoadOp load) {
       auto paddedEncoding =
-          getSharedEncIfAllUsersAreDotEncPadded(load, targetFeatures);
+          getSharedEncIfAllUsersAreDotEncPadded(load, targetInfo);
       if (paddedEncoding) {
         load->setDiscardableAttr("tt.desired_encoding", *paddedEncoding);
         LDBG("Desired encoding: " << *paddedEncoding);

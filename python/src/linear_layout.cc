@@ -1,8 +1,6 @@
-#include <nanobind/nanobind.h>
-#include <nanobind/stl/optional.h>
-#include <nanobind/stl/pair.h>
-#include <nanobind/stl/string.h>
-#include <nanobind/stl/vector.h>
+#include "pybind11/numpy.h"
+#include "pybind11/pybind11.h"
+#include "pybind11/stl.h"
 
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/MLIRContext.h"
@@ -13,31 +11,26 @@
 #include <optional>
 #include <stdexcept>
 
-namespace py = nanobind;
+namespace py = pybind11;
 using LinearLayout = mlir::triton::LinearLayout;
 
 namespace {
 
 mlir::MLIRContext *getLinearLayoutContext() {
-  // Process-lifetime singleton: LinearLayout objects hold attributes uniqued in
-  // this context, so the context must outlive every Python LinearLayout object.
-  // We also deliberately avoid running its destructor during interpreter
-  // shutdown (to avoid segfaults).
-  //
-  // Do not create this via triton._C.libtriton.ir.context and release the
-  // Python object. That still intentionally keeps the context alive, but it
-  // also leaves a nanobind-owned instance registered at interpreter shutdown,
-  // which reports leaked ir.context/types/functions. Keeping only the raw C++
-  // context avoids leaking a Python/nanobind object.
-  static auto *ctx =
-      new mlir::MLIRContext(mlir::MLIRContext::Threading::DISABLED);
-  return ctx;
+  static PyObject *ctxObject = []() {
+    py::module irMod = py::module::import("triton._C.libtriton.ir");
+    // Keep the Python object alive for the life of the process without running
+    // its destructor during interpreter shutdown (avoids segfaults).
+    py::object ctx = irMod.attr("context")();
+    return ctx.release().ptr();
+  }();
+  return py::cast<mlir::MLIRContext *>(py::handle(ctxObject));
 }
 
 } // namespace
 
-void init_linear_layout(py::module_ &m) {
-  py::class_<LinearLayout>(m, "LinearLayout")
+void init_linear_layout(py::module &&m) {
+  py::class_<LinearLayout>(m, "LinearLayout", py::module_local(false))
       .def(py::init<>())
       .def_static(
           "identity_1d",
@@ -116,7 +109,7 @@ void init_linear_layout(py::module_ &m) {
             return LinearLayout(convertedBases, convertedNames);
           },
           py::arg("bases"), py::arg("out_dim_names"),
-          (py::arg("out_dim_sizes").none() = py::none()),
+          py::arg("out_dim_sizes") = py::none(),
           py::arg("require_surjective") = true)
       .def("compose", &LinearLayout::compose)
       .def("invert_and_compose", &LinearLayout::invertAndCompose)
@@ -141,29 +134,31 @@ void init_linear_layout(py::module_ &m) {
                dims.push_back(dim.str());
              return dims;
            })
-      .def_prop_ro("bases",
-                   [](const LinearLayout &self) {
-                     auto bases = self.getBases();
-                     py::list result;
-                     for (const auto &it : bases) {
-                       py::list dimBases;
-                       for (const auto &vec : it.second)
-                         dimBases.append(py::cast(
-                             std::vector<int32_t>(vec.begin(), vec.end())));
-                       result.append(py::make_tuple(it.first.str(), dimBases));
-                     }
-                     return result;
-                   })
-      .def_prop_ro("out_dims",
-                   [](const LinearLayout &self) {
-                     py::list result;
-                     for (const auto &it : self.getOutDims()) {
-                       result.append(py::make_tuple(it.first.str(), it.second));
-                     }
-                     return result;
-                   })
-      .def_prop_ro("num_in_dims", &LinearLayout::getNumInDims)
-      .def_prop_ro("num_out_dims", &LinearLayout::getNumOutDims)
+      .def_property_readonly(
+          "bases",
+          [](const LinearLayout &self) {
+            auto bases = self.getBases();
+            pybind11::list result;
+            for (const auto &it : bases) {
+              pybind11::list dimBases;
+              for (const auto &vec : it.second)
+                dimBases.append(pybind11::cast(
+                    std::vector<int32_t>(vec.begin(), vec.end())));
+              result.append(pybind11::make_tuple(it.first.str(), dimBases));
+            }
+            return result;
+          })
+      .def_property_readonly(
+          "out_dims",
+          [](const LinearLayout &self) {
+            pybind11::list result;
+            for (const auto &it : self.getOutDims()) {
+              result.append(pybind11::make_tuple(it.first.str(), it.second));
+            }
+            return result;
+          })
+      .def_property_readonly("num_in_dims", &LinearLayout::getNumInDims)
+      .def_property_readonly("num_out_dims", &LinearLayout::getNumOutDims)
       .def("__mul__", [](const LinearLayout &lhs,
                          const LinearLayout &rhs) { return lhs * rhs; })
       .def(
@@ -172,7 +167,7 @@ void init_linear_layout(py::module_ &m) {
             lhs *= rhs;
             return lhs;
           },
-          py::rv_policy::reference_internal)
+          py::return_value_policy::reference_internal)
       .def("__eq__", [](const LinearLayout &lhs,
                         const LinearLayout &rhs) { return lhs == rhs; })
       .def("__ne__", [](const LinearLayout &lhs,
@@ -208,8 +203,7 @@ void init_linear_layout(py::module_ &m) {
             auto outputs = self.apply(converted);
             py::dict result;
             for (const auto &out : outputs) {
-              auto s = out.first.str();
-              result[py::str(s.c_str(), s.size())] = out.second;
+              result[py::str(out.first.str())] = out.second;
             }
             return result;
           },

@@ -6,8 +6,6 @@ using namespace mlir;
 
 using ::mlir::triton::gpu::AMDWmmaEncodingAttr;
 using ::mlir::triton::gpu::getShapePerCTA;
-using ::mlir::triton::gpu::isPermutationMatrixLayout;
-using ::mlir::triton::gpu::toLinearLayout;
 
 namespace mlir::triton::AMD {
 LogicalResult convertAMDFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
@@ -41,26 +39,18 @@ struct DotOpConversion : public ConvertOpToLLVMPattern<triton::DotOp> {
   matchAndRewrite(triton::DotOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     // D = A * B + C
-    auto dType = op.getD().getType();
-    auto dEncoding = dType.getEncoding();
+    Value D = op.getResult();
 
-    // WMMA is the only path that has been validated against non-permutation
-    // (e.g. swizzled-warp) encodings, so handle it up front and then enforce
-    // the permutation-matrix invariant for all other paths.
-    if (isa<AMDWmmaEncodingAttr>(dEncoding))
-      return AMD::convertWMMA(op, adaptor, getTypeConverter(), rewriter);
-
-    if (!isPermutationMatrixLayout(toLinearLayout(dType.getShape(), dEncoding)))
-      return rewriter.notifyMatchFailure(op,
-                                         "Non-WMMA DotOp result encoding must "
-                                         "have a permutation-matrix linear "
-                                         "layout");
-
+    auto dEncoding = cast<RankedTensorType>(D.getType()).getEncoding();
     if (isa<AMDMfmaEncodingAttr>(dEncoding)) {
       return AMD::convertMFMA(op, adaptor, getTypeConverter(), rewriter);
     }
+    if (isa<AMDWmmaEncodingAttr>(dEncoding)) {
+      return AMD::convertWMMA(op, adaptor, getTypeConverter(), rewriter);
+    }
 
-    if (isa<BlockedEncodingAttr>(dEncoding))
+    if (isa<BlockedEncodingAttr>(
+            cast<RankedTensorType>(D.getType()).getEncoding()))
       return AMD::convertAMDFMADot(op, adaptor, getTypeConverter(), rewriter);
 
     llvm::report_fatal_error(
@@ -75,19 +65,16 @@ struct ScaledDotOpConversion
   LogicalResult
   matchAndRewrite(triton::DotScaledOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto dType = op.getD().getType();
-    auto dEncoding = dType.getEncoding();
+    Value D = op.getResult();
 
-    if (isa<AMDWmmaEncodingAttr>(dEncoding))
-      return AMD::convertScaledWMMA(op, adaptor, getTypeConverter(), rewriter);
+    auto dEncoding = cast<RankedTensorType>(D.getType()).getEncoding();
 
-    if (!isPermutationMatrixLayout(toLinearLayout(dType.getShape(), dEncoding)))
-      return rewriter.notifyMatchFailure(
-          op, "non-WMMA dot encoding must have a permutation-matrix linear "
-              "layout");
-
-    if (isa<AMDMfmaEncodingAttr>(dEncoding))
+    if (isa<AMDMfmaEncodingAttr>(dEncoding)) {
       return AMD::convertScaledMFMA(op, adaptor, getTypeConverter(), rewriter);
+    }
+    if (isa<AMDWmmaEncodingAttr>(dEncoding)) {
+      return AMD::convertScaledWMMA(op, adaptor, getTypeConverter(), rewriter);
+    }
 
     llvm::report_fatal_error(
         "Unsupported DotScaleOp found when converting TritonGPU to LLVM.");

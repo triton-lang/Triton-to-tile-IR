@@ -46,13 +46,12 @@ def TritonAMDGPUAccelerateMatmul : Pass<"tritonamdgpu-accelerate-matmul", "mlir:
     (e.g., AMD matrix cores)
   }];
 
-  let dependentDialects = ["mlir::triton::amdgpu::TritonAMDGPUDialect",
-                           "mlir::math::MathDialect"];
+  let dependentDialects = ["mlir::triton::amdgpu::TritonAMDGPUDialect"];
 
   let options = [
-    Option<"gfxArch", "gfx-arch",
+    Option<"archGenerationName", "arch-generation-name",
            "std::string", /*default=*/"std::string{}",
-           "Specify the GFX architecture name, e.g., gfx942, gfx950, etc.">,
+           "GFX generation name of target device.">,
     Option<"matrixInstructionSize", "matrix-instruction-size",
            "int32_t", /*default*/"0",
            "enforce matrix instruction MN size">,
@@ -175,9 +174,9 @@ def TritonAMDGPUConvertToBufferOps : Pass<"tritonamdgpu-convert-buffer-ops", "ml
   let dependentDialects = ["mlir::triton::amdgpu::TritonAMDGPUDialect"];
 
   let options = [
-    Option<"gfxArch", "gfx-arch",
+    Option<"archGenerationName", "arch-generation-name",
            "std::string", /*default=*/"std::string{}",
-           "Specify the GFX architecture name, e.g., gfx942, gfx950, etc.">,
+           "GFX generation name of target device.">,
     Option<"allowBufferAtomics", "allow-buffer-atomics",
            "bool", /*default*/"true",
            "Allow buffer atomic operations when the hardware supports it.">,
@@ -277,9 +276,9 @@ def TritonAMDGPUCoalesceAsyncCopy: Pass<"tritonamdgpu-coalesce-async-copy", "mli
   let dependentDialects = [];
 
   let options = [
-    Option<"gfxArch", "gfx-arch",
+    Option<"archGenerationName", "arch-generation-name",
            "std::string", /*default=*/"std::string{}",
-           "Specify the GFX architecture name, e.g., gfx942, gfx950, etc.">,
+           "GFX generation name of target device.">,
   ];
 }
 
@@ -295,9 +294,9 @@ def TritonAMDGPUUpdateAsyncWaitCount: Pass<"tritonamdgpu-update-async-wait-count
   let dependentDialects = ["mlir::triton::amdgpu::TritonAMDGPUDialect"];
 
   let options = [
-    Option<"gfxArch", "gfx-arch",
+    Option<"archGenerationName", "arch-generation-name",
            "std::string", /*default=*/"std::string{}",
-           "Specify the GFX architecture name, e.g., gfx942, gfx950, etc.">,
+           "GFX generation name of target device.">,
   ];
 }
 
@@ -320,9 +319,9 @@ def TritonAMDGPUOptimizeDotOperands : Pass<"tritonamdgpu-optimize-dot-operands",
                            "mlir::triton::amdgpu::TritonAMDGPUDialect",
                            "mlir::triton::TritonDialect"];
   let options = [
-    Option<"gfxArch", "gfx-arch",
+    Option<"archGenerationName", "arch-generation-name",
            "std::string", /*default=*/"std::string{}",
-           "Specify the GFX architecture name, e.g., gfx942, gfx950, etc.">
+           "GFX generation name of target device.">
   ];
 }
 

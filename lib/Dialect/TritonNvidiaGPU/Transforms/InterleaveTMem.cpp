@@ -71,7 +71,7 @@ findBufferAccessMemdescSubview(Operation *subview) {
     src = indexOp.getSrc();
     shape = to_vector(indexOp.getType().getShape());
     offsets = {indexOp.getIndex()};
-    for (int i = 0, e = std::max<int>(0, shape.size() - 1); i < e; ++i)
+    for (auto i : llvm::seq(std::max<int>(0, shape.size() - 1)))
       offsets.push_back(arith::ConstantIntOp::create(builder, loc, 0, 32));
   } else {
     auto subsliceOp = cast<ttg::MemDescSubsliceOp>(subview);
@@ -150,18 +150,17 @@ std::pair<Value, AccessRange> findBufferAccess(Value a) {
     return findBufferAccessMemdescSubview(defOp);
   }
 
-  // Subslice is a subview on one tensor dimension.
+  // Subslice is a subview only on the N dimension.
   if (auto subslice = dyn_cast<TMEMSubSliceOp>(defOp)) {
     auto [alloc, parentAccess] = findBufferAccess(subslice.getSrc());
     if (!alloc)
       return {};
-    unsigned dim = subslice.getDim();
-    if (!parentAccess.ranges[dim])
+    if (!parentAccess.ranges[1])
       return {alloc, parentAccess};
-    uint64_t start = parentAccess.ranges[dim]->start() + subslice.getOffset();
-    uint64_t size = subslice.getType().getShape()[dim];
+    uint64_t mStart = parentAccess.ranges[1]->start() + subslice.getN();
+    uint64_t mSize = subslice.getType().getShape()[1];
     AccessRange childAccess = parentAccess;
-    childAccess.ranges[dim] = {{start, start + size}};
+    childAccess.ranges[1] = {{mStart, mStart + mSize}};
     return {alloc, std::move(childAccess)};
   }
 
@@ -262,6 +261,7 @@ struct TritonNvidiaGPUInterleaveTMemPass
       TritonNvidiaGPUInterleaveTMemPass>::TritonNvidiaGPUInterleaveTMemPassBase;
 
   void runOnOperation() override {
+    MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
     SmallVector<std::pair<Operation *, Value>> opsToSink;
     m.walk([&](Operation *op) {

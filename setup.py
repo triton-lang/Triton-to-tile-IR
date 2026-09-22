@@ -20,7 +20,7 @@ from setuptools.command.sdist import sdist
 
 from dataclasses import dataclass
 
-import nanobind
+import pybind11
 
 try:
     from setuptools.command.bdist_wheel import bdist_wheel
@@ -37,21 +37,12 @@ except ImportError:
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from python.build_helpers import check_env_flag, find_therock_rocm_include_dir, get_base_dir, get_cmake_dir
+from python.build_helpers import get_base_dir, get_cmake_dir
 
 
-def is_git_repo() -> bool:
-    """Return True if this file resides at the root of a git repository."""
-    expected_toplevel = Path(__file__).parent.resolve()
-
-    try:
-        stdout: str = subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], cwd=expected_toplevel,
-                                              stderr=subprocess.DEVNULL).strip().decode('utf-8')
-    except subprocess.CalledProcessError:
-        return False
-    actual_toplevel = Path(stdout).resolve()
-
-    return actual_toplevel == expected_toplevel
+def is_git_repo():
+    """Return True if this file resides in a git repository"""
+    return (Path(__file__).parent / ".git").is_dir()
 
 
 @dataclass
@@ -124,6 +115,11 @@ class BackendInstaller:
             BackendInstaller.prepare(backend_name, backend_src_dir=backend_src_dir, is_external=True)
             for backend_name, backend_src_dir in zip(backend_names, backend_dirs)
         ]
+
+
+# Taken from https://github.com/pytorch/pytorch/blob/master/tools/setup_helpers/env.py
+def check_env_flag(name: str, default: str = "") -> bool:
+    return os.getenv(name, default).upper() in ["ON", "1", "YES", "TRUE", "Y"]
 
 
 def get_build_type():
@@ -241,40 +237,31 @@ class CMakeBuild(build_ext):
         for ext in self.extensions:
             self.build_extension(ext)
 
-    def get_nanobind_cmake_args(self):
-        return [f"-Dnanobind_ROOT='{nanobind.cmake_dir()}'"]
+    def get_pybind11_cmake_args(self):
+        pybind11_sys_path = get_env_with_keys(["PYBIND11_SYSPATH"])
+        if pybind11_sys_path:
+            pybind11_include_dir = os.path.join(pybind11_sys_path, "include")
+        else:
+            pybind11_include_dir = pybind11.get_include()
+        return [f"-Dpybind11_INCLUDE_DIR='{pybind11_include_dir}'", f"-Dpybind11_DIR='{pybind11.get_cmake_dir()}'"]
 
     def get_proton_cmake_args(self):
-        cmake_args = self.get_nanobind_cmake_args()
+        cmake_args = self.get_pybind11_cmake_args()
         cupti_include_dir = get_env_with_keys(["TRITON_CUPTI_INCLUDE_PATH"])
         if cupti_include_dir == "":
             cupti_include_dir = os.path.join(get_base_dir(), "third_party", "nvidia", "backend", "include")
         cmake_args += ["-DCUPTI_INCLUDE_DIR=" + cupti_include_dir]
-
-        rocm_include_dir = get_env_with_keys(["TRITON_ROCM_INCLUDE_PATH"])
-        rocprofiler_sdk_include_dir = get_env_with_keys(["TRITON_ROCPROFILER_SDK_INCLUDE_PATH"])
-        therock_include_dir = None
-        if not rocm_include_dir or not rocprofiler_sdk_include_dir:
-            therock_include_dir = find_therock_rocm_include_dir()
-        if therock_include_dir is not None:
-            print(f"Using TheRock ROCm headers from {therock_include_dir}", file=sys.stderr)
-
-        if not rocm_include_dir:
-            rocm_include_dir = therock_include_dir or os.path.join(get_base_dir(), "third_party", "amd", "backend",
-                                                                   "include")
-        cmake_args += ["-DROCM_INCLUDE_DIR=" + rocm_include_dir]
-
-        if not rocprofiler_sdk_include_dir:
-            rocprofiler_sdk_include_dir = therock_include_dir
-        if rocprofiler_sdk_include_dir:
-            cmake_args += ["-DROCPROFILER_SDK_INCLUDE_DIR=" + rocprofiler_sdk_include_dir]
+        roctracer_include_dir = get_env_with_keys(["TRITON_ROCTRACER_INCLUDE_PATH"])
+        if roctracer_include_dir == "":
+            roctracer_include_dir = os.path.join(get_base_dir(), "third_party", "amd", "backend", "include")
+        cmake_args += ["-DROCTRACER_INCLUDE_DIR=" + roctracer_include_dir]
         return cmake_args
 
     def build_extension(self, ext):
         lit_dir = shutil.which('lit')
         ninja_dir = shutil.which('ninja')
         assert ninja_dir is not None, "ninja not found!"
-        thirdparty_cmake_args = self.get_nanobind_cmake_args()
+        thirdparty_cmake_args = self.get_pybind11_cmake_args()
         extdir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.path)))
         wheeldir = os.path.dirname(extdir)
 
@@ -311,9 +298,7 @@ class CMakeBuild(build_ext):
         cmake_args += [f"-DCMAKE_BUILD_TYPE={cfg}"]
         if platform.system() == "Windows":
             cmake_args += [f"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_{cfg.upper()}={extdir}"]
-        # This tests for "--jobserver-auth=fifo:" rather than "--jobserver-auth" because ninja
-        # only supports a jobserver in fifo mode. In other cases, use a default job count.
-        elif "--jobserver-auth=fifo:" not in os.environ.get("MAKEFLAGS", ""):
+        else:
             max_jobs = os.getenv("MAX_JOBS", str(2 * os.cpu_count()))
             build_args += ['-j' + max_jobs]
 
@@ -354,7 +339,6 @@ class CMakeBuild(build_ext):
             "TRITON_PARALLEL_LINK_JOBS",
             "TRITON_OFFLINE_BUILD",
             "TRITON_LLVM_SYSTEM_SUFFIX",
-            "TRITON_STABLE_ABI",
             "LLVM_SYSPATH",
             "JSON_SYSPATH",
             "TRITON_CUDACRT_PATH",
@@ -363,10 +347,7 @@ class CMakeBuild(build_ext):
             "TRITON_CUPTI_INCLUDE_PATH",
             "TRITON_CUPTI_LIB_PATH",
             "TRITON_CUPTI_LIB_BLACKWELL_PATH",
-            "TRITON_ROCPROFILER_SDK_INCLUDE_PATH",
-            "TRITON_ROCPROFILER_SDK_LIB_PATH",
             "TRITON_NVDISASM_PATH",
-            "TRITON_AMD_CODEGEN_PATH",
             "TRITON_PTXAS_PATH",
             "TRITON_PTXAS_BLACKWELL_PATH",
         ]
@@ -389,13 +370,6 @@ class CMakeBuild(build_ext):
         update_symlink(Path(self.base_dir) / "compile_commands.json", cmake_dir / "compile_commands.json")
         subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
         subprocess.check_call(["cmake", "--build", ".", "--target", "mlir-doc"], cwd=cmake_dir)
-        if check_env_flag("TRITON_EXT_ENABLED"):
-            # Install Triton headers and TableGen definitions (*.h, *.h.inc, *.td)
-            # into the wheel staging directory so they are bundled in the wheel.
-            # This must run after the full build so that all TableGen-generated
-            # *.h.inc files exist in the CMake binary directory.
-            subprocess.check_call(["cmake", "--install", ".", "--component", "wheel_headers", "--prefix", wheeldir],
-                                  cwd=cmake_dir)
 
 
 backends = [*BackendInstaller.copy(["nvidia", "amd", "tileir"]), *BackendInstaller.copy_externals()]
@@ -491,11 +465,6 @@ def add_links(external_only):
 
 class plugin_bdist_wheel(bdist_wheel):
 
-    def get_tag(self):
-        if check_env_flag("TRITON_STABLE_ABI"):
-            return "cp312", "abi3", super().get_tag()[2]
-        return super().get_tag()
-
     def run(self):
         add_links(external_only=True)
         super().run()
@@ -587,7 +556,7 @@ def get_triton_version_suffix():
 
 
 # keep it separate for easy substitution
-TRITON_VERSION = "3.8.0" + get_triton_version_suffix()
+TRITON_VERSION = "3.7.0" + get_triton_version_suffix()
 
 
 # Dynamically define supported Python versions and classifiers
@@ -623,16 +592,6 @@ setup(
         "__pycache__/*",
         "*.py[cod]",
     ]},
-    package_data={
-        # Headers and TableGen definitions copied into the wheel staging dir by
-        # the wheel_headers CMake install component.  Paths are relative to the
-        # triton package root (<build_lib>/triton/).
-        "triton": [
-            "include/**/*.h",
-            "include/**/*.h.inc",
-            "include/**/*.td",
-        ],
-    },
     ext_modules=[CMakeExtension("triton", "triton/_C/")],
     cmdclass={
         "bdist_wheel": plugin_bdist_wheel,

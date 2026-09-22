@@ -58,13 +58,7 @@ def DotOpInterface : OpInterface<"DotOpInterface"> {
       /*desc=*/"Verify the dimensions of the A and B DotOp operands.",
       /*retType=*/"bool",
       /*methodName=*/"verifyDims",
-      /*args=*/(ins),
-      /*methodBody=*/[{}],
-      /*defaultImpl=*/ [{
-        auto aShape = cast<ShapedType>($_op.getA().getType()).getShape();
-        auto bShape = cast<ShapedType>($_op.getB().getType()).getShape();
-        return aShape.back() == bShape[bShape.size() - 2];
-      }]>,
+      /*args=*/(ins)>,
   InterfaceMethod<
       /*desc=*/"Verify the dimensions of the DotOp output.",
       /*retType=*/"bool",
@@ -75,6 +69,7 @@ def DotOpInterface : OpInterface<"DotOpInterface"> {
         auto aTy = cast<ShapedType>($_op.getA().getType());
         auto bTy = cast<ShapedType>($_op.getB().getType());
         auto cTy = cast<ShapedType>($_op->getOperand(2).getType());
+        auto dTy = cast<ShapedType>($_op.getD().getType());
         auto aShape = aTy.getShape();
         auto bShape = bTy.getShape();
         auto cShape = cTy.getShape();
@@ -131,10 +126,6 @@ def PredicatedOpInterface : OpInterface<"PredicatedOpInterface"> {
   let description = [{
     Common interface for operations that carry a predicate or mask operand that
     can be combined with a pipeline predicate.
-
-    A false predicate can still leave effects such as masked-copy zero filling
-    or MMA completion signals. Erasing an inactive operation requires a separate
-    guarantee that its predicate suppresses all effects.
   }];
 
   let cppNamespace = "::mlir::triton";
@@ -155,35 +146,6 @@ def PredicatedOpInterface : OpInterface<"PredicatedOpInterface"> {
       /*retType=*/"::mlir::Type",
       /*methodName=*/"getPredicateOperandTypeLike",
       /*args=*/(ins)>
-  ];
-}
-
-def AtomicOpInterface : OpInterface<"AtomicOpInterface"> {
-  let description = [{
-    Common interface for atomic operations with memory-ordering semantics.
-  }];
-
-  let cppNamespace = "::mlir::triton";
-
-  let methods = [
-    InterfaceMethod<
-      /*desc=*/"Return the pointer operand accessed by the atomic operation.",
-      /*retType=*/"::mlir::Value",
-      /*methodName=*/"getPtr",
-      /*args=*/(ins),
-      /*defaultImplementation=*/[{
-        return $_op.getPtr();
-      }]
-    >,
-    InterfaceMethod<
-      /*desc=*/"Return the atomic memory-ordering semantic.",
-      /*retType=*/"::mlir::triton::MemSemantic",
-      /*methodName=*/"getMemSemantic",
-      /*args=*/(ins),
-      /*defaultImplementation=*/[{
-        return $_op.getSem();
-      }]
-    >
   ];
 }
 

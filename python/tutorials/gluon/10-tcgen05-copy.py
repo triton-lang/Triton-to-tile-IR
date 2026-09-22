@@ -82,6 +82,7 @@ import triton
 import torch
 import triton.experimental.gluon as gluon
 import triton.experimental.gluon.language as gl
+from triton.language.core import _aggregate as aggregate
 from triton.experimental.gluon.nvidia.hopper import TensorDescriptor
 from triton.experimental.gluon.language.nvidia.blackwell import (
     TensorMemoryLayout,
@@ -216,7 +217,7 @@ def test_tcgen05_copy_nvmma_shared(M, N, TMEM_BLOCK_N, dtype, swizzle):
 # TMA for the epilogue store also reduces contention for the TMA pipe.
 
 
-@gluon.aggregate
+@aggregate
 class PartitionArgs:
     a_desc: tma.tensor_descriptor
     b_desc: tma.tensor_descriptor

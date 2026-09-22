@@ -9,7 +9,6 @@ add_triton_library(TritonGPUToLLVM
     ControlFlowOpToLLVM.cpp
     ConvertLayoutOpToLLVM.cpp
     ElementwiseOpToLLVM.cpp
-    Fp4ToFpOpToLLVMBase.cpp
     FuncOpToLLVM.cpp
     GatherOpToLLVM.cpp
     GlobalScratchMemoryAllocation.cpp
@@ -35,7 +34,6 @@ add_triton_library(TritonGPUToLLVM
     MLIRGPUToNVVMTransforms
     MLIRGPUToROCDLTransforms
     MLIRGPUTransforms
-    NVGPUIR
     TritonAnalysis
     TritonIR
     TritonGPUIR

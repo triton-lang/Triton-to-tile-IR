@@ -8,7 +8,6 @@
 #include "BufferOpsEmitter.h"
 
 using namespace triton::AMD;
-using mlir::triton::amdgpu::ISAFamily;
 
 namespace {
 
@@ -68,8 +67,8 @@ Value BufferEmitter::createResourceDescriptor(Value basePtr,
   // The RDNA-style flags below have bits [3:0]=0, so they are effectively
   // ignored on GFX12+ but we include GFX1250 in the check for consistency.
   uint32_t flags = (7 << 12) | (4 << 15);
-  if (llvm::is_contained({ISAFamily::RDNA2, ISAFamily::RDNA3, ISAFamily::RDNA4m,
-                          ISAFamily::RDNA4, ISAFamily::GFX1250},
+  if (llvm::is_contained({ISAFamily::RDNA2, ISAFamily::RDNA3, ISAFamily::RDNA4,
+                          ISAFamily::GFX1250},
                          targetInfo.getISAFamily())) {
     flags |= (1 << 24);
     uint32_t oob = 3;
@@ -113,14 +112,10 @@ Value BufferEmitter::emitLoad(Type type, Value rsrcDesc, Value offset,
                               triton::CacheModifier cm) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   SmallVector<Value, 6> args;
-  int32_t aux = 0;
-  fillCommonArgs(type, rsrcDesc, offset, pred, cm, /*isBufferLoad=*/true, args,
-                 aux);
+  fillCommonArgs(type, rsrcDesc, offset, pred, cm, /*isBufferLoad=*/true, args);
   Type bufferType = getBufferOpType(type, false);
   Value data = ROCDL::RawPtrBufferLoadOp::create(
-      rewriter, loc, bufferType, args[0], args[1], args[2],
-      rewriter.getI32IntegerAttr(aux), /*alias_scopes=*/nullptr,
-      /*noalias_scopes=*/nullptr, /*tbaa=*/nullptr);
+      rewriter, loc, bufferType, args, ArrayRef<NamedAttribute>());
   data = b.bitcast(data, type);
   if (!isZero(falseVal))
     data = b.select(pred, data, falseVal);
@@ -133,23 +128,24 @@ BufferEmitter::emitLoadToLds(Type type, Value byteWidth, Value rsrcDesc,
                              triton::CacheModifier cm) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   SmallVector<Value, 6> commonArgs;
-  int32_t aux = 0;
   fillCommonArgs(type, rsrcDesc, offset, pred, cm, /*isBufferLoad=*/true,
-                 commonArgs, aux);
+                 commonArgs);
+  Type bufferType = getBufferOpType(type, false);
 
   // buffer_load_to_lds is only supported on gfx942/gfx950 which always use
   // asyncmark. Emit the async intrinsic so LLVM's SIInsertWaitcnts tracks
   // these operations via asyncmark/wait_asyncmark.
   return ROCDL::RawPtrBufferLoadAsyncLdsOp::create(
-      rewriter, loc,
-      commonArgs[0], // ArgIndex 0: rsrc
-      dst,           // ArgIndex 1: LDS base ptr
-      byteWidth,     // ArgIndex 2: data byte size (immarg)
-      commonArgs[1], // ArgIndex 3: voffset (per-lane VGPR)
-      commonArgs[2], // ArgIndex 4: soffset (always 0 here)
-      b.i32_val(0),  // ArgIndex 5: imm offset (immarg, always 0 here)
-      rewriter.getI32IntegerAttr(aux), /*alias_scopes=*/nullptr,
-      /*noalias_scopes=*/nullptr, /*tbaa=*/nullptr);
+      rewriter, loc, TypeRange{},
+      ValueRange{
+          commonArgs[0], // Buffer descriptor
+          dst,           // LDS base ptr
+          byteWidth,     // Instr size
+          commonArgs[1], // Buffer offset
+          b.i32_val(0),  // LDS offset
+          commonArgs[2], // Instruction offset
+          commonArgs[3], // AUX
+      });
 }
 
 Value BufferEmitter::emitAtomicCAS(Type type, Value rsrcDesc, Value offset,
@@ -168,13 +164,10 @@ Value BufferEmitter::emitAtomicCAS(Type type, Value rsrcDesc, Value offset,
   // the opposite of the order in tl.atomic_cmpxchg
   // and amdg.buffer_atomic_cas
   SmallVector<Value, 6> args{casStoreVal, casCmpVal};
-  int32_t aux = 0;
-  fillCommonArgsAtomics(type, rsrcDesc, offset, pred, hasUsers, aux, args);
+  fillCommonArgsAtomics(type, rsrcDesc, offset, pred, hasUsers, args);
 
   Value data = ROCDL::RawPtrBufferAtomicCmpSwap::create(
-      rewriter, loc, bufferType, args[0], args[1], args[2], args[3], args[4],
-      rewriter.getI32IntegerAttr(aux), /*alias_scopes=*/nullptr,
-      /*noalias_scopes=*/nullptr, /*tbaa=*/nullptr);
+      rewriter, loc, bufferType, args, ArrayRef<NamedAttribute>());
   data = b.bitcast(data, type);
   return data;
 }
@@ -189,8 +182,7 @@ Value BufferEmitter::emitAtomicRMW(RMWOp rmwType, Type type, Value rsrcDesc,
     data = b.bitcast(data, bufferType);
 
   SmallVector<Value, 6> args{data};
-  int32_t aux = 0;
-  fillCommonArgsAtomics(type, rsrcDesc, offset, pred, hasUsers, aux, args);
+  fillCommonArgsAtomics(type, rsrcDesc, offset, pred, hasUsers, args);
 
   // TODO:
   //   The ops in ROCDL (e.g., RawPtrBufferAtomicFaddOp) have no return value,
@@ -198,23 +190,9 @@ Value BufferEmitter::emitAtomicRMW(RMWOp rmwType, Type type, Value rsrcDesc,
   //   LLVM verifier to fail. When this is fixed, the ROCDL ops should be used
   //   here.
   auto rmwOpStr = stringifyRMWOp(rmwType).str();
-  if (rmwType == RMWOp::XCHG) {
-    // RMWOp::XCHG stringifies to "exch", but the AMDGPU buffer-atomic
-    // intrinsic uses the "swap" suffix.
-    rmwOpStr = "swap";
-  } else if (rmwType == RMWOp::MAX || rmwType == RMWOp::MIN) {
-    // RMWOp::MAX / MIN stringify to "max" / "min", which are not real AMDGPU
-    // buffer-atomic intrinsic suffixes. The valid suffixes are
-    // .{s,u,f}{max,min}. RMWOp::UMAX and RMWOp::UMIN already stringify to
-    // "umax" / "umin" and need no override.
-    StringRef prefix = isa<FloatType>(getElementTypeOrSelf(type)) ? "f" : "s";
-    rmwOpStr = (prefix + rmwOpStr).str();
-  }
   auto instrinsic = "llvm.amdgcn.raw.ptr.buffer.atomic." + rmwOpStr;
-  SmallVector<Value, 6> intrinsicArgs = args;
-  intrinsicArgs.push_back(b.i32_val(aux));
   auto bufferAtomicRMW = LLVM::createLLVMIntrinsicCallOp(
-      rewriter, loc, instrinsic, bufferType, intrinsicArgs);
+      rewriter, loc, instrinsic, bufferType, args);
 
   return b.bitcast(bufferAtomicRMW.getResult(0), type);
 }
@@ -227,13 +205,10 @@ void BufferEmitter::emitStore(Value rsrcDesc, Value offset, Value data,
   if (vecTy != bufferType)
     data = b.bitcast(data, bufferType);
   SmallVector<Value, 6> args{data};
-  int32_t aux = 0;
   fillCommonArgs(vecTy, rsrcDesc, offset, pred, cm, /*isBufferLoad=*/false,
-                 args, aux);
-  ROCDL::RawPtrBufferStoreOp::create(
-      rewriter, loc, TypeRange{}, args[0], args[1], args[2], args[3],
-      rewriter.getI32IntegerAttr(aux), /*alias_scopes=*/nullptr,
-      /*noalias_scopes=*/nullptr, /*tbaa=*/nullptr);
+                 args);
+  ROCDL::RawPtrBufferStoreOp::create(rewriter, loc, TypeRange{}, args,
+                                     ArrayRef<NamedAttribute>());
 }
 
 Type BufferEmitter::getBufferOpType(Type type, bool atomicsOp) {
@@ -285,7 +260,7 @@ Type BufferEmitter::getBufferOpType(Type type, bool atomicsOp) {
 void BufferEmitter::fillCommonArgs(Type type, Value rsrcDesc,
                                    Value vOffsetElems, Value pred,
                                    triton::CacheModifier cm, bool isBufferLoad,
-                                   SmallVector<Value> &args, int32_t &aux) {
+                                   SmallVector<Value> &args) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   // 1. Create the (masked) offset
   Type elementType = getElementTypeOrSelf(type);
@@ -302,17 +277,21 @@ void BufferEmitter::fillCommonArgs(Type type, Value rsrcDesc,
   // 2. Set the sgprOffset to 0
   Value sgprOffset = b.int_val(32, 0);
 
-  aux = getCtrlBitsForCacheModifierOnTarget(cm, isBufferLoad, targetInfo);
+  // 3. Create the cache modifiers word
+  int32_t aux =
+      getCtrlBitsForCacheModifierOnTarget(cm, isBufferLoad, targetInfo);
+  Value cacheModifiers = b.int_val(32, aux);
 
   // 4. Add the arguments
   args.push_back(rsrcDesc);
   args.push_back(maskedOffsetBytes);
   args.push_back(sgprOffset);
+  args.push_back(cacheModifiers);
 }
 
 void BufferEmitter::fillCommonArgsAtomics(Type type, Value rsrcDesc,
                                           Value vOffsetElems, Value pred,
-                                          bool hasUsers, int32_t &aux,
+                                          bool hasUsers,
                                           SmallVector<Value> &args) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   // 1. Create the (masked) offset
@@ -330,12 +309,15 @@ void BufferEmitter::fillCommonArgsAtomics(Type type, Value rsrcDesc,
   // 2. Set the sgprOffset to 0
   Value sgprOffset = b.int_val(32, 0);
 
-  aux = targetInfo.getBufferAtomicCachePolicy(hasUsers);
+  // 3. Create the cache modifiers word
+  int32_t aux = targetInfo.getBufferAtomicCachePolicy(hasUsers);
+  Value cacheModifiers = b.int_val(32, aux);
 
   // 4. Add the arguments
   args.push_back(rsrcDesc);
   args.push_back(maskedOffsetBytes);
   args.push_back(sgprOffset);
+  args.push_back(cacheModifiers);
 }
 
 } // namespace mlir::LLVM::AMD

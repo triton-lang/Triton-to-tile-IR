@@ -2,16 +2,13 @@
 #define TRITON_CONVERSION_TRITONGPU_TO_LLVM_TARGETINFONVIDIA_H
 
 #include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
-#include "triton/Dialect/TritonNvidiaGPU/IR/TargetFeatures.h"
 
 namespace mlir::triton::NVIDIA {
 
 class TargetInfo : public mlir::triton::TargetInfoBase {
 public:
-  explicit TargetInfo(int computeCapability)
-      : TargetInfo(computeCapability, /*ptxVersion=*/0) {}
   TargetInfo(int computeCapability, int ptxVersion)
-      : targetFeatures(computeCapability), ptxVersion(ptxVersion) {}
+      : computeCapability(computeCapability), ptxVersion(ptxVersion) {}
 
   bool supportMaximumMinimum() const override;
 
@@ -20,39 +17,29 @@ public:
   Value ballot(RewriterBase &rewriter, Location loc, Type type,
                Value cmp) const override;
 
-  Value getGlobalTimer(RewriterBase &rewriter, Location loc) const override;
-
-  StringRef getAtomicSyncScope(MemSyncScope scope) const override;
-
   void barrier(Location loc, RewriterBase &rewriter,
                triton::gpu::AddrSpace targets) const override;
-  void clusterBarrier(Location loc, RewriterBase &rewriter,
-                      Operation *sourceOp) const override;
+  void clusterBarrier(Location loc, RewriterBase &rewriter) const override;
 
   void warpSync(Location loc, RewriterBase &rewriter) const override;
 
   void storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
-                    Value ctaId, Value val, Value pred) const override;
+                    std::optional<Value> ctaId, Value val,
+                    Value pred) const override;
   Value loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
-                    Value ctaId, Type elemTy, Value pred,
+                    std::optional<Value> ctaId, Type elemTy, Value pred,
                     Operation *localLoadOp = nullptr) const override;
-  Value mapDShared(RewriterBase &rewriter, Location loc, Value ptr, Value ctaId,
-                   Value pred) const;
 
-  bool supportLdMatrix() const override {
-    return targetFeatures.supportLdMatrix();
-  }
-  bool supportStMatrix() const override {
-    return targetFeatures.supportStMatrix();
-  }
-  bool supportLdStMatrixB8() const override {
-    return targetFeatures.supportLdStMatrixB8();
-  }
+  bool supportLdMatrix() const override { return computeCapability >= 75; }
+  bool supportStMatrix() const override { return computeCapability >= 90; }
+  bool supportLdStMatrixB8() const override { return computeCapability >= 100; }
   bool supportBitwidth16Elementwise() const override {
-    return targetFeatures.supportBitwidth16Elementwise();
+    // Hopper (sm90) and newer.
+    return computeCapability >= 90;
   }
   bool supportBitwidth32Elementwise() const override {
-    return targetFeatures.supportBitwidth32Elementwise();
+    // Blackwell (sm100) and newer.
+    return computeCapability >= 100;
   }
 
   Value shuffleXor(RewriterBase &rewriter, Location loc, Value val,
@@ -73,7 +60,8 @@ public:
   bool warpReduce(RewriterBase &rewriter, Location loc, SmallVector<Value> &acc,
                   triton::ReduceOp op,
                   unsigned reduceLaneIdMask) const override;
-  unsigned getReductionTreeArity(Operation *combinerOp) const override;
+
+  std::string getMulhiFuncName(Type resultElementTy) const override;
 
   void printf(RewriterBase &rewriter, Value formatStrStart,
               int formatStrByteCount, ValueRange args,
@@ -93,17 +81,12 @@ public:
   bool supportVectorizedAtomics() const override;
 
   int getPtxVersion() const { return ptxVersion; }
-  int getComputeCapability() const {
-    return targetFeatures.getComputeCapability();
-  }
-  const triton::nvidia_gpu::TargetFeatures &getTargetFeatures() const {
-    return targetFeatures;
-  }
+  int getComputeCapability() const { return computeCapability; }
 
   bool isCuda() const override { return true; }
 
 private:
-  triton::nvidia_gpu::TargetFeatures targetFeatures;
+  int computeCapability;
   int ptxVersion;
 };
 

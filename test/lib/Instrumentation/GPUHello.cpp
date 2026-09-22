@@ -12,7 +12,7 @@ using namespace std;
 
 namespace {
 
-struct GpuHello : public RequiredPassInfoMixin<GpuHello> {
+struct GpuHello : public PassInfoMixin<GpuHello> {
   PreservedAnalyses run(Module &module, ModuleAnalysisManager &) {
     bool modifiedCodeGen = runOnModule(module);
 
@@ -20,6 +20,9 @@ struct GpuHello : public RequiredPassInfoMixin<GpuHello> {
                             : llvm::PreservedAnalyses::all());
   }
   bool runOnModule(llvm::Module &module);
+  // isRequired being set to true keeps this pass from being skipped
+  // if it has the optnone LLVM attribute
+  static bool isRequired() { return true; }
 };
 
 } // end anonymous namespace

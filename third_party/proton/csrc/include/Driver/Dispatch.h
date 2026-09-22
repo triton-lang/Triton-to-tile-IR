@@ -4,7 +4,6 @@
 #include <dlfcn.h>
 
 #include "Utility/Env.h"
-#include "Utility/Errors.h"
 #include <stdexcept>
 #include <string>
 
@@ -82,8 +81,7 @@ struct ExternLibBase {
   using RetType = int; // Generic type, can be overridden in derived structs
   static constexpr const char *name = "";    // Placeholder
   static constexpr const char *symbolName{}; // Placeholder
-  static constexpr const char *pathEnv{};    // Directory override
-  static constexpr const char *libraryEnv{}; // Library filename/path override
+  static constexpr const char *pathEnv{};    // Placeholder
   static constexpr RetType success = 0;      // Placeholder
   ExternLibBase() = delete;
   ExternLibBase(const ExternLibBase &) = delete;
@@ -96,38 +94,34 @@ public:
   Dispatch() = delete;
 
   static void init(const char *name, void **lib) {
-    std::string libraryName{name};
     if (*lib == nullptr) {
-      auto library = ExternLib::libraryEnv == nullptr
-                         ? ""
-                         : getStrEnv(ExternLib::libraryEnv);
-      if (!library.empty())
-        libraryName = library;
+      // If not found, try to load it from the default path
       auto dir =
           ExternLib::pathEnv == nullptr ? "" : getStrEnv(ExternLib::pathEnv);
-      if (!dir.empty() && libraryName.find('/') == std::string::npos) {
-        auto fullPath = dir + "/" + libraryName;
+      if (!dir.empty()) {
+        auto fullPath = dir + "/" + name;
         *lib = dlopen(fullPath.c_str(), RTLD_LOCAL | RTLD_LAZY);
       } else {
         // Only if the default path is not set, we try to load it from the
         // system.
         // First reuse the existing handle
-        *lib = dlopen(libraryName.c_str(), RTLD_NOLOAD);
+        *lib = dlopen(name, RTLD_NOLOAD);
         if (*lib == nullptr) {
           // If not found, try to load it from LD_LIBRARY_PATH
-          *lib = dlopen(libraryName.c_str(), RTLD_LOCAL | RTLD_LAZY);
+          *lib = dlopen(name, RTLD_LOCAL | RTLD_LAZY);
         }
       }
     }
     if (*lib == nullptr) {
-      throw makeRuntimeError("Could not load `" + libraryName + "`");
+      throw std::runtime_error("Could not load `" + std::string(name) + "`");
     }
   }
 
   static void check(typename ExternLib::RetType ret, const char *functionName) {
     if (ret != ExternLib::success) {
-      throw makeRuntimeError("Failed to execute " + std::string(functionName) +
-                             " with error " + std::to_string(ret));
+      throw std::runtime_error("Failed to execute " +
+                               std::string(functionName) + " with error " +
+                               std::to_string(ret));
     }
   }
 
@@ -138,8 +132,8 @@ public:
     if (handler == nullptr) {
       handler = reinterpret_cast<FnT>(dlsym(ExternLib::lib, functionName));
       if (handler == nullptr) {
-        throw makeRuntimeError("Failed to load " +
-                               std::string(ExternLib::name));
+        throw std::runtime_error("Failed to load " +
+                                 std::string(ExternLib::name));
       }
     }
     auto ret = handler(args...);

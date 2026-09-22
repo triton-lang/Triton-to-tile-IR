@@ -19,7 +19,6 @@ def _topk_backward(
     N_EXPTS_ACT: tl.constexpr,
     N_EXPTS_PAD: tl.constexpr,
 ):
-    N_EXPTS_ACT_PAD: tl.constexpr = triton.next_power_of_2(N_EXPTS_ACT)
     pid_m = tl.program_id(0)
     if NRows is not None:
         n_rows = tl.load(NRows)
@@ -31,16 +30,15 @@ def _topk_backward(
     DX += pid_m * stride_dxm
     # --
     offs_xn = tl.arange(0, N_EXPTS_PAD)
-    offs_yn = tl.arange(0, N_EXPTS_ACT_PAD)
-    mask_yn = offs_yn < N_EXPTS_ACT
+    offs_yn = tl.arange(0, N_EXPTS_ACT)
     mask_xn = offs_xn < n_expts_tot
     # recompute softmax
-    y_indx = tl.load(Yi + offs_yn, mask=mask_yn, other=0)
-    x = tl.load(X + y_indx, mask=mask_yn, other=float("-inf"))
+    y_indx = tl.load(Yi + offs_yn)
+    x = tl.load(X + y_indx)
     x = x.to(tl.float32)
     y = tl.softmax(x)
     # compute input-gradient
-    dy = tl.load(DY + offs_yn, mask=mask_yn, other=0.0)
+    dy = tl.load(DY + offs_yn)
     dy = dy.to(tl.float32)
     s = tl.sum(y * dy, 0)
     # write-back input gradient
@@ -50,4 +48,4 @@ def _topk_backward(
         dx = y * (dy - s)
     else:
         dx = dy
-    tl.store(DX + y_indx, dx, mask=mask_yn)
+    tl.store(DX + y_indx, dx)

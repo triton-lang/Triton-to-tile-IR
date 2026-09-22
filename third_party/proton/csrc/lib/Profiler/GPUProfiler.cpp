@@ -1,75 +1,13 @@
 #include "Profiler/GPUProfiler.h"
 #include "Profiler/Graph.h"
-#include "Utility/Atomic.h"
-#include "Utility/Env.h"
-#include "Utility/Errors.h"
 
 #include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <iostream>
-#include <limits>
 #include <stdexcept>
-#include <thread>
 
 namespace proton {
-
-void GPUCorrelation::submit(uint64_t numTasks, uint64_t correlationId) {
-  atomicMax(maxSubmittedCorrelationId, correlationId);
-  numSubmittedTasks.fetch_add(numTasks);
-}
-
-void GPUCorrelation::complete(uint64_t numTasks, uint64_t correlationId) {
-  atomicMax(maxCompletedCorrelationId, correlationId);
-  numCompletedTasks.fetch_add(numTasks);
-}
-
-void GPUCorrelation::complete(uint64_t correlationId) {
-  atomicMax(maxCompletedCorrelationId, correlationId);
-}
-
-void GPUCorrelation::correlate(uint64_t correlationId, size_t externId,
-                               size_t numNodes, bool isMissingName,
-                               const DataToEntryMap &dataToEntry) {
-  corrIdToExternId.insert(correlationId, externId);
-  externIdToState.upsert(externId, [&](ExternIdState &state) {
-    state.numNodes = numNodes;
-    state.dataToEntry = dataToEntry;
-    state.isMissingName = isMissingName;
-  });
-}
-
-void GPUCorrelation::flush(uint64_t maxRetries, uint64_t sleepUs,
-                           const std::function<void()> &flushFn) {
-  flushFn();
-  auto submittedTasks = numSubmittedTasks.load();
-  auto completedTasks = numCompletedTasks.load();
-  auto submittedCorrelationId = maxSubmittedCorrelationId.load();
-  auto completedCorrelationId = maxCompletedCorrelationId.load();
-  auto retries = maxRetries;
-  // The task count is precise when available. The maximum correlation ID is a
-  // best-effort fallback because kernels on different streams can finish out
-  // of order.
-  while ((completedTasks < submittedTasks ||
-          completedCorrelationId < submittedCorrelationId) &&
-         retries > 0) {
-    std::this_thread::sleep_for(std::chrono::microseconds(sleepUs));
-    flushFn();
-    completedTasks = numCompletedTasks.load();
-    completedCorrelationId = maxCompletedCorrelationId.load();
-    --retries;
-  }
-}
-
-void GPUCorrelation::clear() {
-  corrIdToExternId.clear();
-  externIdToState.clear();
-  numCompletedTasks.store(0);
-  numSubmittedTasks.store(0);
-  maxCompletedCorrelationId.store(0);
-  maxSubmittedCorrelationId.store(0);
-}
-
 namespace detail {
 
 namespace {
@@ -81,8 +19,12 @@ struct FlushRange {
 };
 
 std::pair<std::vector<FlushRange>, std::set<size_t>>
-computeFlushRangesAndPeekPhases(const DataPhases &dataPhases,
-                                const bool peekPendingGraphs) {
+computeFlushRangesAndPeekPhases(
+    std::map<Data *, size_t> &dataFlushedPhases,
+    const std::map<Data *,
+                   std::pair</*start_phase=*/size_t, /*end_phase=*/size_t>>
+        &dataPhases,
+    const bool peekPendingGraphs) {
   std::vector<FlushRange> flushRanges;
   flushRanges.reserve(dataPhases.size());
   std::set<size_t> phasesToPeek;
@@ -92,15 +34,17 @@ computeFlushRangesAndPeekPhases(const DataPhases &dataPhases,
       continue;
     }
 
+    auto flushedPhaseIt = dataFlushedPhases.find(data);
     // phase.second at maximum is the current phase, which cannot be a
     // "complete" phase yet. So we flush up to phase.second - 1.
     const size_t endPhaseToFlush = phase.second - 1;
 
     size_t minPhaseToFlush = 0;
-    const auto flushedPhase = data->getPhaseInfo().completeUpTo;
-    if (flushedPhase == Data::kNoCompletePhase) {
+    if (flushedPhaseIt == dataFlushedPhases.end() ||
+        flushedPhaseIt->second == Data::kNoCompletePhase) {
       minPhaseToFlush = 0;
     } else {
+      const auto flushedPhase = flushedPhaseIt->second;
       if (endPhaseToFlush <= flushedPhase) {
         continue;
       }
@@ -226,22 +170,6 @@ void periodicClearDataPhases(Data &data, size_t maxPhaseToFlush,
 
 } // namespace
 
-int64_t
-computeTimestampOffsetNs(const std::function<void(uint64_t *)> &getTimestamp) {
-  using Clock = std::chrono::system_clock;
-  const auto cpuBefore = Clock::now();
-  uint64_t profilerTimestampNs{};
-  getTimestamp(&profilerTimestampNs);
-  const auto cpuAfter = Clock::now();
-  // The native timestamp is sampled between these reads; use their midpoint.
-  const auto cpuTimestampNs =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          (cpuBefore + (cpuAfter - cpuBefore) / 2).time_since_epoch())
-          .count();
-  return static_cast<int64_t>(cpuTimestampNs) -
-         static_cast<int64_t>(profilerTimestampNs);
-}
-
 void setPeriodicFlushingMode(bool &periodicFlushingEnabled,
                              std::string &periodicFlushingFormat,
                              const std::vector<std::string> &modeAndOptions,
@@ -257,13 +185,13 @@ void setPeriodicFlushingMode(bool &periodicFlushingEnabled,
     const std::string key = modeAndOptions[1].substr(0, delimiterPos);
     const std::string value = modeAndOptions[1].substr(delimiterPos + 1);
     if (key != "format") {
-      throw makeInvalidArgument(
-          profilerName + std::string(": unsupported option key: ") + key);
+      throw std::invalid_argument(std::string("[PROTON] ") + profilerName +
+                                  ": unsupported option key: " + key);
     }
     if (value != "hatchet_msgpack" && value != "chrome_trace" &&
         value != "hatchet") {
-      throw makeInvalidArgument(profilerName +
-                                std::string(": unsupported format: ") + value);
+      throw std::invalid_argument(std::string("[PROTON] ") + profilerName +
+                                  ": unsupported format: " + value);
     }
     periodicFlushingFormat = value;
   } else {
@@ -271,7 +199,8 @@ void setPeriodicFlushingMode(bool &periodicFlushingEnabled,
   }
 }
 
-void updateDataPhases(DataPhases &dataPhases, Data *data, size_t phase) {
+void updateDataPhases(std::map<Data *, std::pair<size_t, size_t>> &dataPhases,
+                      Data *data, size_t phase) {
   auto it = dataPhases.find(data);
   if (it == dataPhases.end()) {
     dataPhases.emplace(data, std::make_pair(phase, phase));
@@ -281,14 +210,17 @@ void updateDataPhases(DataPhases &dataPhases, Data *data, size_t phase) {
   }
 }
 
-void flushDataPhasesImpl(const bool periodicFlushEnabled,
-                         const std::string &periodicFlushingFormat,
-                         const DataPhases &dataPhases,
-                         PendingGraphPool *pendingGraphPool) {
+void flushDataPhasesImpl(
+    const bool periodicFlushEnabled, const std::string &periodicFlushingFormat,
+    std::map<Data *, size_t> &dataFlushedPhases,
+    const std::map<Data *,
+                   std::pair</*start_phase=*/size_t, /*end_phase=*/size_t>>
+        &dataPhases,
+    PendingGraphPool *pendingGraphPool) {
   static const bool timingEnabled =
       getBoolEnv("PROTON_DATA_FLUSH_TIMING", false);
-  auto [flushRanges, phasesToPeek] =
-      computeFlushRangesAndPeekPhases(dataPhases, pendingGraphPool != nullptr);
+  auto [flushRanges, phasesToPeek] = computeFlushRangesAndPeekPhases(
+      dataFlushedPhases, dataPhases, pendingGraphPool != nullptr);
   if (pendingGraphPool) {
     using Clock = std::chrono::steady_clock;
     uint64_t totalPeekUs = 0;
@@ -319,6 +251,7 @@ void flushDataPhasesImpl(const bool periodicFlushEnabled,
     auto *data = range.data;
     const size_t minPhaseToFlush = range.minPhaseToFlush;
     const size_t maxPhaseToFlush = range.maxPhaseToFlush;
+    dataFlushedPhases[data] = maxPhaseToFlush;
     data->completePhase(maxPhaseToFlush);
 
     if (!periodicFlushEnabled)
@@ -345,67 +278,5 @@ void flushDataPhasesImpl(const bool periodicFlushEnabled,
   }
 }
 
-size_t prepareGraphLaunch(ThreadSafeMap<uint64_t, GraphState> &graphStates,
-                          uint64_t graphExecId, size_t externId,
-                          const DataToEntryMap &dataToEntry,
-                          ExternIdToStateMap &externIdToState,
-                          PendingGraphPool *pendingGraphPool,
-                          bool flushMetricBuffer) {
-  static const bool timingEnabled =
-      getBoolEnv("PROTON_GRAPH_LAUNCH_TIMING", false);
-  auto graphStateRef = graphStates.find(graphExecId);
-  if (!graphStateRef) {
-    auto &missingGraphState = graphStates[graphExecId];
-    if (!missingGraphState.captureStatusChecked) {
-      missingGraphState.captureStatusChecked = true;
-      std::cerr << "[PROTON] Cannot find graph for graphExecId: " << graphExecId
-                << ", and it may cause memory leak. To avoid this problem, "
-                   "please start profiling before the graph is created."
-                << std::endl;
-    }
-    return std::numeric_limits<size_t>::max();
-  }
-
-  auto &graphState = graphStateRef->get();
-  if (graphState.captureStatusChecked)
-    return std::numeric_limits<size_t>::max();
-
-  using Clock = std::chrono::steady_clock;
-  auto t0 = decltype(Clock::now()){};
-  if (timingEnabled)
-    t0 = Clock::now();
-
-  DataToEntryMap *dataToGraphEntry = nullptr;
-  if (!dataToEntry.empty()) {
-    auto &externIdState = externIdToState[externId];
-    graphState.buildLaunchEntries(dataToEntry, externIdState.dataToGraphEntry);
-    externIdState.nodeIdToState = &graphState.nodeIdToState;
-    dataToGraphEntry = &externIdState.dataToGraphEntry;
-  }
-
-  if (timingEnabled) {
-    auto t1 = Clock::now();
-    auto elapsed =
-        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-    std::cerr << "[PROTON] Graph launch call path time: " << elapsed
-              << " us for graphExecId: " << graphExecId << std::endl;
-    t0 = Clock::now();
-  }
-
-  graphState.queueMetrics(pendingGraphPool, dataToGraphEntry,
-                          flushMetricBuffer);
-
-  if (timingEnabled) {
-    auto t1 = Clock::now();
-    auto elapsed =
-        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-    std::cerr << "[PROTON] Graph launch metric time: " << elapsed
-              << " us for graphExecId: " << graphExecId << std::endl;
-  }
-
-  return graphState.nodeIdToState.size();
-}
-
 } // namespace detail
-
 } // namespace proton

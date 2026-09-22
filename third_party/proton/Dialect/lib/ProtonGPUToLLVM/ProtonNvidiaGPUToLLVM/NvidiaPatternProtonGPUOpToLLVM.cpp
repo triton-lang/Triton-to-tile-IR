@@ -39,12 +39,13 @@ struct CircularStoreOpConversion
                   OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
+
     auto dataPack =
-        lowerCircularStore(op, adaptor.getSegment(), adaptor.getCounter(),
-                           adaptor.getDynamicScopeId(), rewriter);
+        lowerCircularStoreOpHelper(op, adaptor.getSegment(), rewriter);
+
     uint32_t addrSpace = dataPack.addrSpace;
     if (addrSpace == 1) {
-      auto mod = op->getParentOfType<ModuleOp>();
+      auto mod = op.getOperation()->getParentOfType<ModuleOp>();
       int numWarps = proton::gpu::getTotalNumWarps(mod);
       PTXBuilder builder;
       auto b = TritonLLVMOpBuilder(loc, rewriter);
@@ -62,7 +63,7 @@ struct CircularStoreOpConversion
         builder.launch(rewriter, loc, void_ty(rewriter.getContext()));
       } else {
         // Non-vectorized version for num_warps=1 to handle potential
-        // misalignment.
+        // misalignment
         auto stInst = builder.create<>("st")->o("global").o("cg").b(32);
 
         auto unPackedVals = unpackLLVector(loc, dataPack.record, rewriter);
@@ -80,9 +81,9 @@ struct CircularStoreOpConversion
         builder.launch(rewriter, loc, void_ty(rewriter.getContext()));
       }
     } else if (addrSpace == 3) {
-      targetInfo.getTritonTargetInfo().storeDShared(rewriter, loc, dataPack.ptr,
-                                                    Value(), dataPack.record,
-                                                    /*pred=*/dataPack.isWriter);
+      targetInfo.getTritonTargetInfo().storeDShared(
+          rewriter, loc, dataPack.ptr, std::nullopt, dataPack.record,
+          /*pred=*/dataPack.isWriter);
     } else {
       llvm::report_fatal_error("unsupported address space in circular store");
     }

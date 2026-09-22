@@ -1,6 +1,4 @@
-from . import ampere
-from . import hopper
 from . import blackwell
-from . import rubin
+from . import hopper
 
-__all__ = ["ampere", "blackwell", "hopper", "rubin"]
+__all__ = ["blackwell", "hopper"]

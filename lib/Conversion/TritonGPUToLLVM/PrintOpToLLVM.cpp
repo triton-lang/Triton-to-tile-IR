@@ -48,8 +48,7 @@ struct PrintOpConversion : public ConvertOpToLLVMPattern<triton::PrintOp> {
     for (size_t i = 0; i < op.getNumOperands(); i++) {
       bool isSigned = op.getIsSigned()[i] > 0;
       // Elements of the tensor that are resident in this GPU thread.
-      auto elems = unpackTensorElements(loc, adaptor.getOperands()[i], rewriter,
-                                        op->getOperand(i).getType());
+      auto elems = unpackLLElements(loc, adaptor.getOperands()[i], rewriter);
 
       // Get the indices of `elems` within the tensor.  Note that if `elems`
       // has an "interesting" layout, then these will not be in any
@@ -180,13 +179,8 @@ struct PrintOpConversion : public ConvertOpToLLVMPattern<triton::PrintOp> {
     if (isa<LLVM::LLVMPointerType>(type)) {
       return "%p";
     }
-    // Use hexadecimal floating-point notation for floats. The printf ABI
-    // promotes them to f64 before formatting.
-    if (hex && isa<FloatType>(type)) {
-      return "%a";
-    }
     // Hex is "0x%0nx" or "0x%0nllx", where n is the number of hex digits in the
-    // integer type (so 4 for int16, 8 for int32, 16 for int64).
+    // type (so 4 for fp16, 8 for int32, 16 for int64).
     if (hex) {
       // Ignore `width` for `hex` values, pad to typeWidth.
       std::string ret =
