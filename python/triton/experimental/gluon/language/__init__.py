@@ -1,4 +1,6 @@
 from ._core import (
+    aggregate_replace,
+    CachePolicy,
     base_value,
     base_type,
     block_type,
@@ -41,9 +43,12 @@ from ._core import (
     atomic_add,
     atomic_and,
     atomic_cas,
+    atomic_load,
     atomic_max,
     atomic_min,
     atomic_or,
+    atomic_poll,
+    atomic_store,
     atomic_xchg,
     atomic_xor,
     bank_conflicts,
@@ -59,6 +64,7 @@ from ._core import (
     num_ctas,
     histogram,
     inline_asm_elementwise,
+    inline_asm,
     join,
     load,
     map_elementwise,
@@ -85,6 +91,7 @@ from ._core import (
     barrier,
     to_linear_layout,
     to_tensor,
+    expect_zero,
     warp_specialize,
     where,
 )
@@ -136,3 +143,4 @@ from ._standard import (
 from . import nvidia
 from . import amd
 from . import extra
+from . import fpsan

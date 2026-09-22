@@ -72,6 +72,8 @@ namespace triton {
  *   Write S: in = JOIN({lastOp[c] : c ∈ S} ∪ {acquireToken})
  *            out becomes lastOp[c] = lastStore[c] for each c ∈ S.
  *   Atomic S: same as Write.
+ *   Release memory op: additionally consume lastOp on every root.
+ *   Acquire memory op: additionally publish its output as acquireToken.
  *   Acquire fence (gdc_wait):
  *               in = none; out → acquireToken.
  *   Dependent launch signal (gdc_launch_dependents):
@@ -96,10 +98,6 @@ namespace triton {
  *
  * Future work:
  *   - Broader footprint-disjoint proofs beyond the current dependence subset.
- *   - Per-op acquire/release memory_ordering_semantics on TKO memory ops
- *     (treated as relaxed for now). GDC wait is modeled as an acquire fence;
- *     GDC launch is modeled as a dependent-launch signal, not as a full
- *     release fence.
  *   - Interprocedural alias.
  */
 
@@ -134,9 +132,8 @@ struct RegionMemorySummary {
   // Loop handlers thread acquireToken through the loop when this is set.
   bool hasAcquireFence = false;
 
-  // The region contains a standard release-side fence. Today this is only the
-  // release side of gpu.barrier; gdc_launch_dependents is modeled separately as
-  // a dependent-launch signal.
+  // The region contains a release memory op or the release side of gpu.barrier.
+  // gdc_launch_dependents is modeled separately as a dependent-launch signal.
   bool hasReleaseFence = false;
 
   // The region contains a total fence such as gpu.barrier. Total fences publish
@@ -1055,6 +1052,9 @@ class AutoGenMemoryTokenPass
   Value buildMemOpInputToken(Operation *op, ArrayRef<MemoryRootId> roots,
                              const TokenState &state, IRRewriter &rewriter) {
     SmallVector<Value, 4> deps;
+    // A release orders prior accesses even when they touch different roots.
+    if (isReleaseFence(op))
+      appendLastOpTokens(state, deps);
     if (isWriteMemOp(op)) {
       for (MemoryRootId root : roots) {
         if (auto it = state.parallelStoreInputToken.find(root);
@@ -1151,6 +1151,8 @@ class AutoGenMemoryTokenPass
       publishWriteMemOpOutputToken(op, roots, outputTok, state, rewriter);
     else
       publishReadMemOpOutputToken(op, roots, outputTok, state, rewriter);
+    if (isAcquireFence(op))
+      state.advanceAcquire(outputTok);
   }
 
   /// Acquire fence: publish the fence output as acquireToken for subsequent
