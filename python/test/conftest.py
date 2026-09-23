@@ -130,7 +130,8 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_warp_specialization.py', 'test_warp_specialize_tma_matmul_persistent'): {'ttgir'},
  ('unit/test_debuginfo.py', 'test_triton_debuginfo_on'): {'llir'}}
 
-_TILEIR_134_UNSUPPORTED = {('unit/instrumentation/test_gpuhello.py', 'test_op'): 'LLVM GPU instruction instrumentation is not connected to '
+_TILEIR_134_UNSUPPORTED = {('unit/language/test_core.py', 'test_gather'): 'ordinary tl.gather has no supported TileIR lowering; descriptor gather is a separate operation',
+ ('unit/instrumentation/test_gpuhello.py', 'test_op'): 'LLVM GPU instruction instrumentation is not connected to '
                                                        'the TileIR compiler pipeline',
  ('unit/language/test_compile_errors.py', 'test_min_dot_size'): 'TileIR accepts dot dimensions below the NVIDIA '
                                                                 'diagnostic minimum',

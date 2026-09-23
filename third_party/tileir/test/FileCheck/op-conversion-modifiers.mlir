@@ -395,18 +395,6 @@ module {
 }
 
 // -----
-// NATIVE-LABEL: entry @gather_4_4_8_4_0_f32_i64_computed
-// NATIVE: %[[GATHER_VALUES:.*]] = addf
-// NATIVE: %[[GATHER_BITS:.*]] = bitcast %[[GATHER_VALUES]] : tile<4x4xf32> -> tile<4x4xi32>
-// NATIVE: extract %[[GATHER_BITS]]
-// NATIVE: loop iter_values
-// NATIVE: cmpi equal
-// NATIVE: exti {{.*}} unsigned : tile<i32> -> tile<i64>
-// NATIVE: cmpi equal {{.*}} : tile<8x4xi64> -> tile<8x4xi1>
-// NATIVE: extract %[[GATHER_BITS]]
-// NATIVE: select {{.*}} : tile<8x4xi1>, tile<8x4xi32>
-// NATIVE: continue
-// NATIVE: bitcast {{.*}} : tile<8x4xi32> -> tile<8x4xf32>
 module {
   tt.func public @gather_4_4_8_4_0_f32_i64_computed(%input: !tt.ptr<f32>, %indices: !tt.ptr<i64>, %output: !tt.ptr<f32>) {
     %source_offsets = tt.make_range {start = 0 : i32, end = 16 : i32} : tensor<16xi32>
@@ -422,6 +410,7 @@ module {
     %loaded = tt.reshape %flat_loaded : tensor<16xf32> -> tensor<4x4xf32>
     %idx = tt.reshape %flat_indices : tensor<32xi64> -> tensor<8x4xi64>
     %values = arith.addf %loaded, %loaded : tensor<4x4xf32>
+    // expected-error@+1 {{ordinary tl.gather is not supported by the TileIR backend}}
     %result = tt.gather %values[%idx] {axis = 0 : i32} : (tensor<4x4xf32>, tensor<8x4xi64>) -> tensor<8x4xf32>
     %flat_result = tt.reshape %result : tensor<8x4xf32> -> tensor<32xf32>
     tt.store %output_ptrs, %flat_result : tensor<32x!tt.ptr<f32>>
@@ -429,14 +418,8 @@ module {
   }
 }
 
+
 // -----
-// NATIVE-LABEL: entry @gather_512_4_0_i64_i8_raw
-// NATIVE: exti {{.*}} unsigned : tile<4xi8> -> tile<4xi32>
-// NATIVE: loop iter_values
-// NATIVE: cmpi equal {{.*}} : tile<4xi32> -> tile<4xi1>
-// NATIVE: select {{.*}} : tile<4xi1>, tile<4xi64>
-// NATIVE-NOT: trunci
-// NATIVE: return
 module {
   tt.func public @gather_512_4_0_i64_i8_raw(%input: !tt.ptr<i64>, %indices: !tt.ptr<i8>, %output: !tt.ptr<i64>) {
     %source_offsets = tt.make_range {start = 0 : i32, end = 512 : i32} : tensor<512xi32>
@@ -452,6 +435,7 @@ module {
     %loaded = tt.reshape %flat_loaded : tensor<512xi64> -> tensor<512xi64>
     %idx = tt.reshape %flat_indices : tensor<4xi8> -> tensor<4xi8>
     %values = tt.reshape %loaded : tensor<512xi64> -> tensor<512xi64>
+    // expected-error@+1 {{ordinary tl.gather is not supported by the TileIR backend}}
     %result = tt.gather %values[%idx] {axis = 0 : i32} : (tensor<512xi64>, tensor<4xi8>) -> tensor<4xi64>
     %flat_result = tt.reshape %result : tensor<4xi64> -> tensor<4xi64>
     tt.store %output_ptrs, %flat_result : tensor<4x!tt.ptr<i64>>
@@ -459,14 +443,8 @@ module {
   }
 }
 
+
 // -----
-// NATIVE-LABEL: entry @gather_4_1_4_8_1_f16_i32_raw
-// NATIVE: bitcast {{.*}} : tile<4x1xf16> -> tile<4x1xi16>
-// NATIVE: broadcast {{.*}} : tile<4x1xi16> -> tile<4x8xi16>
-// NATIVE: bitcast {{.*}} : tile<4x8xi16> -> tile<4x8xf16>
-// NATIVE-NOT: loop
-// NATIVE-NOT: cmpi
-// NATIVE: return
 module {
   tt.func public @gather_4_1_4_8_1_f16_i32_raw(%input: !tt.ptr<f16>, %indices: !tt.ptr<i32>, %output: !tt.ptr<f16>) {
     %source_offsets = tt.make_range {start = 0 : i32, end = 4 : i32} : tensor<4xi32>
@@ -482,12 +460,14 @@ module {
     %loaded = tt.reshape %flat_loaded : tensor<4xf16> -> tensor<4x1xf16>
     %idx = tt.reshape %flat_indices : tensor<32xi32> -> tensor<4x8xi32>
     %values = tt.reshape %loaded : tensor<4x1xf16> -> tensor<4x1xf16>
+    // expected-error@+1 {{ordinary tl.gather is not supported by the TileIR backend}}
     %result = tt.gather %values[%idx] {axis = 1 : i32} : (tensor<4x1xf16>, tensor<4x8xi32>) -> tensor<4x8xf16>
     %flat_result = tt.reshape %result : tensor<4x8xf16> -> tensor<32xf16>
     tt.store %output_ptrs, %flat_result : tensor<32x!tt.ptr<f16>>
     tt.return
   }
 }
+
 
 // -----
 
