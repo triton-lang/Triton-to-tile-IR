@@ -71,32 +71,6 @@ class TileIREnvConf:
         tileiras = TileIREnvConf.get_tileiras_path()
         return os.path.dirname(os.path.dirname(tileiras))
 
-    @staticmethod
-    def get_device():
-        return "cpu" if os.environ.get("ENABLE_CPU_TORCH", False) else "cuda"
-
-    @staticmethod
-    def in_nightly_pipeline():
-        return os.getenv("RUN_FULL_TEST", "0") == "1"
-
-    @staticmethod
-    def in_release_pipeline():
-        """Check if running in release pipeline environment"""
-        return os.getenv("NVT_RUN_RELEASE_PIPELINE", "0") == "1"
-
-    @staticmethod
-    def get_sm_arch():
-        import torch
-
-        device = "cuda"
-        cc = torch.cuda.get_device_capability(device)
-        sm_arch = f"sm{cc[0]}{cc[1]}"
-        return sm_arch
-
-    @staticmethod
-    def enable_tma_offset_assert_check():
-        return os.getenv("NVT_TMA_OFFSET_CHECK", "0") == "1"
-
 
 @contextmanager
 def set_env_var(var_name, new_value):

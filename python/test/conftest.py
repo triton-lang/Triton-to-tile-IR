@@ -93,7 +93,8 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_warp_specialization.py', 'test_warp_specialize_tma_matmul_persistent'): {'ttgir'},
  ('unit/test_debuginfo.py', 'test_triton_debuginfo_on'): {'llir'}}
 
-_TILEIR_134_UNSUPPORTED = {
+_TILEIR_134_UNSUPPORTED = {('unit/language/test_core.py', 'test_gather'): 'ordinary tl.gather has no supported TileIR lowering; descriptor gather is a separate operation',
+
  ('unit/language/test_compile_only.py', 'test_compile_only_packed_arith_chains'): 'handwritten TTGIR is not a TileIR input stage',
  ('unit/language/test_compile_only.py', 'test_compile_only_ws_cluster_barrier_shared_memory'): 'handwritten TTGIR is not a TileIR input stage',
  ('unit/language/test_compile_only.py', 'test_compile_only_expect_zero'): 'this combined compile-only test explicitly requests unsupported FPSan instrumentation; ordinary expect_zero has separate runtime coverage',
@@ -276,6 +277,24 @@ def pytest_collection_modifyitems(items):
         key = _tileir_test_key(item)
         params = item.callspec.params if hasattr(item, "callspec") else {}
         reason = _TILEIR_134_UNSUPPORTED.get(key)
+        if key == ("unit/language/test_matmul.py", "test_blocked_scale_mxfp"):
+            # The upstream fixture pads scales to 128, but this kernel loads
+            # whole BLOCK_M/BLOCK_N scale groups without a mask. Both PTX and
+            # TileIR memcheck report OOB for undersized scale allocations.
+            # Bind this exclusion to the exact faulty kernel; upstream edits
+            # must rerun instead of inheriting a stale skip.
+            import hashlib
+            import inspect
+            kernel = item.module.block_scale_mxfp_matmul.fn
+            if hashlib.sha256(inspect.getsource(kernel).encode()).hexdigest() == (
+                    "012a1e21604e9b71e28ec043f9f35f8557949fe65eadb42836198072c559f744"):
+                for size_key, block_key in (("M", "BLOCK_M"), ("N", "BLOCK_N")):
+                    size, block = params[size_key], params[block_key]
+                    if ((size + block - 1) // block * (block // 128)
+                            > (size + 127) // 128):
+                        item.add_marker(pytest.mark.skip(
+                            reason="upstream test has an unmasked out-of-bounds scale load (also reproduced with PTX)"))
+                        break
         if (key == ('unit/language/test_compile_only.py', 'test_maxnreg_instrumentation_mode')
                 and params.get('instrumentation_mode') in {'consan', 'gsan', 'iisan', 'fpsan', 'gsan,consan'}):
             reason = 'compiler instrumentation modes are not connected to the TileIR pipeline'

@@ -60,6 +60,9 @@ def pytest_collection_modifyitems(items):
         elif (item.path.resolve() == root / "test_matmul.py"
               and item.originalname == "test_k_ragged_mxfp8_act_scale_swizzling"):
             reason = "CTK 13.4 TileIR: native scaled MMA does not support mixed MXFP8 and BF16 operands"
+        elif (item.path.resolve() == root / "test_topk.py"
+              and item.originalname == "test_topk_fpsan_masks_padded_experts"):
+            reason = "CTK 13.4 TileIR: FPSan compiler instrumentation is unsupported; ordinary top-k remains supported"
         elif (item.path.resolve() == root / "test_tensor.py"
               and item.originalname == "test_fpsan_embed_unembed_torch_tensor"):
             reason = "CTK 13.4 TileIR: FPSan embedding uses the unsupported Gluon frontend"

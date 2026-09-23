@@ -46,7 +46,6 @@ Potential future solutions (to be discussed):
 - Small GEMM performance is currently poor (will be addressed in a future CUDA release).
 - Kernels using legacy tensor-of-pointer load/store APIs exhibit poor performance (will be addressed in a future CUDA release).
 - `num_warps` is accepted for compatibility but does not directly control TileIR warp allocation. For XXXNorm kernels with large reduction dimensions, performance may degrade due to register spilling (support may be added in a future CUDA release).
-- Ordinary `tl.gather` on large tiles can be significantly slower than the NVIDIA PTX backend. Benchmark performance-sensitive uses.
 
 ## Performance Tuning Tips
 - New hints for CUDA Tile IR backend: `occupancy` (critical). The occupancy hint accepts an integer N from 1 to 32, indicating that the programmer expects N active thread blocks to run simultaneously per SM. This hint is 1 by default and is worth tuning for many compute-intensive kernels.
@@ -79,11 +78,12 @@ CUDA Tile IR accepts `num_warps` for compatibility, while `occupancy` controls t
 
 ### Supported operations and features
 - Tensor descriptor (TMA) gather/scatter, atomic reductions, and load padding.
-- Ordinary `tt.gather`, `tt.unsplat`, and `tt.map_elementwise`.
+- `tt.unsplat` and `tt.map_elementwise`.
 - Matching FP4/FP8 scaled matrix multiplication, including single-scale FP8.
 - Native atomic load/store with acquire/release ordering, bf16 atomic add, more native math and conversions, and source-line information.
 
 ### Operations and features not yet supported or fully supported:
+- Ordinary `tl.gather` / `tt.gather` (tensor descriptor gather/scatter is supported)
 - `tt.elementwise_inline_asm` (general inline PTX; only selected forms have native lowerings)
 - `cf.cond_br` paths that cannot be converted to supported structured control flow
 - `cuda_tile.reduce` (only pure operations allowed)
