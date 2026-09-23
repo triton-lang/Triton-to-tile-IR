@@ -3143,128 +3143,6 @@ class ConvertClampFOp : public OpConversionPattern<triton::ClampFOp> {
   }
 };
 
-class ConvertGatherOp : public OpConversionPattern<triton::GatherOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(triton::GatherOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto sourceType = dyn_cast<cuda_tile::TileType>(adaptor.getSrc().getType());
-    auto indexType =
-        dyn_cast<cuda_tile::TileType>(adaptor.getIndices().getType());
-    auto resultType = dyn_cast_or_null<cuda_tile::TileType>(
-        getTypeConverter()->convertType(op.getResult().getType()));
-    if (!sourceType || !indexType || !resultType)
-      return rewriter.notifyMatchFailure(op, "expected converted tile types");
-
-    unsigned axis = op.getAxis();
-    int64_t axisSize = sourceType.getShape()[axis];
-    if (axisSize <= 0 || axisSize > std::numeric_limits<int32_t>::max())
-      return rewriter.notifyMatchFailure(op,
-                                         "gather axis exceeds i32 indexing");
-
-    Location loc = op.getLoc();
-    Value source = adaptor.getSrc();
-    auto originalResultType = resultType;
-    // Transport floating-point values as bits so source bitwise expressions
-    // cannot become floating-point arithmetic while moving gathered slices.
-    // Public bitcast has no i4 tile operand, so retain sub-byte values directly.
-    if (auto floatType = dyn_cast<FloatType>(sourceType.getElementType());
-        floatType && floatType.getWidth() >= 8) {
-      Type bitsType = rewriter.getIntegerType(floatType.getWidth());
-      sourceType = cuda_tile::TileType::get(sourceType.getShape(), bitsType);
-      resultType = cuda_tile::TileType::get(resultType.getShape(), bitsType);
-      source = cuda_tile::BitcastOp::create(rewriter, loc, sourceType, source);
-    }
-    auto restoreResult = [&](Value value) -> Value {
-      if (resultType != originalResultType)
-        return cuda_tile::BitcastOp::create(rewriter, loc, originalResultType,
-                                             value);
-      return value;
-    };
-    auto scalarI32 = cuda_tile::TileType::get({}, rewriter.getI32Type());
-    auto constant = [&](int64_t value) -> Value {
-      return cuda_tile::ConstantOp::create(
-          rewriter, loc, scalarI32,
-          DenseIntElementsAttr::get(scalarI32, {static_cast<int32_t>(value)}));
-    };
-    Value zero = constant(0);
-    SmallVector<int64_t> sliceShape(sourceType.getShape());
-    sliceShape[axis] = 1;
-    auto sliceType =
-        cuda_tile::TileType::get(sliceShape, sourceType.getElementType());
-    SmallVector<Value> offsets(sourceType.getRank(), zero);
-    Value first = cuda_tile::ExtractOp::create(rewriter, loc, sliceType,
-                                               source, offsets);
-    Value initial =
-        cuda_tile::BroadcastOp::create(rewriter, loc, resultType, first);
-    if (axisSize == 1) {
-      rewriter.replaceOp(op, restoreResult(initial));
-      return success();
-    }
-
-    // Compare indices at their original width, extending narrow types first.
-    // Narrowing the induction variable could wrap and select a later slice.
-    Value indices = adaptor.getIndices();
-    unsigned indexWidth =
-        cast<IntegerType>(indexType.getElementType()).getWidth();
-    if (indexWidth < 32) {
-      indexType =
-          cuda_tile::TileType::get(indexType.getShape(), rewriter.getI32Type());
-      indices = cuda_tile::ExtIOp::create(rewriter, loc, indexType, indices,
-                                          cuda_tile::Signedness::Unsigned);
-    }
-    auto indexScalarType =
-        cuda_tile::TileType::get({}, indexType.getElementType());
-    auto indexSingletonType =
-        cuda_tile::TileType::get(SmallVector<int64_t>(sourceType.getRank(), 1),
-                                 indexType.getElementType());
-    Value one = constant(1), end = constant(axisSize);
-
-    // Select whole slices of the computed source tile. No source reload,
-    // arithmetic on source values, or floating-point reduction is required.
-    // A loop keeps the generated code bounded when the gather axis is large.
-    auto loop = cuda_tile::LoopOp::create(rewriter, loc, TypeRange{resultType},
-                                          ValueRange{one, initial});
-    Block *body = rewriter.createBlock(
-        &loop.getRegion(), {}, TypeRange{scalarI32, resultType}, {loc, loc});
-    Value k = body->getArgument(0), accumulated = body->getArgument(1);
-    Value stop = cuda_tile::CmpIOp::create(
-        rewriter, loc, cuda_tile::ComparisonPredicate::EQUAL, k, end,
-        cuda_tile::Signedness::Unsigned);
-    auto ifOp = cuda_tile::IfOp::create(rewriter, loc, TypeRange{}, stop);
-    rewriter.createBlock(&ifOp.getThenRegion());
-    cuda_tile::BreakOp::create(rewriter, loc, ValueRange{accumulated});
-    rewriter.createBlock(&ifOp.getElseRegion());
-    cuda_tile::YieldOp::create(rewriter, loc, ValueRange{});
-    rewriter.setInsertionPointAfter(ifOp);
-
-    Value indexK = k;
-    if (indexWidth > 32)
-      indexK = cuda_tile::ExtIOp::create(rewriter, loc, indexScalarType, k,
-                                         cuda_tile::Signedness::Unsigned);
-    Value shapedK =
-        cuda_tile::ReshapeOp::create(rewriter, loc, indexSingletonType, indexK);
-    Value broadcastK =
-        cuda_tile::BroadcastOp::create(rewriter, loc, indexType, shapedK);
-    Value selected = cuda_tile::CmpIOp::create(
-        rewriter, loc, cuda_tile::ComparisonPredicate::EQUAL, indices,
-        broadcastK, cuda_tile::Signedness::Unsigned);
-    offsets[axis] = k;
-    Value slice = cuda_tile::ExtractOp::create(rewriter, loc, sliceType,
-                                               source, offsets);
-    Value values =
-        cuda_tile::BroadcastOp::create(rewriter, loc, resultType, slice);
-    Value updated = cuda_tile::SelectOp::create(rewriter, loc, selected, values,
-                                                accumulated);
-    Value next = cuda_tile::AddIOp::create(rewriter, loc, k, one);
-    cuda_tile::ContinueOp::create(rewriter, loc, ValueRange{next, updated});
-    rewriter.setInsertionPointAfter(loop);
-    rewriter.replaceOp(op, restoreResult(loop.getResult(0)));
-    return success();
-  }
-};
-
 class ConvertSplitOp : public OpConversionPattern<triton::SplitOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -3694,7 +3572,6 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
     ConvertExternElementwiseOp,
     ConvertForOp,
     ConvertFpToFpOp,
-    ConvertGatherOp,
     ConvertGetNumProgramsOp,
     ConvertGetProgramIdOp,
     ConvertJoinOp,
@@ -4128,6 +4005,14 @@ public:
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     ModuleOp mod_buildin = getOperation();
+    // Ordinary tensor gather has no supported TileIR lowering.
+    // Descriptor gather uses its separate native view conversion.
+    auto gather = mod_buildin.walk([](triton::GatherOp op) {
+      op.emitError("ordinary tl.gather is not supported by the TileIR backend");
+      return WalkResult::interrupt();
+    });
+    if (gather.wasInterrupted())
+      return signalPassFailure();
     CudaTileTypeConverter typeConverter;
 
     // Insert cuda tile module directly.
