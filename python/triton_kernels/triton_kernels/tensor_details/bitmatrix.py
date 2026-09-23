@@ -125,12 +125,13 @@ def make_bitmatrix_metadata(nonzero_indx, bitmatrix):
     # - computes col_partial_sums; necessary for computing `{row,col}_sorted_indx`
     MEMSET_BLOCK = 1024
     memset_grid = (cdiv(n_indx * 2, MEMSET_BLOCK) + n_cols + 1, )
+    launch_options = {"occupancy": 8} if triton.runtime.driver.active.get_current_target().backend == "tileir" else {}
     _bitmatrix_metadata_compute_stage1[memset_grid](
         combined_indx, n_indx * 2, -1, MEMSET_BLOCK, col_sum,  #
         col_offs, col_sum.shape[0], col_partial_sum,  # inputs
         col_partial_sum.shape[0], col_partial_sum.stride(0), col_partial_sum.stride(1),  # outputs
         BLOCK_M=512, BLOCK_N=512,  # tunable parameters
-        occupancy=8,
+        **launch_options,
     )
     # this kernel computes valid entries of `{row,col}_sorted_indx`
     # using `col_offs` and `col_partial_sums`
