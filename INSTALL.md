@@ -1,6 +1,6 @@
-# Installing triton_tileir alongside upstream Triton
+# Installing triton_tileir
 
-This guide explains how to install triton_tileir (Triton with TileIR backend) side-by-side with
+This guide explains how to install triton_tileir (Triton with TileIR backend) Or furtherly install side-by-side with
 upstream OpenAI Triton (oait) and switch between them using environment variables.
 
 ## Prerequisites
