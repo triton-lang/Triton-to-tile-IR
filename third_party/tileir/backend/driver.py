@@ -89,6 +89,16 @@ FLOAT_PACK_FUNCTION = {
 }
 
 
+
+def _launcher_scalar_cpp(ty):
+    # The launcher parses Python floats as double and packs them to the kernel
+    # parameter width with FLOAT_PACK_FUNCTION. Keep this independent of the
+    # AOT C type mapping in ty_to_cpp, which passes 16-bit floats as raw bits.
+    if ty in FLOAT_STORAGE_TYPE:
+        return "double"
+    return ty_to_cpp(ty)
+
+
 _BASE_ARGS_FORMAT = "iiiKKpOOOO"
 _BASE_ARGS_FORMAT_LEN = len(_BASE_ARGS_FORMAT)
 
@@ -110,7 +120,7 @@ def make_launcher(constants, signature):
             return "PyObject*"
         if ty in ("constexpr", "nvTmaDesc"):
             return "PyObject*"
-        return ty_to_cpp(ty)
+        return _launcher_scalar_cpp(ty)
 
     def format_of(ty):
         if isinstance(ty, tuple):
@@ -131,7 +141,7 @@ def make_launcher(constants, signature):
             "uint16_t": "H",
             "uint32_t": "I",
             "uint64_t": "K",
-        }[ty_to_cpp(ty)]
+        }[_launcher_scalar_cpp(ty)]
 
     args_format = "".join([format_of(ty) for ty in signature.values()])
     format = _BASE_ARGS_FORMAT + args_format
