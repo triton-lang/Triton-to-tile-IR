@@ -78,13 +78,18 @@ if [[ -f "${OPS_TD_PATH}" ]]; then
     -e 's/build($_builder, $_state, std::nullopt)/build($_builder, $_state, ::mlir::ValueRange{})/g'
 fi
 
-# Public LLVM represents symbol naming through SymbolOpInterface. The release
-# source also names a SymbolName trait not available in this LLVM revision.
-for symbol_td in "${OPS_TD_PATH}" "${REPO_ROOT}/include/cuda_tile/Dialect/CudaTile/IR/TestingOps.td"; do
-  patch_in_place "${symbol_td}" \
-    -e 's/Symbol, SymbolName/Symbol/g' \
-    -e 's/\bSymbolName\b/Symbol/g'
-done
+# Older public LLVM represents symbol naming through SymbolOpInterface only.
+# The release source also names a SymbolName trait; keep it when the pinned
+# LLVM defines that trait, otherwise fold it into Symbol without duplicates.
+if ! grep -q '^def SymbolName ' "${LLVM_SYSPATH}/include/mlir/IR/SymbolInterfaces.td"; then
+  for symbol_td in "${REPO_ROOT}"/include/cuda_tile/Dialect/CudaTile/IR/*.td; do
+    grep -q '\bSymbolName\b' "${symbol_td}" || continue
+    patch_in_place "${symbol_td}" \
+      -e 's/Symbol, SymbolName/Symbol/g' \
+      -e '/\bSymbol\b/ s/SymbolName, //g' \
+      -e 's/\bSymbolName\b/Symbol/g'
+  done
+fi
 
 # 3) Patch CudaTile.cpp for LLVM api changes:
 # replace 'ValueRange(), /*attributes=*/std::nullopt)' with
