@@ -139,7 +139,7 @@ class TileIROptions:
         # The earlier key stays accepted by the JIT; it is not a second tuning dimension.
         object.__setattr__(self, "occupancy", None)
         if self.clc:
-            raise NotImplementedError("TileIR does not support CLC scheduling with CUDA 13.4")
+            raise NotImplementedError("TileIR does not support CLC scheduling with CUDA 13.5")
         if self.instrumentation_mode:
             raise NotImplementedError("TileIR does not support compiler instrumentation modes")
         if self.fpsan_homomorphic_casts:
@@ -287,7 +287,7 @@ class TileIRBackend(BaseBackend):
         # Scoped CUDA_HOME for the tileiras subprocess only (NOT global os.environ):
         # tileiras locates ptxas + libnvvm + libdevice under $CUDA_HOME for SM100 codegen.
         # Derived from the bundled tileiras location (tileir_cuda) so a stale system
-        # CUDA can never shadow the matching 13.4 toolchain.
+        # CUDA can never shadow the matching 13.5 toolchain.
         tileiras_env = {**os.environ, "CUDA_HOME": TileIREnvConf.get_tileir_cuda_home()}
 
         # Use temp file for cubin output to avoid race conditions.

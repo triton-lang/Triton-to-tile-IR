@@ -337,13 +337,6 @@ def pytest_collection_modifyitems(items):
         if (key == ('unit/language/test_frontend.py', 'test_for_loop_operand_extension')
                 and getattr(params.get('jit'), '__module__', '').startswith('triton.experimental.gluon')):
             reason = 'Gluon is a separate frontend unsupported by the TileIR backend'
-        if (key == ("unit/language/test_core.py", "test_tensor_atomic_cas_multicta_result")
-                and set(params) == {"size"}
-                and type(params["size"]) is int and params["size"] in {4, 16, 128}):
-            item.add_marker(pytest.mark.xfail(
-                strict=True, raises=AssertionError,
-                reason="CTK 13.5 TileIR: multi-CTA atomic CAS returns incorrect values for these small tensor shapes",
-            ))
         if key == ("unit/language/test_core.py", "test_scaled_dot"):
             known_params = (
                 set(params) == {"M", "N", "K", "col_a", "col_b", "rhs_scale",

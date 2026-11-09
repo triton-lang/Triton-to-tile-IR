@@ -1,5 +1,5 @@
 # Triton CUDA Tile IR Backend
-This incubator repo adds the CUDA Tile IR backend to Triton. Users can enable the CUDA Tile IR backend by setting the environment variable `ENABLE_TILE=1`. This branch uses Triton 3.9, public CUDA Tile IR v13.4.0 sources, and matching 13.4.59 compiler and runtime components. Set `ENABLE_TILE=1` before importing Triton.
+This incubator repo adds the CUDA Tile IR backend to Triton. Users can enable the CUDA Tile IR backend by setting the environment variable `ENABLE_TILE=1`. This branch uses Triton 3.9, public CUDA Tile IR v13.5.0 sources, and matching 13.5.37 compiler and runtime components. Set `ENABLE_TILE=1` before importing Triton.
 
 ## Getting Started
 
@@ -40,7 +40,7 @@ Potential future solutions (to be discussed):
 - Abstract global memory locks into an independent API.
 - Apply conservative rules to append memory tokens during Triton-to-CUDA Tile conversion, which avoids script changes but may introduce performance loss.
 
-**CUDA 13.4 status:** The memory-model discussion above is retained as design context. The conservative token-insertion approach is now implemented for supported Triton memory operations, including aliasing accesses and descriptor reductions. Direct user control of memory tokens remains a separate API concern, and ordering within one tile block does not replace the cross-block synchronization required by splitK/streamK and lock-based protocols.
+**CUDA 13.5 status:** The memory-model discussion above is retained as design context. The conservative token-insertion approach is now implemented for supported Triton memory operations, including aliasing accesses and descriptor reductions. Direct user control of memory tokens remains a separate API concern, and ordering within one tile block does not replace the cross-block synchronization required by splitK/streamK and lock-based protocols.
 
 ## Known performance issues
 - Small GEMM performance is currently poor (will be addressed in a future CUDA release).
@@ -67,10 +67,10 @@ Potential future solutions (to be discussed):
 2. Rewrite assume pass: converts assume ops in TTIR/LLVM IR to CUDA Tile IR assume ops. Implemented in `rewriteAssume.*`
 3. Python code: mostly aligned with `third_party/nvidia/backend`.
 
-## CUDA Tile IR in CUDA 13.4
+## CUDA Tile IR in CUDA 13.5
 This release is validated on Blackwell (B200). Availability of individual operations also depends on the GPU architecture.
 ### Dependency
-Triton CUDA Tile IR backend depends on `bin/tileiras`, `bin/ptxas`, and `nvvm/lib64/libnvvm.so` from CUDA 13.4 (13.4.59).
+Triton CUDA Tile IR backend depends on `bin/tileiras`, `bin/ptxas`, and `nvvm/lib64/libnvvm.so` from CUDA 13.5 (13.5.37).
 Triton CUDA Tile IR backend also depends on the [CUDA Tile IR dialect](https://github.com/NVIDIA/cuda-tile).
 
 ### Auto Tune
@@ -93,7 +93,6 @@ CUDA Tile IR accepts `num_warps` for compatibility, while `max_occupancy` contro
 - TMA reduce (floating-point min/max are not supported; floating-point add and supported integer reductions are available)
 - `math.erf`
 - `atomic_cas` (bf16 and fp16 not supported)
-- Multi-CTA `atomic_cas` return values for some small tensor shapes in CUDA 13.4
 - `atomic_poll`
 - TMA read-modify-write operations that return the previous values (descriptor reductions do not return values)
 - TMA offsets must satisfy the contiguous dimension's 16-byte alignment requirement
