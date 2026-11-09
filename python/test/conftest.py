@@ -52,6 +52,8 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_compile_only.py', 'test_compile_only_k_loop'): {'ptx', 'ttgir'},
  ('unit/language/test_compile_only.py', 'test_compile_only_sm100'): {'ptx'},
  ('unit/language/test_compile_only.py', 'test_compile_only_sort_keeps_comparisons_boolean'): {'ttgir'},
+ ('unit/language/test_conversions.py', 'test_typeconvert_fp16_bf16_direct'): {'ptx'},
+ ('unit/language/test_conversions.py', 'test_typeconvert_rounding_edges'): {'llir', 'ptx'},
  ('unit/language/test_core.py', 'test_assume'): {'llir', 'ttgir'},
  ('unit/language/test_core.py', 'test_atomic_cas'): {'ptx'},
  ('unit/language/test_core.py', 'test_atomic_rmw'): {'ptx'},
@@ -231,6 +233,9 @@ _TILEIR_134_UNSUPPORTED = {('unit/language/test_core.py', 'test_gather'): 'ordin
  ('unit/tools/test_aot.py', 'test_compile_link_autotune_matmul'): 'TileIR has no AOT compile/link templates or '
                                                                   'profile-scratch metadata for this CUDA C '
                                                                   'launcher interface',
+ ('unit/tools/test_aot.py', 'test_compile_link_scalar_float'): 'TileIR has no AOT compile/link templates or '
+                                                               'profile-scratch metadata for this CUDA C '
+                                                               'launcher interface',
  ('unit/tools/test_aot.py', 'test_compile_link_matmul'): 'TileIR has no AOT compile/link templates or '
                                                          'profile-scratch metadata for this CUDA C launcher '
                                                          'interface',
