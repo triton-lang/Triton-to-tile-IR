@@ -33,7 +33,7 @@ def with_allocator():
 
 @pytest.fixture(autouse=True)
 def _tileir_line_info_tools(request, monkeypatch):
-    if _tileir_test_key(request.node)[0] != "unit/language/test_line_info.py" or not _tileir_134_profile():
+    if _tileir_test_key(request.node)[0] != "unit/language/test_line_info.py" or not _tileir_135_profile():
         return
     import os
     from pathlib import Path
@@ -113,13 +113,13 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_warp_specialization.py', 'test_warp_specialize_tma_matmul_persistent'): {'ttgir'},
  ('unit/test_debuginfo.py', 'test_triton_debuginfo_on'): {'llir'}}
 
-_TILEIR_134_UNSUPPORTED = {('unit/language/test_core.py', 'test_gather'): 'ordinary tl.gather has no supported TileIR lowering; descriptor gather is a separate operation',
+_TILEIR_135_UNSUPPORTED = {('unit/language/test_core.py', 'test_gather'): 'ordinary tl.gather has no supported TileIR lowering; descriptor gather is a separate operation',
 
  ('unit/language/test_compile_only.py', 'test_compile_only_packed_arith_chains'): 'handwritten TTGIR is not a TileIR input stage',
  ('unit/language/test_compile_only.py', 'test_compile_only_ws_cluster_barrier_shared_memory'): 'handwritten TTGIR is not a TileIR input stage',
  ('unit/language/test_compile_only.py', 'test_compile_only_expect_zero'): 'this combined compile-only test explicitly requests unsupported FPSan instrumentation; ordinary expect_zero has separate runtime coverage',
- ('unit/language/test_libdevice.py', 'test_clz'): 'libdevice integer count-leading-zero has no public13.4 native lowering',
- ('unit/language/test_libdevice.py', 'test_popc'): 'libdevice integer population-count has no public13.4 native lowering',
+ ('unit/language/test_libdevice.py', 'test_clz'): 'libdevice integer count-leading-zero has no public13.5 native lowering',
+ ('unit/language/test_libdevice.py', 'test_popc'): 'libdevice integer population-count has no public13.5 native lowering',
  ('unit/language/test_matmul.py', 'test_dot_scaled_unscaled_lhs_fp4_rhs'): 'native scaled MMA does not support mixed BF16 and FP4 operands',
  ('unit/test_debug_dump.py', 'test_version_info'): 'this version-info test requires an LLVM IR dump; TileIR emits TileIR and cubin',
  ('unit/tools/test_aot.py', 'test_aot_target_parsing_with_explicit_target'): 'TileIR has no AOT compile/link templates for this CUDA C launcher interface',
@@ -131,11 +131,11 @@ _TILEIR_134_UNSUPPORTED = {('unit/language/test_core.py', 'test_gather'): 'ordin
  ('unit/cuda/test_libdevice_cuda.py', 'test_fpsan_libdevice_div_rn_equivalence'): 'FPSan instrumentation is not connected to the TileIR pipeline',
  ('unit/cuda/test_libdevice_cuda.py', 'test_fpsan_libdevice_fma_equivalence'): 'FPSan instrumentation is not connected to the TileIR pipeline',
  ('unit/cuda/test_libdevice_cuda.py', 'test_fpsan_distinguishes_approximate_libdevice'): 'FPSan instrumentation is not connected to the TileIR pipeline',
- ('unit/language/test_core.py', 'test_atomic_poll'): 'atomic_poll has no public13.4 lowering; native timeout/poll support is unavailable',
- ('unit/language/test_core.py', 'test_atomic_poll_tensor_results'): 'atomic_poll has no public13.4 lowering; native timeout/poll support is unavailable',
- ('unit/language/test_core.py', 'test_atomic_poll_no_timeout_uses_no_shared_memory'): 'atomic_poll has no public13.4 lowering; native timeout/poll support is unavailable',
- ('unit/language/test_core.py', 'test_atomic_poll_timeout'): 'atomic_poll has no public13.4 lowering; native timeout/poll support is unavailable',
- ('unit/language/test_core.py', 'test_atomic_poll_waits_for_remote_cta'): 'atomic_poll has no public13.4 lowering; native timeout/poll support is unavailable',
+ ('unit/language/test_core.py', 'test_atomic_poll'): 'atomic_poll has no public13.5 lowering; native timeout/poll support is unavailable',
+ ('unit/language/test_core.py', 'test_atomic_poll_tensor_results'): 'atomic_poll has no public13.5 lowering; native timeout/poll support is unavailable',
+ ('unit/language/test_core.py', 'test_atomic_poll_no_timeout_uses_no_shared_memory'): 'atomic_poll has no public13.5 lowering; native timeout/poll support is unavailable',
+ ('unit/language/test_core.py', 'test_atomic_poll_timeout'): 'atomic_poll has no public13.5 lowering; native timeout/poll support is unavailable',
+ ('unit/language/test_core.py', 'test_atomic_poll_waits_for_remote_cta'): 'atomic_poll has no public13.5 lowering; native timeout/poll support is unavailable',
  ('unit/instrumentation/test_gpuhello.py', 'test_op'): 'LLVM GPU instruction instrumentation is not connected to '
                                                        'the TileIR compiler pipeline',
 
@@ -149,7 +149,7 @@ _TILEIR_134_UNSUPPORTED = {('unit/language/test_core.py', 'test_gather'): 'ordin
  ('unit/language/test_compile_only.py', 'test_fp8_compiles_for_multiple_architectures_cuda'): 'this test includes '
                                                                                               'SM80 FP8 '
                                                                                               'compilation, which '
-                                                                                              'the public13.4 '
+                                                                                              'the public13.5 '
                                                                                               'tileiras rejects',
  ('unit/language/test_core.py', 'test_enable_reflect_ftz'): 'enable_reflect_ftz is not a TileIR option; FTZ uses '
                                                             'the backend option',
@@ -172,7 +172,7 @@ _TILEIR_134_UNSUPPORTED = {('unit/language/test_core.py', 'test_gather'): 'ordin
                                                                             'forms are recognized',
  ('unit/language/test_core.py', 'test_inline_asm_with_pointers'): 'generic inline assembly is unavailable; only '
                                                                   'native GDC helper forms are recognized',
- ('unit/language/test_core.py', 'test_math_erf_op'): 'math.erf has no public13.4 native lowering; existing '
+ ('unit/language/test_core.py', 'test_math_erf_op'): 'math.erf has no public13.5 native lowering; existing '
                                                      'libdevice rewrite is a separate path',
  ('unit/language/test_core.py', 'test_maxnreg'): 'maxnreg is compatibility-only; this backend controls occupancy',
  ('unit/language/test_core.py', 'test_nested_if_else_return'): 'control-flow lifting emits index_castui and '
@@ -281,9 +281,9 @@ for _path, _names in {
     ),
 }.items():
     for _name in _names:
-        _TILEIR_134_UNSUPPORTED[(_path, _name)] = 'CLC scheduling has no public13.4 TileIR lowering'
+        _TILEIR_135_UNSUPPORTED[(_path, _name)] = 'CLC scheduling has no public13.5 TileIR lowering'
 
-def _tileir_134_profile():
+def _tileir_135_profile():
     import os
     from pathlib import Path
     import re
@@ -292,7 +292,7 @@ def _tileir_134_profile():
         return False
     compatibility = Path(__file__).resolve().parents[2] / ".triton-tileir-compat.toml"
     return compatibility.is_file() and re.search(
-        r'^tileir_version\s*=\s*"13\.4\.[0-9]+"', compatibility.read_text(), re.MULTILINE
+        r'^tileir_version\s*=\s*"13\.5\.[0-9]+"', compatibility.read_text(), re.MULTILINE
     ) is not None
 
 
@@ -307,12 +307,12 @@ def _tileir_test_key(item):
 
 
 def pytest_collection_modifyitems(items):
-    if not _tileir_134_profile():
+    if not _tileir_135_profile():
         return
     for item in items:
         key = _tileir_test_key(item)
         params = item.callspec.params if hasattr(item, "callspec") else {}
-        reason = _TILEIR_134_UNSUPPORTED.get(key)
+        reason = _TILEIR_135_UNSUPPORTED.get(key)
         if key == ("unit/language/test_matmul.py", "test_blocked_scale_mxfp"):
             # The upstream fixture pads scales to 128, but this kernel loads
             # whole BLOCK_M/BLOCK_N scale groups without a mask. Both PTX and
@@ -342,7 +342,7 @@ def pytest_collection_modifyitems(items):
                 and type(params["size"]) is int and params["size"] in {4, 16, 128}):
             item.add_marker(pytest.mark.xfail(
                 strict=True, raises=AssertionError,
-                reason="CTK 13.4 TileIR: multi-CTA atomic CAS returns incorrect values for these small tensor shapes",
+                reason="CTK 13.5 TileIR: multi-CTA atomic CAS returns incorrect values for these small tensor shapes",
             ))
         if key == ("unit/language/test_core.py", "test_scaled_dot"):
             known_params = (
@@ -374,11 +374,11 @@ def pytest_collection_modifyitems(items):
               and params.get("dtype_str") == "float16" and params.get("op") == "cas"):
             reason = "public atomic CAS accepts 32/64-bit elements, not 16-bit elements"
         elif key == ("unit/language/test_core.py", "test_override_arch") and params.get("arch") == "sm70":
-            reason = "public13.4 tileiras does not accept SM70 as a compilation target"
+            reason = "public13.5 tileiras does not accept SM70 as a compilation target"
         elif (key == ("unit/language/test_conversions.py", "test_typeconvert_downcast")
               and params.get("src_dtype") == "float32" and params.get("dst_dtype") == "float8e5"
               and params.get("rounding") == "rtz"):
-            reason = "public13.4 f32-to-f8E5M2 conversion supports nearest-even, not round-toward-zero"
+            reason = "public13.5 f32-to-f8E5M2 conversion supports nearest-even, not round-toward-zero"
         elif key == ("unit/test_link.py", "test_link_extern_libs") and params.get("use_libdevice"):
             reason = "libdevice.sqrt maps to a native TileIR op; this test requires an LLVM linker callback"
         elif (key == ("unit/language/test_tensor_descriptor.py", "test_tensor_descriptor_reduce")
@@ -390,7 +390,7 @@ def pytest_collection_modifyitems(items):
               and params.get("num_ctas") in {1, 2}
               and (params.get("M_BLOCK"), params.get("N_BLOCK"))
               in {(2, 16), (8, 16), (8, 32), (8, 128), (512, 32), (1, 1024)}):
-            reason = "public13.4 descriptor atomic view reductions support floating-point add, not min/max"
+            reason = "public13.5 descriptor atomic view reductions support floating-point add, not min/max"
         elif key == ("unit/language/test_matmul.py", "test_mxfp8_mxfp4_matmul"):
             if params["A_DATA_TYPE"] != params["B_DATA_TYPE"] or not (
                 params["WITH_A_SCALE"] and params["WITH_B_SCALE"]
@@ -415,15 +415,15 @@ def pytest_collection_modifyitems(items):
         if line_reason:
             # Re-execute these compile-only diagnostics so new compiler support is visible.
             item.add_marker(pytest.mark.xfail(strict=True, raises=AssertionError,
-                                               reason=f"CTK 13.4 TileIR: {line_reason}"))
+                                               reason=f"CTK 13.5 TileIR: {line_reason}"))
         if reason:
-            item.add_marker(pytest.mark.xfail(run=False, strict=True, reason=f"CTK 13.4 TileIR: {reason}"))
+            item.add_marker(pytest.mark.xfail(run=False, strict=True, reason=f"CTK 13.5 TileIR: {reason}"))
 
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     outcome = yield
-    if not _tileir_134_profile() or call.when != "call":
+    if not _tileir_135_profile() or call.when != "call":
         return
     key = _tileir_test_key(item)
     params = item.callspec.params if hasattr(item, "callspec") else {}
@@ -442,7 +442,7 @@ def pytest_runtest_makereport(item, call):
         if frames:
             report = outcome.get_result()
             if report.failed:
-                reason = 'CTK 13.4 TileIR traps on overflow but does not return assertion text through the CUDA driver stderr callback'
+                reason = 'CTK 13.5 TileIR traps on overflow but does not return assertion text through the CUDA driver stderr callback'
                 report.outcome = 'skipped'
                 report.wasxfail = reason
                 report.longrepr = (str(item.path), item.location[1], reason)
@@ -468,7 +468,7 @@ def pytest_runtest_makereport(item, call):
         except Exception:
             report.longrepr = item.repr_failure(pytest.ExceptionInfo.from_current())
             return
-    reason = f"CTK 13.4 TileIR does not expose the {stage} inspection stage"
+    reason = f"CTK 13.5 TileIR does not expose the {stage} inspection stage"
     report.outcome = "skipped"
     report.wasxfail = reason
     report.longrepr = (str(item.path), item.location[1], reason)

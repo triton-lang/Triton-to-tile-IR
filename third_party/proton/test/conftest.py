@@ -41,7 +41,7 @@ def fresh_knobs():
     finally:
         reset_function()
 
-def _tileir_134_profile():
+def _tileir_135_profile():
     import os
     import re
     from pathlib import Path
@@ -50,13 +50,13 @@ def _tileir_134_profile():
         return False
     compatibility = Path(__file__).resolve().parents[3] / ".triton-tileir-compat.toml"
     return compatibility.is_file() and re.search(
-        r'^tileir_version\s*=\s*"13\.4\.[0-9]+"', compatibility.read_text(), re.MULTILINE
+        r'^tileir_version\s*=\s*"13\.5\.[0-9]+"', compatibility.read_text(), re.MULTILINE
     ) is not None
 
 
 def pytest_collection_modifyitems(items):
     from pathlib import Path
-    if not _tileir_134_profile():
+    if not _tileir_135_profile():
         return
     root = Path(__file__).resolve().parent
     # These complete tests require instrumentation. CUPTI-only API/profile
@@ -101,5 +101,5 @@ def pytest_collection_modifyitems(items):
         if unsupported:
             item.add_marker(pytest.mark.xfail(
                 run=False, strict=True,
-                reason="CTK 13.4 TileIR: Proton instrumentation is explicitly unsupported by profiler.start",
+                reason="CTK 13.5 TileIR: Proton instrumentation is explicitly unsupported by profiler.start",
             ))

@@ -24,7 +24,7 @@ else()
   # Keep the cloned cuda-tile repo under the build tree (avoid polluting source tree).
   set(CUDA_TILE_SOURCE_DIR ${CMAKE_CURRENT_BINARY_DIR}/tileir_src)
 
-  set(CUDA_TILE_COMMIT 7e8e2e68fa219716103824c01f7303367cf7df8d)
+  set(CUDA_TILE_COMMIT 25732e3308abd43c0aa9007a7b3b012598bbcf15)
   if(NOT EXISTS ${CUDA_TILE_SOURCE_DIR}/.git)
     execute_process(
       COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}
@@ -43,12 +43,12 @@ else()
     )
     # Track specific tag to avoid breaking change conflict with patch
     execute_process(
-      COMMAND bash -c "git fetch --tags && git checkout v13.4.0"
+      COMMAND bash -c "git fetch --tags && git checkout v13.5.0"
       WORKING_DIRECTORY ${CUDA_TILE_SOURCE_DIR}
       RESULT_VARIABLE CUDA_TILE_CHECKOUT_RESULT
     )
     if(NOT CUDA_TILE_CHECKOUT_RESULT EQUAL 0)
-      message(FATAL_ERROR "Failed to checkout v13.4.0 in ${CUDA_TILE_SOURCE_DIR}")
+      message(FATAL_ERROR "Failed to checkout v13.5.0 in ${CUDA_TILE_SOURCE_DIR}")
     endif()
     if(NOT CUDA_TILE_GIT_CLONE_RESULT EQUAL 0)
       message(FATAL_ERROR "Failed to clone https://github.com/NVIDIA/cuda-tile into ${CUDA_TILE_SOURCE_DIR}")
