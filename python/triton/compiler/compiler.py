@@ -504,7 +504,12 @@ class CompiledKernel:
             if self.metadata.shared > max_shared:
                 raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
         else:
+            # Backends may reserve additional shared memory at launch time.
+            shared = getattr(self._run, "shared", self.metadata.shared)
             # not enough shared memory to run the kernel
+            max_shared = max_shared_mem(device, runtime_driver)
+            if shared > max_shared:
+                raise_(OutOfResources(shared, max_shared, "shared memory"))
             if hasattr(self.metadata, "tmem_size") and self.metadata.tmem_size is not None:
                 # Use blackwell max tmem size for now, this should be moved in device properties
                 max_tmem_size = 512  # tmem size in number of columns
@@ -512,15 +517,12 @@ class CompiledKernel:
                     max_tmem_size = 576
                 if self.metadata.tmem_size > max_tmem_size:
                     raise_(OutOfResources(self.metadata.tmem_size, max_tmem_size, "tensor memory"))
-            max_shared = max_shared_mem(device, runtime_driver)
-            if self.metadata.shared > max_shared:
-                raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
             if knobs.runtime.kernel_load_start_hook is not None:
                 knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
             # TODO: n_regs, n_spills should be metadata generated when calling `ptxas`
             self.module, self.function, self.n_regs, self.n_spills, self.n_max_threads = runtime_driver.utils.load_binary(
-                self.name, self.kernel, self.metadata.shared, device)
-            warp_size = runtime_driver.get_current_target().warp_size
+                self.name, self.kernel, shared, device)
+            warp_size = self.metadata.warp_size
             if self.metadata.num_warps * warp_size > self.n_max_threads:
                 raise_(OutOfResources(self.metadata.num_warps * warp_size, self.n_max_threads, "threads"))
         self._module_pid = os.getpid()
