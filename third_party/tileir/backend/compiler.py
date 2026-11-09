@@ -195,8 +195,12 @@ class TileIRBackend(BaseBackend):
             if capability >= 90:
                 args["deprecated_fp8_dot_operand_dtypes"] = ("fp8e4b15",)
 
-        if "enable_fp_fusion" not in args:
+        if args.get("enable_fp_fusion") is None:
             args["enable_fp_fusion"] = os.getenv("TRITON_DEFAULT_FP_FUSION", "1") == "1"
+        # Honor the upstream override that disables implicit fusion even when
+        # a kernel requests it; explicit fused operations are unaffected.
+        if knobs.language.force_disable_fp_fusion:
+            args["enable_fp_fusion"] = False
 
         if "max_num_imprecise_acc_default" not in args:
             args["max_num_imprecise_acc_default"] = 2**30 if capability == 90 else 0
