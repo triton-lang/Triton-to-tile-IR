@@ -437,9 +437,9 @@ CudaTileTypeConverter::CudaTileTypeConverter() {
   addConversion([](cuda_tile::StridedViewType type) { return type; });
   addConversion([](cuda_tile::TokenType type) { return type; });
   addConversion(
-      [](FloatType type) { return cuda_tile::TileType::get({}, type); });
+      [](FloatType type) { return cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, type); });
   addConversion(
-      [](IntegerType type) { return cuda_tile::TileType::get({}, type); });
+      [](IntegerType type) { return cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, type); });
   // Convert a pointer type into a zero-ranked tensor type, where the element
   // type is a CUDA pointer type.
   addConversion([this](triton::PointerType ptrType) -> Type {
@@ -447,7 +447,7 @@ CudaTileTypeConverter::CudaTileTypeConverter() {
     // Do not crash on cuda tile verifier if we get a ptr<tensor>.
     if (isa<RankedTensorType>(pointeeType))
       return Type();
-    return cuda_tile::TileType::get({},
+    return cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{},
                                     cuda_tile::PointerType::get(pointeeType));
   });
   // Convert a ranked tensor type to a CUDA tensor type. There are two

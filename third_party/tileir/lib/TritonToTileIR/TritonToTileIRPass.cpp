@@ -823,7 +823,7 @@ public:
       for (size_t i = 0; i < originalIndices.size(); i++) {
         Value indicesWithBlockSize = originalIndices[i];
         cuda_tile::TileType constType =
-            cuda_tile::TileType::get({}, rewriter.getI32Type());
+            cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, rewriter.getI32Type());
         auto tileSizeAttr = DenseIntElementsAttr::get(constType, {tileSizes[i]});
         Value tileSizeOp = cuda_tile::ConstantOp::create(rewriter,
             op.getLoc(), constType, tileSizeAttr);
@@ -927,7 +927,7 @@ public:
         Value idxWithBlockSize = originalIndices[i];
         auto tileSize = tileSizes[i];
         cuda_tile::TileType constType =
-            cuda_tile::TileType::get({}, rewriter.getI32Type());
+            cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, rewriter.getI32Type());
         auto tileSizeAttr = DenseIntElementsAttr::get(constType, {tileSize});
         Value tileSizeOp = cuda_tile::ConstantOp::create(rewriter,
             op.getLoc(), constType, tileSizeAttr);
@@ -1638,9 +1638,9 @@ LogicalResult convertAggregationOp(Operation *op,
     BlockArgument preBlkOperand = oldBody->getArgument(i + half);
     locs.push_back(preBlkOperand.getLoc());
     currentOperandsTy.push_back(
-        cuda_tile::TileType::get({}, currentBlkOperand.getType()));
+        cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, currentBlkOperand.getType()));
     currentOperandsTy.push_back(
-        cuda_tile::TileType::get({}, preBlkOperand.getType()));
+        cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, preBlkOperand.getType()));
   }
   body->addArguments(currentOperandsTy, locs);
 
@@ -1935,7 +1935,7 @@ public:
 
     // Apply a signature conversion on the for loop body.
     cuda_tile::TileType indVarTy =
-        cuda_tile::TileType::get({}, indVar.getType());
+        cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, indVar.getType());
     TypeConverter::SignatureConversion sigConversion(
         origBody->getNumArguments());
     sigConversion.addInputs(0, indVarTy);
@@ -3171,7 +3171,7 @@ class ConvertSplitOp : public OpConversionPattern<triton::SplitOp> {
     Value src = adaptor.getSrc();
     cuda_tile::TileType srcType = cast<cuda_tile::TileType>(src.getType());
     cuda_tile::TileType constType =
-        cuda_tile::TileType::get({}, rewriter.getI32Type());
+        cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, rewriter.getI32Type());
     auto c0Attr = DenseIntElementsAttr::get(constType, {0});
     Value c0 = cuda_tile::ConstantOp::create(rewriter, loc, constType, c0Attr);
     auto c1Attr = DenseIntElementsAttr::get(constType, {1});

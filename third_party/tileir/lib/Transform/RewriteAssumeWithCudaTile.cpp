@@ -176,7 +176,7 @@ LogicalResult RewriteArithAssumeImpl(LLVM::AssumeOp assumeOp,
 
     Type pointeeType = ttPtrType.getPointeeType();
     Type cudaTilePtrType =
-        cuda_tile::TileType::get({}, cuda_tile::PointerType::get(pointeeType));
+        cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, cuda_tile::PointerType::get(pointeeType));
     auto divByAttr = cuda_tile::DivByAttr::get(rewriter.getContext(), divisor,
                                                std::nullopt, std::nullopt);
 
@@ -221,7 +221,7 @@ LogicalResult RewriteArithAssumeImpl(LLVM::AssumeOp assumeOp,
                                                std::nullopt, std::nullopt);
 
     Type cudaTileIntType =
-        cuda_tile::TileType::get({}, intOrPtrToInt.getType());
+        cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, intOrPtrToInt.getType());
     auto int2tileIntOp = UnrealizedConversionCastOp::create(
         rewriter, loc, cudaTileIntType, intOrPtrToInt);
     auto cudaTileInt = int2tileIntOp.getResult(0);
