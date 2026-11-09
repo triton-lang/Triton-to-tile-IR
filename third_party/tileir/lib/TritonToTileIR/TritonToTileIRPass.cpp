@@ -355,7 +355,8 @@ void createTargetOp(ConversionPatternRewriter &rewriter, triton::FuncOp op,
             ctx, DictionaryAttr::get(ctx, {hintEntry}));
     newOp = cuda_tile::EntryOp::create(
         rewriter, op.getLoc(), StringAttr::get(ctx, newKernelName),
-        newFunctionType, op.getArgAttrsAttr(), op.getResAttrsAttr(), optHint);
+        newFunctionType, /*sym_visibility=*/StringAttr(), op.getArgAttrsAttr(),
+        op.getResAttrsAttr(), optHint);
   } else {
     static_assert(std::is_same_v<TargetOp, void>, "unsupported TargetOp type");
   }
@@ -618,7 +619,7 @@ public:
     auto reType = op.getResult().getType();
     auto reTileShape = reType.getShape(); // [BLOCK_X, BLOCK_Y]
     auto reElemTy = reType.getElementType();
-    auto reTileTy = cuda_tile::TileType::get(ctx, reTileShape, reElemTy);
+    auto reTileTy = cuda_tile::TileType::get(reTileShape, reElemTy);
 
     // 5. Create GatherScatterView
     // sparse_dim = 0 (gather along first dimension, which is the row dimension)
@@ -881,7 +882,7 @@ public:
 
     auto tileShape = op.getResult().getType().getShape();
     auto elemTy = op.getResult().getType().getElementType();
-    auto viewTileTy = cuda_tile::TileType::get(ctx, viewShapeVec, elemTy);
+    auto viewTileTy = cuda_tile::TileType::get(viewShapeVec, elemTy);
 
     auto memOrder = cuda_tile::MemoryOrderingSemanticsAttr::get(
         ctx, cuda_tile::MemoryOrderingSemantics::WEAK);
@@ -892,7 +893,7 @@ public:
 
     Value loaded = roundHostDescriptorRead(rewriter, op, LoadViewOp.getTile());
     if (viewShapeVec.size() != tileShape.size()) {
-      auto tileTy = cuda_tile::TileType::get(ctx, tileShape, elemTy);
+      auto tileTy = cuda_tile::TileType::get(tileShape, elemTy);
       auto reshapeOp =
           cuda_tile::ReshapeOp::create(rewriter, op.getLoc(), tileTy, loaded);
       rewriter.replaceOp(op, reshapeOp.getResult());
@@ -1107,7 +1108,10 @@ public:
         rewriter, loc, cuda_tile::TokenType::get(ctx),
         cuda_tile::MemoryOrderingSemantics::RELAXED,
         cuda_tile::MemoryScope::DEVICE, writeView, indices, mode, src,
-        /*token=*/nullptr);
+        /*token=*/nullptr,
+        // No static in-bounds guarantee: every coordinate stays bounds-checked,
+        // matching the dialect default for an omitted inbounds clause.
+        ::llvm::SmallVector<bool>(indices.size(), false));
     rewriter.eraseOp(op);
     return success();
   }
@@ -2471,7 +2475,7 @@ Value wrapIntoScalarTile(OpBuilder &rewriter, Value v, unsigned attachAlignment,
     v = arith::ExtSIOp::create(rewriter, loc, rewriter.getI64Type(), v)
             .getResult();
   auto elemType = v.getType();
-  auto scalarTileTy = cuda_tile::TileType::get(ctx, /*shape=*/{}, elemType);
+  auto scalarTileTy = cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, elemType);
   auto scalarTile =
       UnrealizedConversionCastOp::create(rewriter, loc, scalarTileTy, v)
           .getResult(0);
@@ -2589,7 +2593,7 @@ public:
         cuda_tile::TensorViewType::get(ctx, elemTy, globalShape, globalStride);
 
     auto tileIRPtrType = cuda_tile::PointerType::get(elemTy);
-    auto ptrTypeWrapper = cuda_tile::TileType::get(ctx, {}, tileIRPtrType);
+    auto ptrTypeWrapper = cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, tileIRPtrType);
     auto ptrOp = UnrealizedConversionCastOp::create(rewriter, loc, ptrTypeWrapper,
                                                          op.getBase())
                      .getResult(0);
@@ -4170,7 +4174,7 @@ static LogicalResult convertTmaDescriptorOps(Operation *op,
 
           auto tileIRPtrType = cuda_tile::PointerType::get(pointeeType);
           auto ptrTypeWrapper =
-              cuda_tile::TileType::get(ctx, {}, tileIRPtrType);
+              cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, tileIRPtrType);
           auto ptrOp = UnrealizedConversionCastOp::create(
                            rewriter, loc, ptrTypeWrapper, ptrArg)
                            .getResult(0);
