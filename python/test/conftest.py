@@ -142,6 +142,10 @@ _TILEIR_134_UNSUPPORTED = {('unit/language/test_core.py', 'test_gather'): 'ordin
 
  ('unit/language/test_compile_errors.py', 'test_min_dot_size'): 'TileIR accepts dot dimensions below the NVIDIA '
                                                                 'diagnostic minimum',
+ ('unit/language/test_compile_only.py', 'test_max_occupancy_compile_only'): 'max_occupancy is a compilation hint on '
+                                                                            'this backend; the test reads the '
+                                                                            'shared-memory metadata of the PTX '
+                                                                            'launch-time reservation',
  ('unit/language/test_compile_only.py', 'test_fp8_compiles_for_multiple_architectures_cuda'): 'this test includes '
                                                                                               'SM80 FP8 '
                                                                                               'compilation, which '
@@ -234,6 +238,13 @@ _TILEIR_134_UNSUPPORTED = {('unit/language/test_core.py', 'test_gather'): 'ordin
                                                             'pipeline; TTIR override is tested separately',
  ('unit/runtime/test_cache.py', 'test_jit_noinline'): 'the public backend inlines device helpers; this test '
                                                       'requires a distinct noinline device function in TTIR',
+ ('unit/runtime/test_launch.py', 'test_max_occupancy_launch'): 'max_occupancy is a compilation hint on this '
+                                                               'backend; the launch-time shared-memory '
+                                                               'reservation of the PTX launcher is not '
+                                                               'implemented',
+ ('unit/runtime/test_launch.py', 'test_max_occupancy_preserves_required_shared_memory'): 'Gluon is a separate frontend '
+                                                                                         'unsupported by the TileIR '
+                                                                                         'backend',
  ('unit/test_perf_warning.py', 'test_remark_vectorization'): 'this test requires the NVIDIA vectorization pass '
                                                              'remark text; TileIR uses a different compiler '
                                                              'pipeline',
