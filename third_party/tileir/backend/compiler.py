@@ -6,7 +6,7 @@ from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton.backends.tileir.conf import TileIREnvConf
 from triton._C.libtriton import ir, passes, tileir
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import functools
 from typing import Any, Dict, Tuple, Optional
 from types import ModuleType
@@ -66,8 +66,12 @@ class TileIROptions:
     num_stages: int = 3
     # tileir use opt_level to control the optimization level, see <tileir_link>
     opt_level: int = 3
-    # tileir use occupancy to control the register usage, see <tileir_link>
-    occupancy: int = 1
+    # Public tuning key. TileIR reads it as a compilation hint for the expected
+    # number of active thread blocks per SM, not as a launch-time limit on
+    # resident CTAs. None keeps the default hint of 1.
+    max_occupancy: Optional[int] = None
+    # Earlier spelling of max_occupancy; normalized into it below.
+    occupancy: Optional[int] = field(default=None, repr=False)
     # tileir use enable_fp_fusion to control the fma fusion, see <tileir_link>
     enable_fp_fusion: bool = True
     tileir_tileiras_path: str = TileIREnvConf.get_tileiras_path()
@@ -97,7 +101,7 @@ class TileIROptions:
     extern_libs: dict = None
     ir_override: Optional[str] = None
     # maxnreg in tileir backend is just for compatibility with other backend
-    # tileir use occupancy to control the register usage.
+    # tileir use the max_occupancy compilation hint for the register budget.
     maxnreg: Optional[int] = None
     launch_pdl: bool = False
     launch_cooperative_grid: bool = False
@@ -117,7 +121,23 @@ class TileIROptions:
     def enable_approx(self):
         return TileIREnvConf.enable_approx()
 
+    @property
+    def occupancy_hint(self):
+        # The CUDA Tile IR entry hint accepts values in [1, 32]. The requested
+        # value stays in the metadata; only the emitted hint is bounded.
+        return min(self.max_occupancy or 1, 32)
+
     def __post_init__(self):
+        for name in ("max_occupancy", "occupancy"):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not int or value <= 0):
+                raise ValueError(f"{name} must be a positive integer or None")
+        if self.occupancy is not None:
+            if self.max_occupancy is not None and self.max_occupancy != self.occupancy:
+                raise ValueError("occupancy and max_occupancy must agree when both are provided")
+            object.__setattr__(self, "max_occupancy", self.occupancy)
+        # The earlier key stays accepted by the JIT; it is not a second tuning dimension.
+        object.__setattr__(self, "occupancy", None)
         if self.clc:
             raise NotImplementedError("TileIR does not support CLC scheduling with CUDA 13.4")
         if self.instrumentation_mode:
@@ -359,7 +379,7 @@ class TileIRBackend(BaseBackend):
             capability,
             metadata["num_ctas"],
             metadata["num_warps"],
-            opt.occupancy,
+            opt.occupancy_hint,
             metadata["num_stages"],
         )
         passes.common.add_inliner(pm)

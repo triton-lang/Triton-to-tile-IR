@@ -19,8 +19,8 @@ before comparing timings.
 
 | Workload | Starting points |
 |----------|-----------------|
-| GEMM and attention | Try `occupancy` 1–2, then vary tile dimensions and `num_stages`; compare tensor descriptors with pointer loads where applicable. |
-| Elementwise, reductions and normalization | Start with `occupancy=4`, then compare 1, 2 and 8; tune tile dimensions against register pressure. |
+| GEMM and attention | Try `max_occupancy` 1–2, then vary tile dimensions and `num_stages`; compare tensor descriptors with pointer loads where applicable. |
+| Elementwise, reductions and normalization | Start with `max_occupancy=4`, then compare 1, 2 and 8; tune tile dimensions against register pressure. |
 | Wide GEMMs | Compare `num_ctas=1` and 2 with larger tiles, subject to the GPU and operation's support. |
 
 These are search heuristics, not guaranteed best configurations. Tensor descriptors
@@ -37,7 +37,7 @@ import triton
 configs = [
     triton.Config(
         {"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32,
-         "occupancy": occupancy},
+         "max_occupancy": occupancy},
         num_warps=4, num_stages=stages, num_ctas=1,
     )
     for stages in (3, 4, 6)
@@ -65,9 +65,11 @@ before accepting a performance change.
 
 ### New Hints & Configs for CUDA Tile IR Backend
 
-#### **occupancy** (Critical)
+#### **max_occupancy** (Critical)
 
-The **occupancy** hint accepts an integer N from 1 to 32, indicating that the programmer expects N active thread blocks to run simultaneously per SM. This hint is 1 by default and is worth tuning for many SIMT compute-intensive kernels.
+The **max_occupancy** hint accepts an integer N from 1 to 32, indicating that the programmer expects N active thread blocks to run simultaneously per SM. This hint is 1 by default and is worth tuning for many SIMT compute-intensive kernels.
+
+On the CUDA Tile IR backend `max_occupancy` is a compilation hint. It does not reserve shared memory at launch and does not enforce a limit on the number of resident thread blocks, which is how the PTX backend implements the option of the same name. Leaving it unset keeps the default hint of 1; values above 32 are accepted and use the hint 32. The earlier spelling `occupancy` is still accepted and selects the same option and the same compilation cache entry; passing both with different values is an error.
 
 #### Numerical Precision Options (approx & ftz)
 
