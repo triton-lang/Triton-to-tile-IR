@@ -3641,6 +3641,61 @@ class ConvertPackedFp4UpcastInlineAsmToNativeOp
   }
 };
 
+// Match only the packed maximum of FP4 magnitude codes used by triton_kernels.
+// Each of the eight nibbles of the i32 input holds a 3-bit magnitude code in
+// its low bits. PTX reduces the two halfwords with max.u16x2 and then combines
+// them, so the result is the largest of the eight codes. The public dialect
+// has no packed halfword maximum; the native integer ops compute the same
+// value one nibble at a time.
+class ConvertPackedFp4MaxCodeInlineAsmToNativeOp
+    : public OpConversionPattern<triton::ElementwiseInlineAsmOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::ElementwiseInlineAsmOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!op.getPure() || op.getPackedElement() != 1 ||
+        op.getNumResults() != 1 || adaptor.getArgs().size() != 1 ||
+        normalizeNativeInlineAsm(op.getConstraints()) != "=r,r" ||
+        normalizeNativeInlineAsm(op.getAsmString()) !=
+            "{.reg .b32 a,b;and.b32 a,$1,0x00070007;"
+            "shr.u32 b,$1,4;and.b32 b,b,0x00070007;max.u16x2 a,a,b;"
+            "shr.u32 b,$1,8;and.b32 b,b,0x00070007;max.u16x2 a,a,b;"
+            "shr.u32 b,$1,12;and.b32 b,b,0x00070007;max.u16x2 a,a,b;"
+            "shr.u32 b,a,16;and.b32 a,a,7;max.u32 $0,a,b;}")
+      return failure();
+
+    auto resultTy = dyn_cast_or_null<cuda_tile::TileType>(
+        getTypeConverter()->convertType(op->getResult(0).getType()));
+    Value input = adaptor.getArgs()[0];
+    auto inputTy = dyn_cast<cuda_tile::TileType>(input.getType());
+    if (!resultTy || !resultTy.getElementType().isSignlessInteger(32) ||
+        !inputTy || inputTy != resultTy)
+      return failure();
+
+    auto loc = op.getLoc();
+    auto splat = [&](int32_t value) -> Value {
+      return cuda_tile::ConstantOp::create(
+          rewriter, loc, resultTy,
+          DenseIntElementsAttr::get(resultTy, {value}));
+    };
+    Value codeMask = splat(7);
+    Value maximum = cuda_tile::AndIOp::create(rewriter, loc, input, codeMask);
+    for (int32_t shift = 4; shift < 32; shift += 4) {
+      Value shiftOperands[] = {input, splat(shift)};
+      Value nibble =
+          cuda_tile::ShRIOp::create(rewriter, loc, resultTy, shiftOperands,
+                                    cuda_tile::Signedness::Unsigned);
+      Value code = cuda_tile::AndIOp::create(rewriter, loc, nibble, codeMask);
+      Value maxOperands[] = {maximum, code};
+      maximum = cuda_tile::MaxIOp::create(rewriter, loc, resultTy, maxOperands,
+                                          cuda_tile::Signedness::Unsigned);
+    }
+    rewriter.replaceOp(op, maximum);
+    return success();
+  }
+};
+
 static constexpr llvm::StringLiteral kGdcWaitHelperAsm =
     "griddepcontrol.wait; // dummy $0";
 static constexpr llvm::StringLiteral kGdcLaunchDependentsHelperAsm =
@@ -3832,6 +3887,8 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
 
   patterns.add<ConvertGdcInlineAsmToNativeOp>(typeConverter, context, /*benefit=*/2);
   patterns.add<ConvertPackedFp4UpcastInlineAsmToNativeOp>(
+      typeConverter, context, /*benefit=*/2);
+  patterns.add<ConvertPackedFp4MaxCodeInlineAsmToNativeOp>(
       typeConverter, context, /*benefit=*/2);
   patterns.add<ConvertPackedE8M0UpcastInlineAsmToNativeOp>(
       typeConverter, context, /*benefit=*/2);
