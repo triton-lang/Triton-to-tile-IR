@@ -3477,8 +3477,9 @@ static std::string normalizeNativeInlineAsm(StringRef text) {
   return result;
 }
 
-// These are the complete pure, pack=1 forms used by triton_kernels. Keep
-// unsupported asm illegal; the public dialect has no generic inline-asm op.
+// These are the complete pure, pack=1 forms used by triton_kernels, plus the
+// PTX full-range f32 division. Keep unsupported asm illegal; the public
+// dialect has no generic inline-asm op.
 class ConvertKnownNumericInlineAsmToNativeOp
     : public OpConversionPattern<triton::ElementwiseInlineAsmOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -3498,9 +3499,11 @@ class ConvertKnownNumericInlineAsmToNativeOp
     bool tf32 = text == "cvt.rn.tf32.f32 $0,$1;" && constraints == "=r,r";
     bool xorsign = text == "{max.NaN.xorsign.abs.f32 $0,$1,$2;}" &&
                    constraints == "=r,r,r";
-    if (!fp4 && !exp2 && !tf32 && !xorsign)
+    bool divFull =
+        text == "div.full.f32 $0,$1,$2;" && constraints == "=f,f,f";
+    if (!fp4 && !exp2 && !tf32 && !xorsign && !divFull)
       return failure();
-    if (adaptor.getArgs().size() != (fp4 || xorsign ? 2 : 1))
+    if (adaptor.getArgs().size() != (fp4 || xorsign || divFull ? 2 : 1))
       return failure();
 
     auto resultTy = dyn_cast_or_null<cuda_tile::TileType>(
@@ -3528,6 +3531,13 @@ class ConvertKnownNumericInlineAsmToNativeOp
       return success();
     }
     Value b = adaptor.getArgs()[1];
+    if (divFull) {
+      // The instruction names its own rounding and has no .ftz suffix, so
+      // neither the approx nor the FTZ pass option applies to it.
+      rewriter.replaceOpWithNewOp<cuda_tile::DivFOp>(
+          op, a, b, cuda_tile::RoundingMode::FULL);
+      return success();
+    }
     if (fp4) {
       int64_t count = resultTy.getNumElements();
       if (count <= 0 || count > std::numeric_limits<int64_t>::max() / 2)
