@@ -427,6 +427,21 @@ public:
   }
 };
 
+// tt.annotate returns its operand unchanged and only carries per-result
+// hints. convertAxisAttributes has already turned those hints into
+// cuda_tile.assume ops on the annotated value, so the op itself is an identity.
+class ConvertAnnotateOp : public OpConversionPattern<triton::AnnotateOp> {
+public:
+  using OpConversionPattern<triton::AnnotateOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::AnnotateOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, adaptor.getSrc());
+    return success();
+  }
+};
+
 class ConvertBitcastOp : public OpConversionPattern<triton::BitcastOp> {
 public:
   using OpConversionPattern<triton::BitcastOp>::OpConversionPattern;
@@ -3750,6 +3765,7 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
 
     // Triton operations
     ConvertGenericOp<triton::AddPtrOp, cuda_tile::OffsetOp, Signedness::None, IntegerUpCast::None>,
+    ConvertGenericOp<triton::ApproxDivFOp, cuda_tile::DivFOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<triton::IntToPtrOp, cuda_tile::IntToPtrOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<triton::MulhiUIOp, cuda_tile::MulhiIOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<triton::PtrToIntOp, cuda_tile::PtrToIntOp, Signedness::None, IntegerUpCast::None>,
@@ -3764,6 +3780,7 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
 
   patterns.add<
     ConvertAbsFOp,
+    ConvertAnnotateOp,
     ConvertAssertOp,
     ConvertAtomicCASOp,
     ConvertAtomicLoadOp,
