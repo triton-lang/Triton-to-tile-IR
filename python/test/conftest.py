@@ -58,6 +58,7 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_core.py', 'test_atomic_cas'): {'ptx'},
  ('unit/language/test_core.py', 'test_atomic_rmw'): {'ptx'},
  ('unit/language/test_core.py', 'test_atomic_load_store'): {'ptx'},
+ ('unit/language/test_core.py', 'test_atomic_load_store_coalesced'): {'ptx'},
  ('unit/language/test_core.py', 'test_cast'): {'ptx'},
  ('unit/language/test_core.py', 'test_umulhi'): {'ptx'},
  ('unit/language/test_core.py', 'test_umulhi_known_bits'): {'ptx'},
@@ -66,12 +67,16 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_core.py', 'test_dot_max_num_imprecise_acc'): {'ptx'},
  ('unit/language/test_core.py', 'test_dot_mulbroadcasted'): {'ttgir'},
  ('unit/language/test_core.py', 'test_enable_fp_fusion'): {'ptx'},
+ ('unit/language/test_core.py', 'test_fdiv_approx'): {'ptx'},
+ ('unit/language/test_core.py', 'test_fdiv_constant_in_range'): {'ttgir'},
+ ('unit/language/test_core.py', 'test_fdiv_constant_matches_div_full'): {'ttgir'},
  ('unit/language/test_core.py', 'test_load_cache_modifier'): {'ptx'},
  ('unit/language/test_core.py', 'test_no_rematerialization_op'): {'ttgir'},
  ('unit/language/test_core.py', 'test_num_ctas_pre_sm90'): {'ttgir'},
  ('unit/language/test_core.py', 'test_optimize_thread_locality'): {'ttgir'},
  ('unit/language/test_core.py', 'test_override_arch'): {'ttgir'},
  ('unit/language/test_core.py', 'test_permute'): {'ptx'},
+ ('unit/language/test_core.py', 'test_reduce64_integer'): {'ptx'},
  ('unit/language/test_core.py', 'test_poison_return'): {'llir'},
  ('unit/language/test_core.py', 'test_scaled_dot'): {'ptx'},
  ('unit/language/test_core.py', 'test_store_cache_modifier'): {'ptx'},
@@ -96,6 +101,7 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_pipeliner.py', 'test_tma_load_unaligned_stage_size'): {'ttgir'},
  ('unit/language/test_compile_only.py', 'test_maxnreg_instrumentation_mode'): {'ptx'},
  ('unit/cuda/test_libdevice_cuda.py', 'test_cuda_f32_to_e2m1x2_satfinite'): {'ptx'},
+ ('unit/test_knobs.py', 'test_nvidia_short_pointer_abi'): {'llir'},
  ('unit/test_knobs.py', 'test_nvidia_short_pointer_option'): {'llir'},
  ('unit/language/test_tensor_descriptor.py', 'test_host_tensor_descriptor_matmul'): {'ptx'},
  ('unit/language/test_tensor_descriptor.py', 'test_make_tensor_descriptor_loop_carried'): {'ptx'},
@@ -118,6 +124,8 @@ _TILEIR_134_UNSUPPORTED = {('unit/language/test_core.py', 'test_gather'): 'ordin
  ('unit/test_debug_dump.py', 'test_version_info'): 'this version-info test requires an LLVM IR dump; TileIR emits TileIR and cubin',
  ('unit/tools/test_aot.py', 'test_aot_target_parsing_with_explicit_target'): 'TileIR has no AOT compile/link templates for this CUDA C launcher interface',
  ('unit/tools/test_irsource.py', 'test_gluon_ir_file'): 'Gluon is a separate frontend unsupported by the TileIR backend',
+ ('unit/language/test_matmul.py', 'test_warp_specialized_matmul_auxiliary_output'): 'Consan instrumentation is not connected to the TileIR pipeline',
+ ('unit/language/test_tensor_descriptor.py', 'test_tensor_descriptor_alignment_iisan_dynamic'): 'compiler instrumentation modes are not connected to the TileIR pipeline',
  ('unit/cuda/test_denorm_cuda.py', 'test_linked_function_preserves_denorms'): 'custom LLVM external libraries are not linked by the TileIR pipeline',
  ('unit/cuda/test_libdevice_cuda.py', 'test_fpsan_libdevice_unary_equivalence'): 'FPSan instrumentation is not connected to the TileIR pipeline',
  ('unit/cuda/test_libdevice_cuda.py', 'test_fpsan_libdevice_div_rn_equivalence'): 'FPSan instrumentation is not connected to the TileIR pipeline',
@@ -315,6 +323,9 @@ def pytest_collection_modifyitems(items):
         if (key == ('unit/language/test_compile_only.py', 'test_maxnreg_instrumentation_mode')
                 and params.get('instrumentation_mode') in {'consan', 'gsan', 'iisan', 'fpsan', 'gsan,consan'}):
             reason = 'compiler instrumentation modes are not connected to the TileIR pipeline'
+        if (key == ('unit/language/test_frontend.py', 'test_for_loop_operand_extension')
+                and getattr(params.get('jit'), '__module__', '').startswith('triton.experimental.gluon')):
+            reason = 'Gluon is a separate frontend unsupported by the TileIR backend'
         if (key == ("unit/language/test_core.py", "test_tensor_atomic_cas_multicta_result")
                 and set(params) == {"size"}
                 and type(params["size"]) is int and params["size"] in {4, 16, 128}):
