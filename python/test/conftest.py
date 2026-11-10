@@ -95,6 +95,7 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_pipeliner.py', 'test_scatter_pipeline'): {'ttgir'},
  ('unit/language/test_pipeliner.py', 'test_tma_load_unaligned_stage_size'): {'ttgir'},
  ('unit/language/test_compile_only.py', 'test_maxnreg_instrumentation_mode'): {'ptx'},
+ ('unit/cuda/test_libdevice_cuda.py', 'test_cuda_f32_to_e2m1x2_satfinite'): {'ptx'},
  ('unit/test_knobs.py', 'test_nvidia_short_pointer_option'): {'llir'},
  ('unit/language/test_tensor_descriptor.py', 'test_host_tensor_descriptor_matmul'): {'ptx'},
  ('unit/language/test_tensor_descriptor.py', 'test_make_tensor_descriptor_loop_carried'): {'ptx'},
