@@ -1384,6 +1384,9 @@ public:
     auto floor = [&](Value a) -> Value {
       return cuda_tile::FloorOp::create(rewriter, loc, a);
     };
+    auto ceil = [&](Value a) -> Value {
+      return cuda_tile::CeilOp::create(rewriter, loc, a);
+    };
     auto sqrt = [&](Value a) -> Value {
       return cuda_tile::SqrtOp::create(rewriter, loc, a, rmNearestEven,
                                        /*flush_to_zero=*/nullptr);
@@ -1498,15 +1501,17 @@ public:
       return success();
     } else if (symbol == "__nv_rintf" || symbol == "__nv_rint" ||
                symbol == "__nv_nearbyintf" || symbol == "__nv_nearbyint") {
-      // Round-to-nearest-even (ties to even).
+      // Round-to-nearest-even (ties to even). The two candidates are the
+      // integer neighbours floor(x) and ceil(x). ceil(x) rather than
+      // floor(x) + 1 keeps the sign of zero: for x in (-1, 0) the upper
+      // neighbour is -0.0, as IEEE 754 requires for rint(-0.25) or rint(-0.5).
       Value x = adaptor.getSrcs()[0];
       auto xType = getTileType(x);
       Value f = floor(x);
-      Value d = subf(x, f); // d in [0, 1) for finite x
+      Value d = subf(x, f); // d in [0, 1] for finite x
 
       Value half = splatFloat(xType, 0.5);
-      Value one = splatFloat(xType, 1.0);
-      Value fPlusOne = addf(f, one);
+      Value upper = ceil(x);
 
       Value gtHalf = cmpf(cuda_tile::ComparisonPredicate::GREATER_THAN,
                           cuda_tile::ComparisonOrdering::ORDERED, d, half);
@@ -1521,10 +1526,10 @@ public:
                cuda_tile::ComparisonOrdering::ORDERED, halfF, halfFFloor);
 
       Value tie =
-          cuda_tile::SelectOp::create(rewriter, loc, fIsEven, f, fPlusOne);
+          cuda_tile::SelectOp::create(rewriter, loc, fIsEven, f, upper);
       Value resLt = cuda_tile::SelectOp::create(rewriter, loc, ltHalf, f, tie);
       Value res =
-          cuda_tile::SelectOp::create(rewriter, loc, gtHalf, fPlusOne, resLt);
+          cuda_tile::SelectOp::create(rewriter, loc, gtHalf, upper, resLt);
       rewriter.replaceOp(op, res);
       return success();
     } else if (symbol == "__nv_isnanf" || symbol == "__nv_isnand") {
