@@ -16,8 +16,8 @@ module {
   }
 }
 // CHECK-LABEL: entry @annotate_one_result
-// CHECK: %[[R0:.*]], %[[R1:.*]] = if
-// CHECK: %[[A:.*]] = assume div_by<16>, %[[R0]] : tile<i32>
+// CHECK: %[[R:[0-9]+]]:2 = if
+// CHECK: %[[A:.*]] = assume div_by<16>, %[[R]]#0 : tile<i32>
 // CHECK-NOT: assume
-// CHECK: addi %[[A]], %[[R1]]
+// CHECK: addi %[[A]], %[[R]]#1
 // CHECK-NOT: tt.annotate
