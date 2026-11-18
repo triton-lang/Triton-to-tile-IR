@@ -1,5 +1,5 @@
 # Triton CUDA Tile IR Backend
-This incubator repo adds the CUDA Tile IR backend to Triton. Users can enable the CUDA Tile IR backend by setting the environment variable `ENABLE_TILE=1`. This branch uses Triton 3.7, public CUDA Tile IR v13.4.0 sources, and matching 13.4.59 compiler and runtime components. Set `ENABLE_TILE=1` before importing Triton.
+This incubator repo adds the CUDA Tile IR backend to Triton. Users can enable the CUDA Tile IR backend by setting the environment variable `ENABLE_TILE=1`. This branch uses Triton 3.9, public CUDA Tile IR v13.4.0 sources, and matching 13.4.59 compiler and runtime components. Set `ENABLE_TILE=1` before importing Triton.
 
 ## Getting Started
 
@@ -48,7 +48,7 @@ Potential future solutions (to be discussed):
 - `num_warps` is accepted for compatibility but does not directly control TileIR warp allocation. For XXXNorm kernels with large reduction dimensions, performance may degrade due to register spilling (support may be added in a future CUDA release).
 
 ## Performance Tuning Tips
-- New hints for CUDA Tile IR backend: `occupancy` (critical). The occupancy hint accepts an integer N from 1 to 32, indicating that the programmer expects N active thread blocks to run simultaneously per SM. This hint is 1 by default and is worth tuning for many compute-intensive kernels.
+- New hints for CUDA Tile IR backend: `max_occupancy` (critical). The hint accepts an integer N from 1 to 32, indicating that the programmer expects N active thread blocks to run simultaneously per SM. This hint is 1 by default and is worth tuning for many compute-intensive kernels. The earlier spelling `occupancy` is still accepted and selects the same option.
 - Existing Triton hints: `num_ctas` (critical). Setting `num_ctas=2` is critical for dense dot-related workloads, as it enables 2CTA mode MMA on Blackwell architecture.
 - For guidance on performance tuning, please refer to the detailed tips provided [here](third_party/tileir/PerformanceTuningTips.md).
 
@@ -74,7 +74,7 @@ Triton CUDA Tile IR backend depends on `bin/tileiras`, `bin/ptxas`, and `nvvm/li
 Triton CUDA Tile IR backend also depends on the [CUDA Tile IR dialect](https://github.com/NVIDIA/cuda-tile).
 
 ### Auto Tune
-CUDA Tile IR accepts `num_warps` for compatibility, while `occupancy` controls the expected number of active thread blocks per SM. **In practice, we have found that `occupancy` and `num_ctas` are crucial to CUDA Tile IR performance.**
+CUDA Tile IR accepts `num_warps` for compatibility, while `max_occupancy` controls the expected number of active thread blocks per SM. **In practice, we have found that `max_occupancy` and `num_ctas` are crucial to CUDA Tile IR performance.**
 
 ### Supported operations and features
 - Tensor descriptor (TMA) gather/scatter, atomic reductions, and load padding.

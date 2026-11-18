@@ -2,9 +2,20 @@ import pytest
 
 
 def pytest_configure(config):
+    config.addinivalue_line("markers", "gsan_fine_granularity(reason): requires sub-16-byte GSan tracking")
     # If pytest-sugar is not active, enable instafail
     if not config.pluginmanager.hasplugin("sugar"):
         config.option.instafail = True
+
+
+# Exercise synchronization/ordering at the default granularity. Tests whose
+# behavior depends on cell size explicitly parametrize this fixture indirectly.
+@pytest.fixture(params=[4], ids=lambda granularity: f"granularity-{granularity}")
+def shadow_granularity(request):
+    marker = request.node.get_closest_marker("gsan_fine_granularity")
+    if request.param == 16 and marker is not None:
+        pytest.skip(marker.args[0])
+    return request.param
 
 
 @pytest.fixture
@@ -41,10 +52,13 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_compile_only.py', 'test_compile_only_k_loop'): {'ptx', 'ttgir'},
  ('unit/language/test_compile_only.py', 'test_compile_only_sm100'): {'ptx'},
  ('unit/language/test_compile_only.py', 'test_compile_only_sort_keeps_comparisons_boolean'): {'ttgir'},
+ ('unit/language/test_conversions.py', 'test_typeconvert_fp16_bf16_direct'): {'ptx'},
+ ('unit/language/test_conversions.py', 'test_typeconvert_rounding_edges'): {'llir', 'ptx'},
  ('unit/language/test_core.py', 'test_assume'): {'llir', 'ttgir'},
  ('unit/language/test_core.py', 'test_atomic_cas'): {'ptx'},
  ('unit/language/test_core.py', 'test_atomic_rmw'): {'ptx'},
  ('unit/language/test_core.py', 'test_atomic_load_store'): {'ptx'},
+ ('unit/language/test_core.py', 'test_atomic_load_store_coalesced'): {'ptx'},
  ('unit/language/test_core.py', 'test_cast'): {'ptx'},
  ('unit/language/test_core.py', 'test_umulhi'): {'ptx'},
  ('unit/language/test_core.py', 'test_umulhi_known_bits'): {'ptx'},
@@ -53,12 +67,16 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_core.py', 'test_dot_max_num_imprecise_acc'): {'ptx'},
  ('unit/language/test_core.py', 'test_dot_mulbroadcasted'): {'ttgir'},
  ('unit/language/test_core.py', 'test_enable_fp_fusion'): {'ptx'},
+ ('unit/language/test_core.py', 'test_fdiv_approx'): {'ptx'},
+ ('unit/language/test_core.py', 'test_fdiv_constant_in_range'): {'ttgir'},
+ ('unit/language/test_core.py', 'test_fdiv_constant_matches_div_full'): {'ttgir'},
  ('unit/language/test_core.py', 'test_load_cache_modifier'): {'ptx'},
  ('unit/language/test_core.py', 'test_no_rematerialization_op'): {'ttgir'},
  ('unit/language/test_core.py', 'test_num_ctas_pre_sm90'): {'ttgir'},
  ('unit/language/test_core.py', 'test_optimize_thread_locality'): {'ttgir'},
  ('unit/language/test_core.py', 'test_override_arch'): {'ttgir'},
  ('unit/language/test_core.py', 'test_permute'): {'ptx'},
+ ('unit/language/test_core.py', 'test_reduce64_integer'): {'ptx'},
  ('unit/language/test_core.py', 'test_poison_return'): {'llir'},
  ('unit/language/test_core.py', 'test_scaled_dot'): {'ptx'},
  ('unit/language/test_core.py', 'test_store_cache_modifier'): {'ptx'},
@@ -82,6 +100,8 @@ _TILEIR_STAGE_TESTS = {('unit/language/test_compile_only.py', 'test_compile_only
  ('unit/language/test_pipeliner.py', 'test_scatter_pipeline'): {'ttgir'},
  ('unit/language/test_pipeliner.py', 'test_tma_load_unaligned_stage_size'): {'ttgir'},
  ('unit/language/test_compile_only.py', 'test_maxnreg_instrumentation_mode'): {'ptx'},
+ ('unit/cuda/test_libdevice_cuda.py', 'test_cuda_f32_to_e2m1x2_satfinite'): {'ptx'},
+ ('unit/test_knobs.py', 'test_nvidia_short_pointer_abi'): {'llir'},
  ('unit/test_knobs.py', 'test_nvidia_short_pointer_option'): {'llir'},
  ('unit/language/test_tensor_descriptor.py', 'test_host_tensor_descriptor_matmul'): {'ptx'},
  ('unit/language/test_tensor_descriptor.py', 'test_make_tensor_descriptor_loop_carried'): {'ptx'},
@@ -104,6 +124,8 @@ _TILEIR_134_UNSUPPORTED = {('unit/language/test_core.py', 'test_gather'): 'ordin
  ('unit/test_debug_dump.py', 'test_version_info'): 'this version-info test requires an LLVM IR dump; TileIR emits TileIR and cubin',
  ('unit/tools/test_aot.py', 'test_aot_target_parsing_with_explicit_target'): 'TileIR has no AOT compile/link templates for this CUDA C launcher interface',
  ('unit/tools/test_irsource.py', 'test_gluon_ir_file'): 'Gluon is a separate frontend unsupported by the TileIR backend',
+ ('unit/language/test_matmul.py', 'test_warp_specialized_matmul_auxiliary_output'): 'Consan instrumentation is not connected to the TileIR pipeline',
+ ('unit/language/test_tensor_descriptor.py', 'test_tensor_descriptor_alignment_iisan_dynamic'): 'compiler instrumentation modes are not connected to the TileIR pipeline',
  ('unit/cuda/test_denorm_cuda.py', 'test_linked_function_preserves_denorms'): 'custom LLVM external libraries are not linked by the TileIR pipeline',
  ('unit/cuda/test_libdevice_cuda.py', 'test_fpsan_libdevice_unary_equivalence'): 'FPSan instrumentation is not connected to the TileIR pipeline',
  ('unit/cuda/test_libdevice_cuda.py', 'test_fpsan_libdevice_div_rn_equivalence'): 'FPSan instrumentation is not connected to the TileIR pipeline',
@@ -120,6 +142,10 @@ _TILEIR_134_UNSUPPORTED = {('unit/language/test_core.py', 'test_gather'): 'ordin
 
  ('unit/language/test_compile_errors.py', 'test_min_dot_size'): 'TileIR accepts dot dimensions below the NVIDIA '
                                                                 'diagnostic minimum',
+ ('unit/language/test_compile_only.py', 'test_max_occupancy_compile_only'): 'max_occupancy is a compilation hint on '
+                                                                            'this backend; the test reads the '
+                                                                            'shared-memory metadata of the PTX '
+                                                                            'launch-time reservation',
  ('unit/language/test_compile_only.py', 'test_fp8_compiles_for_multiple_architectures_cuda'): 'this test includes '
                                                                                               'SM80 FP8 '
                                                                                               'compilation, which '
@@ -212,6 +238,13 @@ _TILEIR_134_UNSUPPORTED = {('unit/language/test_core.py', 'test_gather'): 'ordin
                                                             'pipeline; TTIR override is tested separately',
  ('unit/runtime/test_cache.py', 'test_jit_noinline'): 'the public backend inlines device helpers; this test '
                                                       'requires a distinct noinline device function in TTIR',
+ ('unit/runtime/test_launch.py', 'test_max_occupancy_launch'): 'max_occupancy is a compilation hint on this '
+                                                               'backend; the launch-time shared-memory '
+                                                               'reservation of the PTX launcher is not '
+                                                               'implemented',
+ ('unit/runtime/test_launch.py', 'test_max_occupancy_preserves_required_shared_memory'): 'Gluon is a separate frontend '
+                                                                                         'unsupported by the TileIR '
+                                                                                         'backend',
  ('unit/test_perf_warning.py', 'test_remark_vectorization'): 'this test requires the NVIDIA vectorization pass '
                                                              'remark text; TileIR uses a different compiler '
                                                              'pipeline',
@@ -220,6 +253,9 @@ _TILEIR_134_UNSUPPORTED = {('unit/language/test_core.py', 'test_gather'): 'ordin
  ('unit/tools/test_aot.py', 'test_compile_link_autotune_matmul'): 'TileIR has no AOT compile/link templates or '
                                                                   'profile-scratch metadata for this CUDA C '
                                                                   'launcher interface',
+ ('unit/tools/test_aot.py', 'test_compile_link_scalar_float'): 'TileIR has no AOT compile/link templates or '
+                                                               'profile-scratch metadata for this CUDA C '
+                                                               'launcher interface',
  ('unit/tools/test_aot.py', 'test_compile_link_matmul'): 'TileIR has no AOT compile/link templates or '
                                                          'profile-scratch metadata for this CUDA C launcher '
                                                          'interface',
@@ -298,6 +334,9 @@ def pytest_collection_modifyitems(items):
         if (key == ('unit/language/test_compile_only.py', 'test_maxnreg_instrumentation_mode')
                 and params.get('instrumentation_mode') in {'consan', 'gsan', 'iisan', 'fpsan', 'gsan,consan'}):
             reason = 'compiler instrumentation modes are not connected to the TileIR pipeline'
+        if (key == ('unit/language/test_frontend.py', 'test_for_loop_operand_extension')
+                and getattr(params.get('jit'), '__module__', '').startswith('triton.experimental.gluon')):
+            reason = 'Gluon is a separate frontend unsupported by the TileIR backend'
         if (key == ("unit/language/test_core.py", "test_tensor_atomic_cas_multicta_result")
                 and set(params) == {"size"}
                 and type(params["size"]) is int and params["size"] in {4, 16, 128}):

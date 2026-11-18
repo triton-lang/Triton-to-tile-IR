@@ -58,6 +58,19 @@ if ! grep -q 'Float8E5M3FNUType' "${LLVM_SYSPATH}/include/mlir/IR/BuiltinTypes.h
   fi
 fi
 
+# Newer MLIR defaults dialects to strict property assembly formats. Released
+# CUDA Tile dialects that predate the option keep inherent attributes in
+# attr-dict; apply the same opt-out CUDA Tile 13.5 declares itself. This only
+# affects textual IR, not bytecode.
+DIALECT_BASE_TD="${LLVM_SYSPATH}/include/mlir/IR/DialectBase.td"
+DIALECT_TD_FILE="${REPO_ROOT}/include/cuda_tile/Dialect/CudaTile/IR/Dialect.td"
+if [[ -f "${DIALECT_BASE_TD}" ]] && grep -q 'useStrictPropertiesInAssemblyFormat' "${DIALECT_BASE_TD}" \
+    && ! grep -q 'useStrictPropertiesInAssemblyFormat' "${DIALECT_TD_FILE}"; then
+  grep -q '^  let useDefaultAttributePrinterParser = 1;$' "${DIALECT_TD_FILE}"
+  patch_in_place "${DIALECT_TD_FILE}" \
+    -e '/^  let useDefaultAttributePrinterParser = 1;$/a\  let useStrictPropertiesInAssemblyFormat = 0;'
+fi
+
 # 1) Patch BytecodeGenUtilities.cpp for LLVM api changes:
 # Replace "getArgToOperandOrAttribute" with "getArgToOperandAttrOrProp"
 # and "OperandOrAttribute" with "OperandAttrOrProp".
@@ -78,13 +91,18 @@ if [[ -f "${OPS_TD_PATH}" ]]; then
     -e 's/build($_builder, $_state, std::nullopt)/build($_builder, $_state, ::mlir::ValueRange{})/g'
 fi
 
-# Public LLVM represents symbol naming through SymbolOpInterface. The release
-# source also names a SymbolName trait not available in this LLVM revision.
-for symbol_td in "${OPS_TD_PATH}" "${REPO_ROOT}/include/cuda_tile/Dialect/CudaTile/IR/TestingOps.td"; do
-  patch_in_place "${symbol_td}" \
-    -e 's/Symbol, SymbolName/Symbol/g' \
-    -e 's/\bSymbolName\b/Symbol/g'
-done
+# Older public LLVM represents symbol naming through SymbolOpInterface only.
+# The release source also names a SymbolName trait; keep it when the pinned
+# LLVM defines that trait, otherwise fold it into Symbol without duplicates.
+if ! grep -q '^def SymbolName ' "${LLVM_SYSPATH}/include/mlir/IR/SymbolInterfaces.td"; then
+  for symbol_td in "${REPO_ROOT}"/include/cuda_tile/Dialect/CudaTile/IR/*.td; do
+    grep -q '\bSymbolName\b' "${symbol_td}" || continue
+    patch_in_place "${symbol_td}" \
+      -e 's/Symbol, SymbolName/Symbol/g' \
+      -e '/\bSymbol\b/ s/SymbolName, //g' \
+      -e 's/\bSymbolName\b/Symbol/g'
+  done
+fi
 
 # 3) Patch CudaTile.cpp for LLVM api changes:
 # replace 'ValueRange(), /*attributes=*/std::nullopt)' with

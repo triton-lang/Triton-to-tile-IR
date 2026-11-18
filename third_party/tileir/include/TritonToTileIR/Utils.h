@@ -150,6 +150,14 @@ public:
             // have any effect.
             return CudaTileOp::create(builder, loc, operands[0], operands[1],
                                       cuda_tile::RoundingMode::NEAREST_EVEN);
+          } else if constexpr (std::is_same_v<TritonOp,
+                                              triton::ApproxDivFOp>) {
+            // Lower an explicitly approximate f32 division. The request is
+            // per operation, so it does not depend on the approx modifier.
+            assert(operands.size() == 2 && "expect two operands for div");
+            return CudaTileOp::create(builder, loc, operands[0], operands[1],
+                                      cuda_tile::RoundingMode::APPROX,
+                                      this->flushToZeroModifier);
           } else if constexpr (std::is_same_v<TritonOp, math::ExpOp>) {
             assert(operands.size() == 1 && "expect single operand for exp");
             bool isF32 = getElementTypeOrSelf(op.getResult().getType()).isF32();

@@ -1,12 +1,12 @@
 schema_version = 1
 line = "main-ctk-13.4"
 status = "integration-validation-pending"
-current_triton_version = "3.8.0"
-target_triton_version = "3.8.0"
+current_triton_version = "3.9.0"
+target_triton_version = "3.9.0"
 tileir_version = "13.4.0"
 tileir_runtime_version = "13.4.59"
 public_backend_source_commit = "ac12adc396a26a939fadcda3f0c44b9c0f6390b5"
-target_oait_commit = "570e5b4dd1e2d1daf785a894d19268fe7b281cb5"
+target_oait_commit = "93035c4472eb820f78074de0e28341fa321a759d"
 cuda_tile_commit = "7e8e2e68fa219716103824c01f7303367cf7df8d"
 # .oait-base remains the previous imported checkpoint until this line is validated.
 # No Python/performance baseline has been accepted for this combination.

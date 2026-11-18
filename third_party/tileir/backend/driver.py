@@ -89,6 +89,16 @@ FLOAT_PACK_FUNCTION = {
 }
 
 
+
+def _launcher_scalar_cpp(ty):
+    # The launcher parses Python floats as double and packs them to the kernel
+    # parameter width with FLOAT_PACK_FUNCTION. Keep this independent of the
+    # AOT C type mapping in ty_to_cpp, which passes 16-bit floats as raw bits.
+    if ty in FLOAT_STORAGE_TYPE:
+        return "double"
+    return ty_to_cpp(ty)
+
+
 _BASE_ARGS_FORMAT = "iiiKKpOOOO"
 _BASE_ARGS_FORMAT_LEN = len(_BASE_ARGS_FORMAT)
 
@@ -110,7 +120,7 @@ def make_launcher(constants, signature):
             return "PyObject*"
         if ty in ("constexpr", "nvTmaDesc"):
             return "PyObject*"
-        return ty_to_cpp(ty)
+        return _launcher_scalar_cpp(ty)
 
     def format_of(ty):
         if isinstance(ty, tuple):
@@ -131,7 +141,7 @@ def make_launcher(constants, signature):
             "uint16_t": "H",
             "uint32_t": "I",
             "uint64_t": "K",
-        }[ty_to_cpp(ty)]
+        }[_launcher_scalar_cpp(ty)]
 
     args_format = "".join([format_of(ty) for ty in signature.values()])
     format = _BASE_ARGS_FORMAT + args_format
@@ -260,6 +270,10 @@ typedef struct _DevicePtrInfo {{
     bool valid;
 }} DevicePtrInfo;
 
+// Interned once at module init. A fresh name object on every launch would be
+// retained by the interpreter's attribute lookup cache.
+static PyObject *data_ptr_str = NULL;
+
 static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
   DevicePtrInfo ptr_info;
   ptr_info.dev_ptr = 0;
@@ -272,7 +286,7 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
     // valid nullptr
     return ptr_info;
   }}
-  PyObject *ptr = PyObject_GetAttrString(obj, "data_ptr");
+  PyObject *ptr = PyObject_GetAttr(obj, data_ptr_str);
   if(ptr){{
     PyObject *empty_tuple = PyTuple_New(0);
     PyObject *ret = PyObject_Call(ptr, empty_tuple, NULL);
@@ -402,6 +416,10 @@ static struct PyModuleDef ModuleDef = {{
 }};
 
 PyMODINIT_FUNC PyInit___triton_launcher(void) {{
+  data_ptr_str = PyUnicode_InternFromString("data_ptr");
+  if(data_ptr_str == NULL) {{
+    return NULL;
+  }}
   PyObject *m = PyModule_Create(&ModuleDef);
   if(m == NULL) {{
     return NULL;

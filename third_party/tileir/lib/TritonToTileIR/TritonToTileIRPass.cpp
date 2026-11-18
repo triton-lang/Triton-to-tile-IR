@@ -427,6 +427,21 @@ public:
   }
 };
 
+// tt.annotate returns its operand unchanged and only carries per-result
+// hints. convertAxisAttributes has already turned those hints into
+// cuda_tile.assume ops on the annotated value, so the op itself is an identity.
+class ConvertAnnotateOp : public OpConversionPattern<triton::AnnotateOp> {
+public:
+  using OpConversionPattern<triton::AnnotateOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::AnnotateOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, adaptor.getSrc());
+    return success();
+  }
+};
+
 class ConvertBitcastOp : public OpConversionPattern<triton::BitcastOp> {
 public:
   using OpConversionPattern<triton::BitcastOp>::OpConversionPattern;
@@ -823,7 +838,7 @@ public:
       for (size_t i = 0; i < originalIndices.size(); i++) {
         Value indicesWithBlockSize = originalIndices[i];
         cuda_tile::TileType constType =
-            cuda_tile::TileType::get({}, rewriter.getI32Type());
+            cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, rewriter.getI32Type());
         auto tileSizeAttr = DenseIntElementsAttr::get(constType, {tileSizes[i]});
         Value tileSizeOp = cuda_tile::ConstantOp::create(rewriter,
             op.getLoc(), constType, tileSizeAttr);
@@ -927,7 +942,7 @@ public:
         Value idxWithBlockSize = originalIndices[i];
         auto tileSize = tileSizes[i];
         cuda_tile::TileType constType =
-            cuda_tile::TileType::get({}, rewriter.getI32Type());
+            cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, rewriter.getI32Type());
         auto tileSizeAttr = DenseIntElementsAttr::get(constType, {tileSize});
         Value tileSizeOp = cuda_tile::ConstantOp::create(rewriter,
             op.getLoc(), constType, tileSizeAttr);
@@ -1112,6 +1127,203 @@ public:
   }
 };
 
+// PTX numeric instructions without a generic Triton op. The CUDA language
+// helpers request them either through pure inline asm (older frontends and
+// triton_kernels releases) or through the matching NVVM intrinsic symbol on
+// tt.extern_elementwise. Both spellings share the native builders below.
+
+// ex2.approx.ftz.f32. PTX .ftz applies to both subnormal inputs and outputs,
+// so this modifier must remain true even when the pass's general FTZ option
+// is false.
+static Value createNativeExp2Ftz(OpBuilder &builder, Location loc,
+                                 cuda_tile::TileType resultTy, Value x) {
+  return cuda_tile::Exp2Op::create(builder, loc, resultTy, x,
+                                   /*flush_to_zero=*/builder.getUnitAttr());
+}
+
+// cvt.{rn,rna}.tf32.f32: round to TF32 precision, returned as f32. Native
+// ftof preserves Inf/NaN. Unlike a host descriptor read, PTX cvt does not
+// promise to retain the source NaN payload bits.
+static Value createNativeRoundToTF32(OpBuilder &builder, Location loc,
+                                     cuda_tile::TileType resultTy, Value x,
+                                     cuda_tile::RoundingMode mode) {
+  MLIRContext *context = builder.getContext();
+  auto tf32Ty = cuda_tile::TileType::get(resultTy.getShape(),
+                                         FloatTF32Type::get(context));
+  Value rounded = cuda_tile::FToFOp::create(
+      builder, loc, tf32Ty, x, cuda_tile::RoundingModeAttr::get(context, mode));
+  // Every TF32 value is an f32 value, so the way back never rounds.
+  return cuda_tile::FToFOp::create(
+      builder, loc, resultTy, rounded,
+      cuda_tile::RoundingModeAttr::get(context,
+                                       cuda_tile::RoundingMode::NEAREST_EVEN));
+}
+
+// cvt.rn.satfinite.e2m1x2.f32: one packed byte per (hi, lo) pair, with `hi`
+// in the high nibble. Returns a flat tile of `count` i8 values.
+static Value createNativePackE2M1x2(OpBuilder &builder, Location loc,
+                                    int64_t count, Value hi, Value lo) {
+  MLIRContext *context = builder.getContext();
+  auto rn = cuda_tile::RoundingModeAttr::get(
+      context, cuda_tile::RoundingMode::NEAREST_EVEN);
+  auto columnTy = cuda_tile::TileType::get({count, 1}, builder.getF32Type());
+  Value loColumn = cuda_tile::ReshapeOp::create(builder, loc, columnTy, lo);
+  Value hiColumn = cuda_tile::ReshapeOp::create(builder, loc, columnTy, hi);
+  auto pairTy = cuda_tile::TileType::get({count, 2}, builder.getF32Type());
+  // Native pack puts the first element in the low nibble. Interleave
+  // [lo, hi] for each output byte.
+  Value pairs = cuda_tile::CatOp::create(builder, loc, pairTy, loColumn,
+                                         hiColumn, builder.getI64IntegerAttr(1));
+  auto flatTy = cuda_tile::TileType::get({2 * count}, builder.getF32Type());
+  Value flat = cuda_tile::ReshapeOp::create(builder, loc, flatTy, pairs);
+  auto f4Ty = cuda_tile::TileType::get({2 * count},
+                                       Float4E2M1FNType::get(context));
+  // f4E2M1FN conversion natively saturates finite overflow and Inf to
+  // signed max, and NaN to positive max. There is no separate ftof
+  // saturation attribute in the public dialect.
+  Value f4 = cuda_tile::FToFOp::create(builder, loc, f4Ty, flat, rn);
+  auto byteTy = cuda_tile::TileType::get({count}, builder.getI8Type());
+  return cuda_tile::PackOp::create(builder, loc, byteTy, f4);
+}
+
+// {min,max}[.NaN].xorsign.abs.f32. The magnitude is native floating-point
+// minf/maxf of the absolute values. Integer operations only preserve PTX's
+// exact sign-bit and NaN selection semantics.
+static Value createNativeXorSignAbsMinMax(OpBuilder &builder, Location loc,
+                                          cuda_tile::TileType resultTy, Value a,
+                                          Value b, bool isMax,
+                                          bool propagateNan) {
+  auto bitsTy =
+      cuda_tile::TileType::get(resultTy.getShape(), builder.getI32Type());
+  auto constant = [&](int64_t value) -> Value {
+    return cuda_tile::ConstantOp::create(
+        builder, loc, bitsTy,
+        DenseIntElementsAttr::get(bitsTy, ArrayRef<APInt>{APInt(32, value)}));
+  };
+  Value signMask = constant(0x80000000);
+  Value absMask = constant(0x7fffffff);
+  Value inf = constant(0x7f800000);
+  Value aBits = cuda_tile::BitcastOp::create(builder, loc, bitsTy, a);
+  Value bBits = cuda_tile::BitcastOp::create(builder, loc, bitsTy, b);
+  Value xorBits = cuda_tile::XOrIOp::create(builder, loc, aBits, bBits);
+  Value sign = cuda_tile::AndIOp::create(builder, loc, xorBits, signMask);
+  Value aAbsBits = cuda_tile::AndIOp::create(builder, loc, aBits, absMask);
+  Value bAbsBits = cuda_tile::AndIOp::create(builder, loc, bBits, absMask);
+  Value aAbs = cuda_tile::BitcastOp::create(builder, loc, resultTy, aAbsBits);
+  Value bAbs = cuda_tile::BitcastOp::create(builder, loc, resultTy, bAbsBits);
+  // With propagate_nan a NaN in either input gives NaN; without it the
+  // non-NaN input wins, exactly as the PTX .NaN modifier selects.
+  UnitAttr nanModifier = propagateNan ? builder.getUnitAttr() : UnitAttr();
+  Value magnitude;
+  if (isMax)
+    magnitude = cuda_tile::MaxFOp::create(builder, loc, resultTy, aAbs, bAbs,
+                                          nanModifier,
+                                          /*flush_to_zero=*/nullptr);
+  else
+    magnitude = cuda_tile::MinFOp::create(builder, loc, resultTy, aAbs, bAbs,
+                                          nanModifier,
+                                          /*flush_to_zero=*/nullptr);
+  Value magnitudeBits =
+      cuda_tile::BitcastOp::create(builder, loc, bitsTy, magnitude);
+  Value absMagnitudeBits =
+      cuda_tile::AndIOp::create(builder, loc, magnitudeBits, absMask);
+  Value isNan = cuda_tile::CmpIOp::create(
+      builder, loc, cuda_tile::ComparisonPredicate::GREATER_THAN,
+      absMagnitudeBits, inf, cuda_tile::Signedness::Unsigned);
+  Value signedBits =
+      cuda_tile::OrIOp::create(builder, loc, magnitudeBits, sign);
+  // Ignore xorsign when the result is NaN. Preserve native canonical NaN,
+  // including its sign; signed zero otherwise comes from the input XOR.
+  Value resultBits = cuda_tile::SelectOp::create(builder, loc, bitsTy, isNan,
+                                                 magnitudeBits, signedBits);
+  return cuda_tile::BitcastOp::create(builder, loc, resultTy, resultBits);
+}
+
+// True if `value`, an operand as written in the Triton IR, is the i1 constant
+// false, either directly or splatted to a tensor.
+static bool isConstantFalse(Value value) {
+  if (auto splat = value.getDefiningOp<triton::SplatOp>())
+    value = splat.getSrc();
+  auto constant = value.getDefiningOp<arith::ConstantOp>();
+  if (!constant)
+    return false;
+  Attribute attr = constant.getValue();
+  if (auto scalar = dyn_cast<IntegerAttr>(attr))
+    return scalar.getType().isInteger(1) && scalar.getValue().isZero();
+  if (auto dense = dyn_cast<DenseIntElementsAttr>(attr))
+    return dense.isSplat() && dense.getElementType().isInteger(1) &&
+           dense.getSplatValue<APInt>().isZero();
+  return false;
+}
+
+// NVVM intrinsic symbols emitted by triton.language.extra.cuda. Each one
+// names a single PTX instruction with a native cuda_tile equivalent. Returns
+// a null value for every other intrinsic or operand shape: the public dialect
+// has no generic intrinsic call, so those must stay illegal.
+static Value lowerNvvmIntrinsic(triton::ExternElementwiseOp op, ValueRange srcs,
+                                const TypeConverter &typeConverter,
+                                OpBuilder &builder) {
+  StringRef symbol = op.getSymbol();
+  Location loc = op.getLoc();
+  auto resultTy = dyn_cast_or_null<cuda_tile::TileType>(
+      typeConverter.convertType(op->getResult(0).getType()));
+  if (!resultTy)
+    return nullptr;
+  auto isF32 = [&](Value value) {
+    auto type = dyn_cast<cuda_tile::TileType>(value.getType());
+    return type && type.getElementType().isF32() &&
+           type.getShape() == resultTy.getShape();
+  };
+  bool f32Result = resultTy.getElementType().isF32();
+  bool unaryF32 = f32Result && srcs.size() == 1 && isF32(srcs[0]);
+  bool binaryF32 =
+      f32Result && srcs.size() == 2 && isF32(srcs[0]) && isF32(srcs[1]);
+
+  if (symbol == "llvm.nvvm.ex2.approx.ftz.f32") {
+    if (!unaryF32)
+      return nullptr;
+    return createNativeExp2Ftz(builder, loc, resultTy, srcs[0]);
+  }
+  if (symbol == "llvm.nvvm.f2tf32.rn" || symbol == "llvm.nvvm.f2tf32.rna") {
+    if (!unaryF32)
+      return nullptr;
+    return createNativeRoundToTF32(builder, loc, resultTy, srcs[0],
+                                   symbol.ends_with(".rna")
+                                       ? cuda_tile::RoundingMode::NEAREST_AWAY
+                                       : cuda_tile::RoundingMode::NEAREST_EVEN);
+  }
+  bool isMin = symbol == "llvm.nvvm.fmin.xorsign.abs.f" ||
+               symbol == "llvm.nvvm.fmin.nan.xorsign.abs.f";
+  bool isMax = symbol == "llvm.nvvm.fmax.xorsign.abs.f" ||
+               symbol == "llvm.nvvm.fmax.nan.xorsign.abs.f";
+  if (isMin || isMax) {
+    if (!binaryF32)
+      return nullptr;
+    return createNativeXorSignAbsMinMax(
+        builder, loc, resultTy, srcs[0], srcs[1], isMax,
+        /*propagateNan=*/symbol.contains(".nan."));
+  }
+  if (symbol == "llvm.nvvm.ff.to.e2m1x2.rn.satfinite") {
+    // The intrinsic returns the packed byte zero-extended to i16. Its i1
+    // operand selects a variant of the instruction that has no native
+    // equivalent, so only the plain form (constant false) is accepted.
+    if (!resultTy.getElementType().isSignlessInteger(16) || srcs.size() != 3 ||
+        !isF32(srcs[0]) || !isF32(srcs[1]) || !isConstantFalse(op.getSrcs()[2]))
+      return nullptr;
+    int64_t count = resultTy.getNumElements();
+    if (count <= 0 || count > std::numeric_limits<int64_t>::max() / 2)
+      return nullptr;
+    Value bytes = createNativePackE2M1x2(builder, loc, count, /*hi=*/srcs[0],
+                                         /*lo=*/srcs[1]);
+    auto byteTy =
+        cuda_tile::TileType::get(resultTy.getShape(), builder.getI8Type());
+    bytes = cuda_tile::ReshapeOp::create(builder, loc, byteTy, bytes);
+    return cuda_tile::ExtIOp::create(builder, loc, resultTy, bytes,
+                                     cuda_tile::Signedness::Unsigned);
+  }
+  return nullptr;
+}
+
 class ConvertExternElementwiseOp
     : public OpConversionPattern<triton::ExternElementwiseOp> {
 public:
@@ -1122,6 +1334,15 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     auto symbol = op.getSymbol();
+
+    if (symbol.starts_with("llvm.nvvm.")) {
+      if (Value native = lowerNvvmIntrinsic(op, adaptor.getSrcs(),
+                                            *getTypeConverter(), rewriter)) {
+        rewriter.replaceOp(op, native);
+        return success();
+      }
+      // Unsupported intrinsics reach the diagnostic at the end of the chain.
+    }
 
     auto getTileType = [](Value v) {
       return cast<cuda_tile::TileType>(v.getType());
@@ -1162,6 +1383,9 @@ public:
     };
     auto floor = [&](Value a) -> Value {
       return cuda_tile::FloorOp::create(rewriter, loc, a);
+    };
+    auto ceil = [&](Value a) -> Value {
+      return cuda_tile::CeilOp::create(rewriter, loc, a);
     };
     auto sqrt = [&](Value a) -> Value {
       return cuda_tile::SqrtOp::create(rewriter, loc, a, rmNearestEven,
@@ -1277,15 +1501,17 @@ public:
       return success();
     } else if (symbol == "__nv_rintf" || symbol == "__nv_rint" ||
                symbol == "__nv_nearbyintf" || symbol == "__nv_nearbyint") {
-      // Round-to-nearest-even (ties to even).
+      // Round-to-nearest-even (ties to even). The two candidates are the
+      // integer neighbours floor(x) and ceil(x). ceil(x) rather than
+      // floor(x) + 1 keeps the sign of zero: for x in (-1, 0) the upper
+      // neighbour is -0.0, as IEEE 754 requires for rint(-0.25) or rint(-0.5).
       Value x = adaptor.getSrcs()[0];
       auto xType = getTileType(x);
       Value f = floor(x);
-      Value d = subf(x, f); // d in [0, 1) for finite x
+      Value d = subf(x, f); // d in [0, 1] for finite x
 
       Value half = splatFloat(xType, 0.5);
-      Value one = splatFloat(xType, 1.0);
-      Value fPlusOne = addf(f, one);
+      Value upper = ceil(x);
 
       Value gtHalf = cmpf(cuda_tile::ComparisonPredicate::GREATER_THAN,
                           cuda_tile::ComparisonOrdering::ORDERED, d, half);
@@ -1300,10 +1526,10 @@ public:
                cuda_tile::ComparisonOrdering::ORDERED, halfF, halfFFloor);
 
       Value tie =
-          cuda_tile::SelectOp::create(rewriter, loc, fIsEven, f, fPlusOne);
+          cuda_tile::SelectOp::create(rewriter, loc, fIsEven, f, upper);
       Value resLt = cuda_tile::SelectOp::create(rewriter, loc, ltHalf, f, tie);
       Value res =
-          cuda_tile::SelectOp::create(rewriter, loc, gtHalf, fPlusOne, resLt);
+          cuda_tile::SelectOp::create(rewriter, loc, gtHalf, upper, resLt);
       rewriter.replaceOp(op, res);
       return success();
     } else if (symbol == "__nv_isnanf" || symbol == "__nv_isnand") {
@@ -1638,9 +1864,9 @@ LogicalResult convertAggregationOp(Operation *op,
     BlockArgument preBlkOperand = oldBody->getArgument(i + half);
     locs.push_back(preBlkOperand.getLoc());
     currentOperandsTy.push_back(
-        cuda_tile::TileType::get({}, currentBlkOperand.getType()));
+        cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, currentBlkOperand.getType()));
     currentOperandsTy.push_back(
-        cuda_tile::TileType::get({}, preBlkOperand.getType()));
+        cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, preBlkOperand.getType()));
   }
   body->addArguments(currentOperandsTy, locs);
 
@@ -1935,7 +2161,7 @@ public:
 
     // Apply a signature conversion on the for loop body.
     cuda_tile::TileType indVarTy =
-        cuda_tile::TileType::get({}, indVar.getType());
+        cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, indVar.getType());
     TypeConverter::SignatureConversion sigConversion(
         origBody->getNumArguments());
     sigConversion.addInputs(0, indVarTy);
@@ -3171,7 +3397,7 @@ class ConvertSplitOp : public OpConversionPattern<triton::SplitOp> {
     Value src = adaptor.getSrc();
     cuda_tile::TileType srcType = cast<cuda_tile::TileType>(src.getType());
     cuda_tile::TileType constType =
-        cuda_tile::TileType::get({}, rewriter.getI32Type());
+        cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, rewriter.getI32Type());
     auto c0Attr = DenseIntElementsAttr::get(constType, {0});
     Value c0 = cuda_tile::ConstantOp::create(rewriter, loc, constType, c0Attr);
     auto c1Attr = DenseIntElementsAttr::get(constType, {1});
@@ -3251,8 +3477,9 @@ static std::string normalizeNativeInlineAsm(StringRef text) {
   return result;
 }
 
-// These are the complete pure, pack=1 forms used by triton_kernels. Keep
-// unsupported asm illegal; the public dialect has no generic inline-asm op.
+// These are the complete pure, pack=1 forms used by triton_kernels, plus the
+// PTX full-range f32 division. Keep unsupported asm illegal; the public
+// dialect has no generic inline-asm op.
 class ConvertKnownNumericInlineAsmToNativeOp
     : public OpConversionPattern<triton::ElementwiseInlineAsmOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -3272,9 +3499,11 @@ class ConvertKnownNumericInlineAsmToNativeOp
     bool tf32 = text == "cvt.rn.tf32.f32 $0,$1;" && constraints == "=r,r";
     bool xorsign = text == "{max.NaN.xorsign.abs.f32 $0,$1,$2;}" &&
                    constraints == "=r,r,r";
-    if (!fp4 && !exp2 && !tf32 && !xorsign)
+    bool divFull =
+        text == "div.full.f32 $0,$1,$2;" && constraints == "=f,f,f";
+    if (!fp4 && !exp2 && !tf32 && !xorsign && !divFull)
       return failure();
-    if (adaptor.getArgs().size() != (fp4 || xorsign ? 2 : 1))
+    if (adaptor.getArgs().size() != (fp4 || xorsign || divFull ? 2 : 1))
       return failure();
 
     auto resultTy = dyn_cast_or_null<cuda_tile::TileType>(
@@ -3290,95 +3519,41 @@ class ConvertKnownNumericInlineAsmToNativeOp
     }
 
     auto loc = op.getLoc();
-    auto rn = cuda_tile::RoundingModeAttr::get(
-        rewriter.getContext(), cuda_tile::RoundingMode::NEAREST_EVEN);
     Value a = adaptor.getArgs()[0];
     if (exp2) {
-      // PTX .ftz applies to both subnormal inputs and outputs. This modifier
-      // must remain true even when the pass's general FTZ option is false.
-      rewriter.replaceOpWithNewOp<cuda_tile::Exp2Op>(
-          op, resultTy, a, /*flush_to_zero=*/rewriter.getUnitAttr());
+      rewriter.replaceOp(op, createNativeExp2Ftz(rewriter, loc, resultTy, a));
       return success();
     }
     if (tf32) {
-      auto tf32Ty = cuda_tile::TileType::get(
-          resultTy.getShape(), FloatTF32Type::get(rewriter.getContext()));
-      Value rounded = cuda_tile::FToFOp::create(rewriter, loc, tf32Ty, a, rn);
-      // Preserve Inf/NaN as specified by native ftof. Unlike a host descriptor
-      // read, PTX cvt does not promise to retain the source NaN payload bits.
-      rewriter.replaceOpWithNewOp<cuda_tile::FToFOp>(op, resultTy, rounded, rn);
+      rewriter.replaceOp(
+          op, createNativeRoundToTF32(rewriter, loc, resultTy, a,
+                                      cuda_tile::RoundingMode::NEAREST_EVEN));
       return success();
     }
     Value b = adaptor.getArgs()[1];
+    if (divFull) {
+      // The instruction names its own rounding and has no .ftz suffix, so
+      // neither the approx nor the FTZ pass option applies to it.
+      rewriter.replaceOpWithNewOp<cuda_tile::DivFOp>(
+          op, a, b, cuda_tile::RoundingMode::FULL);
+      return success();
+    }
     if (fp4) {
       int64_t count = resultTy.getNumElements();
       if (count <= 0 || count > std::numeric_limits<int64_t>::max() / 2)
         return failure();
-      auto columnTy =
-          cuda_tile::TileType::get({count, 1}, rewriter.getF32Type());
-      Value lo = cuda_tile::ReshapeOp::create(rewriter, loc, columnTy, b);
-      Value hi = cuda_tile::ReshapeOp::create(rewriter, loc, columnTy, a);
-      auto pairTy = cuda_tile::TileType::get({count, 2}, rewriter.getF32Type());
-      // PTX's second input is the low nibble; native pack puts the first
-      // element in the low nibble. Interleave [b, a] for each output byte.
-      Value pairs = cuda_tile::CatOp::create(rewriter, loc, pairTy, lo, hi,
-                                             rewriter.getI64IntegerAttr(1));
-      auto flatTy =
-          cuda_tile::TileType::get({2 * count}, rewriter.getF32Type());
-      Value flat = cuda_tile::ReshapeOp::create(rewriter, loc, flatTy, pairs);
-      auto f4Ty = cuda_tile::TileType::get(
-          {2 * count}, Float4E2M1FNType::get(rewriter.getContext()));
-      // f4E2M1FN conversion natively saturates finite overflow and Inf to
-      // signed max, and NaN to positive max. There is no separate ftof
-      // saturation attribute in the public 13.4 dialect.
-      Value f4 = cuda_tile::FToFOp::create(rewriter, loc, f4Ty, flat, rn);
-      auto byteTy = cuda_tile::TileType::get({count}, rewriter.getI8Type());
-      Value bytes = cuda_tile::PackOp::create(rewriter, loc, byteTy, f4);
+      // PTX's second input is the low nibble.
+      Value bytes =
+          createNativePackE2M1x2(rewriter, loc, count, /*hi=*/a, /*lo=*/b);
       // mov.b32 repeats the packed byte, but the exact matched i8 result
       // observes only its low byte. An i32 result must not use this lowering.
       rewriter.replaceOpWithNewOp<cuda_tile::ReshapeOp>(op, resultTy, bytes);
       return success();
     }
-
-    // The maximum is native floating-point maxf. Integer operations only
-    // preserve PTX's exact sign-bit and canonical-NaN selection semantics.
-    auto bitsTy =
-        cuda_tile::TileType::get(resultTy.getShape(), rewriter.getI32Type());
-    auto constant = [&](int64_t value) -> Value {
-      return cuda_tile::ConstantOp::create(
-          rewriter, loc, bitsTy,
-          DenseIntElementsAttr::get(bitsTy, ArrayRef<APInt>{APInt(32, value)}));
-    };
-    Value signMask = constant(0x80000000);
-    Value absMask = constant(0x7fffffff);
-    Value inf = constant(0x7f800000);
-    Value aBits = cuda_tile::BitcastOp::create(rewriter, loc, bitsTy, a);
-    Value bBits = cuda_tile::BitcastOp::create(rewriter, loc, bitsTy, b);
-    Value xorBits = cuda_tile::XOrIOp::create(rewriter, loc, aBits, bBits);
-    Value sign = cuda_tile::AndIOp::create(rewriter, loc, xorBits, signMask);
-    Value aAbsBits = cuda_tile::AndIOp::create(rewriter, loc, aBits, absMask);
-    Value bAbsBits = cuda_tile::AndIOp::create(rewriter, loc, bBits, absMask);
-    Value aAbs =
-        cuda_tile::BitcastOp::create(rewriter, loc, resultTy, aAbsBits);
-    Value bAbs =
-        cuda_tile::BitcastOp::create(rewriter, loc, resultTy, bAbsBits);
-    Value magnitude = cuda_tile::MaxFOp::create(
-        rewriter, loc, resultTy, aAbs, bAbs,
-        /*propagate_nan=*/rewriter.getUnitAttr(), /*flush_to_zero=*/nullptr);
-    Value magnitudeBits =
-        cuda_tile::BitcastOp::create(rewriter, loc, bitsTy, magnitude);
-    Value absMagnitudeBits =
-        cuda_tile::AndIOp::create(rewriter, loc, magnitudeBits, absMask);
-    Value isNan = cuda_tile::CmpIOp::create(
-        rewriter, loc, cuda_tile::ComparisonPredicate::GREATER_THAN,
-        absMagnitudeBits, inf, cuda_tile::Signedness::Unsigned);
-    Value signedBits =
-        cuda_tile::OrIOp::create(rewriter, loc, magnitudeBits, sign);
-    // Ignore xorsign when max returns NaN. Preserve native canonical NaN,
-    // including its sign; signed zero otherwise comes from the input XOR.
-    Value resultBits = cuda_tile::SelectOp::create(rewriter, loc, bitsTy, isNan,
-                                                   magnitudeBits, signedBits);
-    rewriter.replaceOpWithNewOp<cuda_tile::BitcastOp>(op, resultTy, resultBits);
+    rewriter.replaceOp(
+        op, createNativeXorSignAbsMinMax(rewriter, loc, resultTy, a, b,
+                                         /*isMax=*/true,
+                                         /*propagateNan=*/true));
     return success();
   }
 };
@@ -3472,6 +3647,61 @@ class ConvertPackedFp4UpcastInlineAsmToNativeOp
     auto wordTy = cuda_tile::TileType::get({count}, rewriter.getI32Type());
     Value words = cuda_tile::UnpackOp::create(rewriter, loc, wordTy, halfBytes);
     rewriter.replaceOpWithNewOp<cuda_tile::ReshapeOp>(op, resultTy, words);
+    return success();
+  }
+};
+
+// Match only the packed maximum of FP4 magnitude codes used by triton_kernels.
+// Each of the eight nibbles of the i32 input holds a 3-bit magnitude code in
+// its low bits. PTX reduces the two halfwords with max.u16x2 and then combines
+// them, so the result is the largest of the eight codes. The public dialect
+// has no packed halfword maximum; the native integer ops compute the same
+// value one nibble at a time.
+class ConvertPackedFp4MaxCodeInlineAsmToNativeOp
+    : public OpConversionPattern<triton::ElementwiseInlineAsmOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::ElementwiseInlineAsmOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!op.getPure() || op.getPackedElement() != 1 ||
+        op.getNumResults() != 1 || adaptor.getArgs().size() != 1 ||
+        normalizeNativeInlineAsm(op.getConstraints()) != "=r,r" ||
+        normalizeNativeInlineAsm(op.getAsmString()) !=
+            "{.reg .b32 a,b;and.b32 a,$1,0x00070007;"
+            "shr.u32 b,$1,4;and.b32 b,b,0x00070007;max.u16x2 a,a,b;"
+            "shr.u32 b,$1,8;and.b32 b,b,0x00070007;max.u16x2 a,a,b;"
+            "shr.u32 b,$1,12;and.b32 b,b,0x00070007;max.u16x2 a,a,b;"
+            "shr.u32 b,a,16;and.b32 a,a,7;max.u32 $0,a,b;}")
+      return failure();
+
+    auto resultTy = dyn_cast_or_null<cuda_tile::TileType>(
+        getTypeConverter()->convertType(op->getResult(0).getType()));
+    Value input = adaptor.getArgs()[0];
+    auto inputTy = dyn_cast<cuda_tile::TileType>(input.getType());
+    if (!resultTy || !resultTy.getElementType().isSignlessInteger(32) ||
+        !inputTy || inputTy != resultTy)
+      return failure();
+
+    auto loc = op.getLoc();
+    auto splat = [&](int32_t value) -> Value {
+      return cuda_tile::ConstantOp::create(
+          rewriter, loc, resultTy,
+          DenseIntElementsAttr::get(resultTy, {value}));
+    };
+    Value codeMask = splat(7);
+    Value maximum = cuda_tile::AndIOp::create(rewriter, loc, input, codeMask);
+    for (int32_t shift = 4; shift < 32; shift += 4) {
+      Value shiftOperands[] = {input, splat(shift)};
+      Value nibble =
+          cuda_tile::ShRIOp::create(rewriter, loc, resultTy, shiftOperands,
+                                    cuda_tile::Signedness::Unsigned);
+      Value code = cuda_tile::AndIOp::create(rewriter, loc, nibble, codeMask);
+      Value maxOperands[] = {maximum, code};
+      maximum = cuda_tile::MaxIOp::create(rewriter, loc, resultTy, maxOperands,
+                                          cuda_tile::Signedness::Unsigned);
+    }
+    rewriter.replaceOp(op, maximum);
     return success();
   }
 };
@@ -3605,6 +3835,7 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
 
     // Triton operations
     ConvertGenericOp<triton::AddPtrOp, cuda_tile::OffsetOp, Signedness::None, IntegerUpCast::None>,
+    ConvertGenericOp<triton::ApproxDivFOp, cuda_tile::DivFOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<triton::IntToPtrOp, cuda_tile::IntToPtrOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<triton::MulhiUIOp, cuda_tile::MulhiIOp, Signedness::None, IntegerUpCast::None>,
     ConvertGenericOp<triton::PtrToIntOp, cuda_tile::PtrToIntOp, Signedness::None, IntegerUpCast::None>,
@@ -3619,6 +3850,7 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
 
   patterns.add<
     ConvertAbsFOp,
+    ConvertAnnotateOp,
     ConvertAssertOp,
     ConvertAtomicCASOp,
     ConvertAtomicLoadOp,
@@ -3665,6 +3897,8 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
 
   patterns.add<ConvertGdcInlineAsmToNativeOp>(typeConverter, context, /*benefit=*/2);
   patterns.add<ConvertPackedFp4UpcastInlineAsmToNativeOp>(
+      typeConverter, context, /*benefit=*/2);
+  patterns.add<ConvertPackedFp4MaxCodeInlineAsmToNativeOp>(
       typeConverter, context, /*benefit=*/2);
   patterns.add<ConvertPackedE8M0UpcastInlineAsmToNativeOp>(
       typeConverter, context, /*benefit=*/2);

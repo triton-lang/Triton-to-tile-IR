@@ -25,6 +25,7 @@ enum class IdentityValue {
   ONE,
   POS_INF,
   NEG_INF,
+  QUIET_NAN,
   MAX_SIGNED,
   MIN_SIGNED,
   MAX_UNSIGNED,
@@ -44,6 +45,8 @@ static const char *identityValueToString(IdentityValue value) {
     return "POS_INF";
   case IdentityValue::NEG_INF:
     return "NEG_INF";
+  case IdentityValue::QUIET_NAN:
+    return "QUIET_NAN";
   case IdentityValue::MAX_SIGNED:
     return "MAX_SIGNED";
   case IdentityValue::MIN_SIGNED:
@@ -72,6 +75,8 @@ Attribute getIdentitiesAttr(MLIRContext *context,
     case IdentityValue::POS_INF:
       return FloatAttr::get(floatTy,
                             APFloat::getInf(semantics, /*negative=*/false));
+    case IdentityValue::QUIET_NAN:
+      return FloatAttr::get(floatTy, APFloat::getQNaN(semantics));
     default:
       llvm_unreachable("unexpected identity value for float type");
     }
@@ -201,9 +206,15 @@ analyzeConsistentIdentity(ArrayRef<Operation *> consumingOps,
       return IdentityValue::ZERO;
 
     // Min/Max operations
-    if (isa<arith::MinNumFOp, arith::MinimumFOp>(op))
+    // minnum/maxnum return the other operand when one operand is NaN, so an
+    // infinity is not neutral for them: folded into an all-NaN reduction it
+    // replaces the NaN result. NaN is their only neutral element. The
+    // NaN-propagating minimum/maximum keep the infinities.
+    if (isa<arith::MinNumFOp, arith::MaxNumFOp>(op))
+      return IdentityValue::QUIET_NAN;
+    if (isa<arith::MinimumFOp>(op))
       return IdentityValue::POS_INF;
-    if (isa<arith::MaxNumFOp, arith::MaximumFOp>(op))
+    if (isa<arith::MaximumFOp>(op))
       return IdentityValue::NEG_INF;
     if (isa<arith::MinSIOp>(op))
       return IdentityValue::MAX_SIGNED;
@@ -437,9 +448,9 @@ CudaTileTypeConverter::CudaTileTypeConverter() {
   addConversion([](cuda_tile::StridedViewType type) { return type; });
   addConversion([](cuda_tile::TokenType type) { return type; });
   addConversion(
-      [](FloatType type) { return cuda_tile::TileType::get({}, type); });
+      [](FloatType type) { return cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, type); });
   addConversion(
-      [](IntegerType type) { return cuda_tile::TileType::get({}, type); });
+      [](IntegerType type) { return cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{}, type); });
   // Convert a pointer type into a zero-ranked tensor type, where the element
   // type is a CUDA pointer type.
   addConversion([this](triton::PointerType ptrType) -> Type {
@@ -447,7 +458,7 @@ CudaTileTypeConverter::CudaTileTypeConverter() {
     // Do not crash on cuda tile verifier if we get a ptr<tensor>.
     if (isa<RankedTensorType>(pointeeType))
       return Type();
-    return cuda_tile::TileType::get({},
+    return cuda_tile::TileType::get(::llvm::ArrayRef<int64_t>{},
                                     cuda_tile::PointerType::get(pointeeType));
   });
   // Convert a ranked tensor type to a CUDA tensor type. There are two

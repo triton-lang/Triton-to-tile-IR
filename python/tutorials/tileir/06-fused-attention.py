@@ -141,7 +141,7 @@ configs = [
 ]
 if is_tileir():
     configs = [
-        triton.Config({'BLOCK_M': BM, 'BLOCK_N': BN, 'occupancy': occupancy}, num_stages=s, num_warps=w,
+        triton.Config({'BLOCK_M': BM, 'BLOCK_N': BN, 'max_occupancy': occupancy}, num_stages=s, num_warps=w,
                       pre_hook=_host_descriptor_pre_hook)  #
         for BM in [64, 128, 256]  #
         for BN in [32, 64, 128]  #
