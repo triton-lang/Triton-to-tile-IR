@@ -11,7 +11,7 @@ def pytest_configure(config):
         gpu_id = int(worker_id[2:])  # map gw0 → 0, gw1 → 1, ...
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id % torch.cuda.device_count())
 
-def _tileir_134_profile():
+def _tileir_135_profile():
     import os
     import re
     from pathlib import Path
@@ -20,13 +20,13 @@ def _tileir_134_profile():
         return False
     compatibility = Path(__file__).resolve().parents[3] / ".triton-tileir-compat.toml"
     return compatibility.is_file() and re.search(
-        r'^tileir_version\s*=\s*"13\.4\.[0-9]+"', compatibility.read_text(), re.MULTILINE
+        r'^tileir_version\s*=\s*"13\.5\.[0-9]+"', compatibility.read_text(), re.MULTILINE
     ) is not None
 
 
 def pytest_collection_modifyitems(items):
     from pathlib import Path
-    if not _tileir_134_profile():
+    if not _tileir_135_profile():
         return
     root = Path(__file__).resolve().parent
     path = root / "test_matmul.py"
@@ -56,48 +56,48 @@ def pytest_collection_modifyitems(items):
         if (item.path.resolve() == root / "test_matmul.py"
                 and item.originalname == "test_matmul_mixed_fp8_matches_upcast"
                 and params.get("use_fpsan") is True):
-            reason = "CTK 13.4 TileIR: FPSan uses Gluon and compiler instrumentation, neither supported by this backend"
+            reason = "CTK 13.5 TileIR: FPSan uses Gluon and compiler instrumentation, neither supported by this backend"
         elif (item.path.resolve() == root / "test_matmul.py"
               and item.originalname == "test_k_ragged_mxfp8_act_scale_swizzling"):
-            reason = "CTK 13.4 TileIR: native scaled MMA does not support mixed MXFP8 and BF16 operands"
+            reason = "CTK 13.5 TileIR: native scaled MMA does not support mixed MXFP8 and BF16 operands"
         elif (item.path.resolve() == root / "test_matmul.py"
               and item.originalname == "test_gathered_ragged_act_scale_indexing"
               and set(params) == {"scale_slice_sizes"} and params["scale_slice_sizes"] is None):
-            reason = "CTK 13.4 TileIR: native scaled MMA does not support mixed MXFP8 and BF16 operands"
+            reason = "CTK 13.5 TileIR: native scaled MMA does not support mixed MXFP8 and BF16 operands"
         elif (item.path.resolve() == root / "test_matmul.py"
               and item.originalname in ("test_nvfp4_acts_mxfp4_weights",
                                         "test_nvfp4_acts_mxfp4_weights_nonpersistent",
                                         "test_nvfp4_requantization_matches_mxfp8")):
             # These kernels requantize NVFP4 activations to MXFP8 and multiply
             # them with MXFP4 weights in one scaled dot.
-            reason = "CTK 13.4 TileIR: native scaled MMA does not support mixed MXFP8 and MXFP4 operands"
+            reason = "CTK 13.5 TileIR: native scaled MMA does not support mixed MXFP8 and MXFP4 operands"
         elif (item.path.resolve() == root / "test_topk.py"
               and item.originalname == "test_topk_fpsan_masks_padded_experts"):
-            reason = "CTK 13.4 TileIR: FPSan compiler instrumentation is unsupported; ordinary top-k remains supported"
+            reason = "CTK 13.5 TileIR: FPSan compiler instrumentation is unsupported; ordinary top-k remains supported"
         elif (item.path.resolve() == root / "test_tensor.py"
               and item.originalname == "test_fpsan_embed_unembed_torch_tensor"):
-            reason = "CTK 13.4 TileIR: FPSan embedding uses the unsupported Gluon frontend"
+            reason = "CTK 13.5 TileIR: FPSan embedding uses the unsupported Gluon frontend"
         elif (item.path.resolve() == root / "test_tensor.py"
               and item.originalname == "test_keyed_add_large_key_no_int_overflow"):
-            reason = "CTK 13.4 TileIR: scan regions require pure operations; overflow checks insert device assertions"
+            reason = "CTK 13.5 TileIR: scan regions require pure operations; overflow checks insert device assertions"
         elif (item.path.resolve() == root / "test_reduce.py"
               and item.originalname == "test_unpadded_batch_size_rowidxs_subtile"):
-            reason = "CTK 13.4 TileIR: this test forces the bitmap optimization requiring libdevice.ffs; normal mask reduction remains supported"
+            reason = "CTK 13.5 TileIR: this test forces the bitmap optimization requiring libdevice.ffs; normal mask reduction remains supported"
         elif (item.path.resolve() == root / "test_matmul_details/test_opt_flags_nvidia.py"
               and item.originalname == "test_matmul_clc"):
-            reason = "CTK 13.4 TileIR: CLC scheduling is unsupported"
+            reason = "CTK 13.5 TileIR: CLC scheduling is unsupported"
         if (item.path.resolve() == root / "test_matmul_details/test_opt_flags_nvidia.py"
                 and item.originalname in ("test_matmul_blackwell_scale_small_n",
                                           "test_matmul_blackwell_shuffled_mxfp4_weight")
                 and not params):
-            reason = "CTK 13.4 TileIR: native scaled MMA requires matching FP4/FP8 types and both scales"
+            reason = "CTK 13.5 TileIR: native scaled MMA requires matching FP4/FP8 types and both scales"
         elif (item.path.resolve() == root / "test_tensor_details/test_layout_hopper.py"
               and item.originalname == "test_upcast_mxfp4_to_bf16"
               and set(params) == {"mx_axis", "num_warps", "all_scales"}
               and type(params["all_scales"]) is bool
               and type(params["mx_axis"]) is int and params["mx_axis"] in (0, 1)
               and type(params["num_warps"]) is int and params["num_warps"] in (4, 8)):
-            reason = "CTK 13.4 TileIR: Hopper MXFP4 unpacking requires unsupported packed BF16 inline assembly"
+            reason = "CTK 13.5 TileIR: Hopper MXFP4 unpacking requires unsupported packed BF16 inline assembly"
         if reason:
             item.add_marker(pytest.mark.xfail(run=False, strict=True, reason=reason))
             continue
@@ -120,14 +120,14 @@ def pytest_collection_modifyitems(items):
                 continue
         item.add_marker(pytest.mark.xfail(
             run=False, strict=True,
-            reason="CTK 13.4 TileIR: native scaled MMA requires matching FP4/FP8 types and both scales",
+            reason="CTK 13.5 TileIR: native scaled MMA requires matching FP4/FP8 types and both scales",
         ))
 
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     outcome = yield
-    if (not _tileir_134_profile() or call.when != "call"
+    if (not _tileir_135_profile() or call.when != "call"
             or item.path.name != "test_mxfp.py"
             or item.originalname != "test_ue8m0_scale_upcast"):
         return
@@ -150,7 +150,7 @@ def pytest_runtest_makereport(item, call):
     except Exception:
         report.longrepr = item.repr_failure(pytest.ExceptionInfo.from_current())
         return
-    reason = "CTK 13.4 TileIR has no PTX inspection stage; original scale value assertions completed"
+    reason = "CTK 13.5 TileIR has no PTX inspection stage; original scale value assertions completed"
     report.outcome = "skipped"
     report.wasxfail = reason
     report.longrepr = (str(item.path), item.location[1], reason)

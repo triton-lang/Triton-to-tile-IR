@@ -8,11 +8,11 @@ To build and install the Triton-TileIR backend, simply run:
 pip install .
 ```
 
-This branch uses a Triton 3.9 development snapshot, public CUDA Tile IR v13.4.0 sources, and bundled CUDA 13.4.59 compiler and runtime components.
+This branch uses a Triton 3.9 development snapshot, public CUDA Tile IR v13.5.0 sources, and bundled CUDA 13.5.37 compiler and runtime components.
 
 ## Running
 
-Before using the backend, ensure your NVIDIA driver is compatible with CUDA 13.4 and set the following environment variable before importing Triton:
+Before using the backend, ensure your NVIDIA driver is compatible with CUDA 13.5 and set the following environment variable before importing Triton:
 
 ```bash
 export ENABLE_TILE=1

@@ -24,8 +24,7 @@ before comparing timings.
 | Wide GEMMs | Compare `num_ctas=1` and 2 with larger tiles, subject to the GPU and operation's support. |
 
 These are search heuristics, not guaranteed best configurations. Tensor descriptors
-must satisfy their shape and alignment requirements. On CUDA 13.4, use one CTA for
-kernels affected by the known multi-CTA atomic CAS issue.
+must satisfy their shape and alignment requirements.
 
 Use kernel-specific tile parameter names in `triton.Config`. For a matmul kernel
 whose constexpr arguments are `BLOCK_SIZE_M`, `BLOCK_SIZE_N` and `BLOCK_SIZE_K`,
@@ -89,7 +88,7 @@ Setting **num_ctas=2** is critical for dense dot-related workloads on specific h
 
 #### num_warps
 
-On this CUDA 13.4 branch, `num_warps` is forwarded as the public `num_worker_warps_per_cta` optimization hint. The default is 4. It is a compiler hint, so validate the generated kernel and measure each configuration rather than assuming a fixed PTX warp layout.
+On this CUDA 13.5 branch, `num_warps` is forwarded as the public `num_worker_warps_per_cta` optimization hint. The default is 4. It is a compiler hint, so validate the generated kernel and measure each configuration rather than assuming a fixed PTX warp layout.
 
 #### num_stages
 
@@ -117,7 +116,7 @@ Manual slicing approaches (such as `EPILOGUE_SUBTILE` in `python/tutorials/09-pe
 
 ## Historical Performance Benchmarks on B200(1000W)
 
-The following measurements and CUDA 13.1 observations above are historical. They are not a CUDA 13.4 performance baseline; remeasure the workload with its actual toolchain and configuration.
+The following measurements and CUDA 13.1 observations above are historical. They are not a CUDA 13.5 performance baseline; remeasure the workload with its actual toolchain and configuration.
 
 ```bash
 sudo nvidia-smi -i 0 -pm 1; sudo nvidia-smi -i 0 -pl 1000; sudo nvidia-smi -i 0 -lgc 1800

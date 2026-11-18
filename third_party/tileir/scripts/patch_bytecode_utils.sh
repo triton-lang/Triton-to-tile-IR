@@ -58,17 +58,42 @@ if ! grep -q 'Float8E5M3FNUType' "${LLVM_SYSPATH}/include/mlir/IR/BuiltinTypes.h
   fi
 fi
 
-# Newer MLIR defaults dialects to strict property assembly formats. Released
-# CUDA Tile dialects that predate the option keep inherent attributes in
-# attr-dict; apply the same opt-out CUDA Tile 13.5 declares itself. This only
-# affects textual IR, not bytecode.
+# CUDA Tile 13.5 calls LLVM's tablegen_internal() CMake function. Older LLVM
+# revisions provide the same calling convention as tablegen(); bridge the
+# copied build source only when the pinned LLVM lacks the newer name.
+TABLEGEN_CMAKE="${LLVM_SYSPATH}/lib/cmake/llvm/TableGen.cmake"
+if [[ -f "${TABLEGEN_CMAKE}" ]] && ! grep -q 'function(tablegen_internal ' "${TABLEGEN_CMAKE}"; then
+  while IFS= read -r -d '' cmake_file; do
+    patch_in_place "${cmake_file}" -e 's/\btablegen_internal(/tablegen(/g'
+  done < <(find "${REPO_ROOT}" -path "${REPO_ROOT}/build" -prune -o \
+    -type f \( -name CMakeLists.txt -o -name '*.cmake' \) -print0)
+fi
+
+# Newer LLVM RecordKeeper::getDefs() yields const Record pointers; older
+# revisions return the name-to-record map. Adapt the 13.5 TableGen backends
+# to the older API without changing which records they visit.
+RECORD_H="${LLVM_SYSPATH}/include/llvm/TableGen/Record.h"
+if [[ -f "${RECORD_H}" ]] && grep -q 'const RecordMap &getDefs() const' "${RECORD_H}"; then
+  for tblgen_source in "${REPO_ROOT}"/tools/cuda-tile-tblgen/*.cpp; do
+    patch_in_place "${tblgen_source}" \
+      -e 's/for (const Record \*\([A-Za-z_]*\) : records\.getDefs())/for (const Record *\1 : llvm::map_range(records.getDefs(), [](const auto \&entry) -> const Record * { return entry.second.get(); }))/g'
+  done
+fi
+
+# Newer MLIR defaults dialects to strict property assembly formats. CUDA Tile
+# 13.5 opts out itself; apply the same opt-out to released dialects that
+# predate the option. Older MLIR lacks the option and is always non-strict, so
+# drop the declaration there. This only affects textual IR, not bytecode.
 DIALECT_BASE_TD="${LLVM_SYSPATH}/include/mlir/IR/DialectBase.td"
 DIALECT_TD_FILE="${REPO_ROOT}/include/cuda_tile/Dialect/CudaTile/IR/Dialect.td"
-if [[ -f "${DIALECT_BASE_TD}" ]] && grep -q 'useStrictPropertiesInAssemblyFormat' "${DIALECT_BASE_TD}" \
-    && ! grep -q 'useStrictPropertiesInAssemblyFormat' "${DIALECT_TD_FILE}"; then
-  grep -q '^  let useDefaultAttributePrinterParser = 1;$' "${DIALECT_TD_FILE}"
-  patch_in_place "${DIALECT_TD_FILE}" \
-    -e '/^  let useDefaultAttributePrinterParser = 1;$/a\  let useStrictPropertiesInAssemblyFormat = 0;'
+if [[ -f "${DIALECT_BASE_TD}" ]] && grep -q 'useStrictPropertiesInAssemblyFormat' "${DIALECT_BASE_TD}"; then
+  if ! grep -q 'useStrictPropertiesInAssemblyFormat' "${DIALECT_TD_FILE}"; then
+    grep -q '^  let useDefaultAttributePrinterParser = 1;$' "${DIALECT_TD_FILE}"
+    patch_in_place "${DIALECT_TD_FILE}" \
+      -e '/^  let useDefaultAttributePrinterParser = 1;$/a\  let useStrictPropertiesInAssemblyFormat = 0;'
+  fi
+elif [[ -f "${DIALECT_BASE_TD}" ]]; then
+  patch_in_place "${DIALECT_TD_FILE}" -e '/let useStrictPropertiesInAssemblyFormat = 0;/d'
 fi
 
 # 1) Patch BytecodeGenUtilities.cpp for LLVM api changes:
@@ -101,6 +126,19 @@ if ! grep -q '^def SymbolName ' "${LLVM_SYSPATH}/include/mlir/IR/SymbolInterface
       -e 's/Symbol, SymbolName/Symbol/g' \
       -e '/\bSymbol\b/ s/SymbolName, //g' \
       -e 's/\bSymbolName\b/Symbol/g'
+  done
+fi
+
+# The same older LLVM revisions also lack the SymbolVisibility trait; their
+# SymbolOpInterface provides visibility through the sym_visibility attribute.
+if ! grep -q '^def SymbolVisibility ' "${LLVM_SYSPATH}/include/mlir/IR/SymbolInterfaces.td"; then
+  for symbol_td in "${REPO_ROOT}"/include/cuda_tile/Dialect/CudaTile/IR/*.td; do
+    grep -qE '(^|[[ ,])SymbolVisibility([],]|$)' "${symbol_td}" || continue
+    patch_in_place "${symbol_td}" \
+      -e 's/, SymbolVisibility\([],]\)/\1/g' \
+      -e 's/, SymbolVisibility$//' \
+      -e 's/\[SymbolVisibility, /[/g' \
+      -e 's/^\( *\)SymbolVisibility, /\1/'
   done
 fi
 
